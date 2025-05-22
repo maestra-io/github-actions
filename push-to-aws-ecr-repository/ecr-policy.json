@@ -1,0 +1,32 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "ReadWriteAccess",
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": [
+                "ecr:GetAuthorizationToken",
+                "ecr:GetDownloadUrlForLayer",
+                "ecr:BatchGetImage",
+                "ecr:BatchCheckLayerAvailability",
+                "ecr:PutImage",
+                "ecr:InitiateLayerUpload",
+                "ecr:UploadLayerPart",
+                "ecr:CompleteLayerUpload",
+                "ecr:DescribeRepositories",
+                "ecr:DescribeImageScanFindings",
+                "ecr:DescribeImages",
+                "ecr:GetRepositoryPolicy",
+                "ecr:ListImages",
+                "ecr:ListTagsForResource",
+                "ecr:BatchDeleteImage"
+            ],
+            "Condition": {
+                "StringLike": {
+                    "aws:PrincipalOrgID": "ORGANIZATION_ID"
+                }
+            }
+        }
+    ]
+}
