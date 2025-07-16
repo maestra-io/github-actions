@@ -1,26 +1,23 @@
-name: 'Push to AWS ECR repository'
-description: 'Push to AWS ECR repository'
+name: 'Push to AWS ECR repositories'
+description: 'Push multiple images to AWS ECR repositories'
 inputs:
   awsAccessKey:
-    description: ''
+    description: 'AWS Access Key ID'
     required: true
   awsSecretKey: 
-    description: ''
+    description: 'AWS Secret Access Key'
     required: true
   awsRegion: 
-    description: ''
-    required: true
-  awsOrganizationId: 
-    description: ''
-    required: true
-  repositoryName: 
-    description: ''
+    description: 'AWS Region'
+    required: true  
+  repositories:
+    description: 'Comma-separated list of repository names'
     required: true
   localTag: 
-    description: 'Tag of locally built image. Image with this tag must be pre-built.'
+    description: 'Tag of locally built images. Images with this tag must be pre-built.'
     required: true
   targetTag: 
-    description: ''
+    description: 'Target tag for all ECR repositories'
     required: true
 outputs: {}
 runs:
@@ -37,30 +34,37 @@ runs:
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Prepare policy file
-      working-directory: ${{ github.action_path }}
-      shell: bash
-      run: |
-        sed -i -e 's/ORGANIZATION_ID/${{ inputs.awsOrganizationId }}/g' ecr-policy.json
-
     - name: Create AWS repositories if not exist
       shell: bash
       working-directory: ${{ github.action_path }}
-      run: >
-        aws ecr describe-repositories --repository-names ${{ inputs.repositoryName }} || {
-        aws ecr create-repository --repository-name ${{ inputs.repositoryName }}
-        && aws ecr set-repository-policy --repository-name ${{ inputs.repositoryName }} --policy-text file://ecr-policy.json; };
+      run: |
+        IFS=',' read -ra REPOS <<< "${{ inputs.repositories }}"
+        for repo in "${REPOS[@]}"; do
+          repo=$(echo "$repo" | xargs)  # trim whitespace
+          aws ecr describe-repositories --repository-names "$repo" || {
+            aws ecr create-repository --repository-name "$repo"
+            aws ecr set-repository-policy --repository-name "$repo" --policy-text file://ecr-policy.json
+          }
+        done
     
     - name: Tag docker images
       env:
         registry: ${{ steps.login-ecr.outputs.registry }}
       shell: bash
       run: |
-        docker tag local/${{ inputs.repositoryName }}:${{ inputs.localTag }} ${{ env.registry }}/${{ inputs.repositoryName }}:${{ inputs.targetTag }}
+        IFS=',' read -ra REPOS <<< "${{ inputs.repositories }}"
+        for repo in "${REPOS[@]}"; do
+          repo=$(echo "$repo" | xargs)  # trim whitespace
+          docker tag "local/$repo:${{ inputs.localTag }}" "${{ env.registry }}/$repo:${{ inputs.targetTag }}"
+        done
     
     - name: Docker push
       env:
         registry: ${{ steps.login-ecr.outputs.registry }}
       shell: bash
       run: |
-        docker push ${{ env.registry }}/${{ inputs.repositoryName }}:${{ inputs.targetTag }}
+        IFS=',' read -ra REPOS <<< "${{ inputs.repositories }}"
+        for repo in "${REPOS[@]}"; do
+          repo=$(echo "$repo" | xargs)  # trim whitespace
+          docker push "${{ env.registry }}/$repo:${{ inputs.targetTag }}"
+        done
