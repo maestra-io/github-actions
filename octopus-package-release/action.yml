@@ -1,0 +1,78 @@
+name: 'Octopus Deploy Package and Release'
+description: 'Create and upload Octopus package, then create a release'
+inputs:
+  octopusProject:
+    description: 'Octopus project name'
+    required: true
+  version:
+    description: 'Package and release version'
+    required: true
+  folderToPack:
+    description: 'Folder to include in the package (e.g., helmfile/**, terraform/**)'
+    required: true
+  space:
+    description: 'Octopus space name'
+    required: false
+    default: 'Default'
+  releaseNotes:
+    description: 'Release notes for the Octopus release'
+    required: false
+    default: ''
+  OCTOPUS_CLI_API_KEY:
+    description: 'Octopus API key'
+    required: true
+  OCTOPUS_CLI_SERVER:
+    description: 'Octopus server URL'
+    required: true
+outputs:
+  package-path:
+    description: 'Path to the created package'
+    value: ${{ steps.package-info.outputs.package-path }}
+runs:
+  using: "composite"
+  steps:
+    - name: Set package info
+      id: package-info
+      shell: bash
+      run: |
+        echo "package-path=./packages/${{ inputs.octopusProject }}.${{ inputs.version }}.zip" >> $GITHUB_OUTPUT
+
+    - name: Create and upload octopus package
+      uses: docker://octopusdeploy/octo
+      with:
+        args: >-
+          pack
+          --id ${{ inputs.octopusProject }}
+          --version ${{ inputs.version }}
+          --outFolder ./packages
+          --include ${{ inputs.folderToPack }}
+          --format Zip
+          --verbose
+          --overwrite
+      env:
+        OCTOPUS_CLI_API_KEY: ${{ inputs.OCTOPUS_CLI_API_KEY }}
+        OCTOPUS_CLI_SERVER: ${{ inputs.OCTOPUS_CLI_SERVER }}
+
+    - name: Upload octopus package
+      uses: docker://octopusdeploy/octo
+      with:
+        args: >-
+          push
+          --package ${{ steps.package-info.outputs.package-path }}
+          --space ${{ inputs.space }}
+      env:
+        OCTOPUS_CLI_API_KEY: ${{ inputs.OCTOPUS_CLI_API_KEY }}
+        OCTOPUS_CLI_SERVER: ${{ inputs.OCTOPUS_CLI_SERVER }}
+
+    - name: Create octopus release
+      uses: docker://octopusdeploy/octo
+      with:
+        args: >-
+          create-release
+          --project ${{ inputs.octopusProject }}
+          --version ${{ inputs.version }}
+          --packageVersion ${{ inputs.version }}
+          ${{ inputs.releaseNotes != '' && format('--releasenotes "{0}"', inputs.releaseNotes) || '' }}
+      env:
+        OCTOPUS_CLI_API_KEY: ${{ inputs.OCTOPUS_CLI_API_KEY }}
+        OCTOPUS_CLI_SERVER: ${{ inputs.OCTOPUS_CLI_SERVER }}
