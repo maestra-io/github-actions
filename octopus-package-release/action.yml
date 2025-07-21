@@ -18,6 +18,10 @@ inputs:
     description: 'Release notes for the Octopus release'
     required: false
     default: ''
+  gitRef:
+    description: 'Git reference (branch name or commit) for the release'
+    required: false
+    default: 'main'
   OCTOPUS_CLI_API_KEY:
     description: 'Octopus API key'
     required: true
@@ -73,6 +77,7 @@ runs:
           --version ${{ inputs.version }}
           --packageVersion ${{ inputs.version }}
           --space ${{ inputs.space }}
+          --gitRef ${{ inputs.gitRef }}
           ${{ inputs.releaseNotes != '' && format('--releasenotes "{0}"', inputs.releaseNotes) || '' }}
       env:
         OCTOPUS_CLI_API_KEY: ${{ inputs.OCTOPUS_CLI_API_KEY }}
