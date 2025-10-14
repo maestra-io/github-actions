@@ -1,0 +1,103 @@
+name: 'Get AWS Session Token from Vault'
+description: 'Authenticate to Vault via JWT and retrieve AWS session token credentials'
+inputs:
+  vault-addr:
+    description: 'Vault server address'
+    required: false
+    default: 'https://vault.mindbox.cloud'
+  role-name:
+    description: 'AWS role name in Vault (e.g., secrets-s3-secrets-terraform-state-bucket-editor)'
+    required: true
+  vault-jwt-path:
+    description: 'Vault JWT authentication mount path'
+    required: true
+  vault-jwt-role:
+    description: 'Vault JWT role name'
+    required: true
+  ttl:
+    description: 'TTL for AWS credentials (e.g., 15m). If not specified, uses role default.'
+    required: false
+    default: ''
+outputs:
+  aws-access-key-id:
+    description: 'AWS Access Key ID'
+    value: ${{ steps.get-creds.outputs.access-key }}
+  aws-secret-access-key:
+    description: 'AWS Secret Access Key'
+    value: ${{ steps.get-creds.outputs.secret-key }}
+  aws-session-token:
+    description: 'AWS Session Token'
+    value: ${{ steps.get-creds.outputs.session-token }}
+  lease-id:
+    description: 'Vault lease ID for the generated credentials'
+    value: ${{ steps.get-creds.outputs.lease-id }}
+runs:
+  using: "composite"
+  steps:
+    - name: Get OIDC Token
+      id: oidc-token
+      uses: actions/github-script@v8
+      with:
+        script: |
+          const token = await core.getIDToken()
+          core.setSecret(token)
+          core.setOutput('token', token)
+
+    - name: Authenticate to Vault and Get AWS Credentials
+      id: get-creds
+      shell: bash
+      env:
+        VAULT_ADDR: ${{ inputs.vault-addr }}
+      run: |
+        # Authenticate to Vault using JWT
+        VAULT_TOKEN=$(curl -s -X POST \
+          "$VAULT_ADDR/v1/auth/${{ inputs.vault-jwt-path }}/login" \
+          -d "{\"jwt\": \"${{ steps.oidc-token.outputs.token }}\", \"role\": \"${{ inputs.vault-jwt-role }}\"}" \
+          | jq -r '.auth.client_token')
+
+        if [ -z "$VAULT_TOKEN" ] || [ "$VAULT_TOKEN" = "null" ]; then
+          echo "❌ Failed to authenticate to Vault"
+          exit 1
+        fi
+
+        echo "✅ Successfully authenticated to Vault"
+
+        # Build the AWS creds request path
+        CREDS_PATH="aws/creds/${{ inputs.role-name }}"
+
+        # Add TTL parameter if specified
+        if [ -n "${{ inputs.ttl }}" ]; then
+          CREDS_PATH="${CREDS_PATH}?ttl=${{ inputs.ttl }}"
+        fi
+
+        # Get AWS credentials from Vault (single call)
+        CREDS_RESPONSE=$(curl -s -X GET \
+          -H "X-Vault-Token: $VAULT_TOKEN" \
+          "$VAULT_ADDR/v1/$CREDS_PATH")
+
+        # Extract credentials
+        ACCESS_KEY=$(echo "$CREDS_RESPONSE" | jq -r '.data.access_key')
+        SECRET_KEY=$(echo "$CREDS_RESPONSE" | jq -r '.data.secret_key')
+        SESSION_TOKEN=$(echo "$CREDS_RESPONSE" | jq -r '.data.security_token')
+        LEASE_ID=$(echo "$CREDS_RESPONSE" | jq -r '.lease_id')
+
+        # Validate credentials were retrieved
+        if [ -z "$ACCESS_KEY" ] || [ "$ACCESS_KEY" = "null" ]; then
+          echo "❌ Failed to retrieve AWS credentials from Vault"
+          echo "Response: $CREDS_RESPONSE"
+          exit 1
+        fi
+
+        echo "✅ Successfully retrieved AWS session token credentials"
+
+        # Mask sensitive values
+        echo "::add-mask::$ACCESS_KEY"
+        echo "::add-mask::$SECRET_KEY"
+        echo "::add-mask::$SESSION_TOKEN"
+        echo "::add-mask::$VAULT_TOKEN"
+
+        # Set outputs
+        echo "access-key=$ACCESS_KEY" >> $GITHUB_OUTPUT
+        echo "secret-key=$SECRET_KEY" >> $GITHUB_OUTPUT
+        echo "session-token=$SESSION_TOKEN" >> $GITHUB_OUTPUT
+        echo "lease-id=$LEASE_ID" >> $GITHUB_OUTPUT
