@@ -62,15 +62,15 @@ runs:
 
         echo "✅ Successfully authenticated to Vault"
 
-        # Build the AWS creds request path
-        CREDS_PATH="aws/creds/${{ inputs.role-name }}"
+        # Build the AWS STS request path (for session token credentials)
+        CREDS_PATH="aws/sts/${{ inputs.role-name }}"
 
         # Add TTL parameter if specified
         if [ -n "${{ inputs.ttl }}" ]; then
           CREDS_PATH="${CREDS_PATH}?ttl=${{ inputs.ttl }}"
         fi
 
-        # Get AWS credentials from Vault (single call)
+        # Get AWS STS credentials from Vault (single call)
         CREDS_RESPONSE=$(curl -s -X GET \
           -H "X-Vault-Token: $VAULT_TOKEN" \
           "$VAULT_ADDR/v1/$CREDS_PATH")
