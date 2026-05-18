@@ -7,7 +7,9 @@ description: >-
 
 inputs:
   service:
-    description: 'Service name (kebab-case, e.g. db-migrator). Derives TELEPORT_TOKEN and IMAGE_MANIFESTS.'
+    description: >-
+      Service name (kebab-case, e.g. db-migrator). Used to derive defaults for
+      `teleport-token` and the OCI manifests repo name (`<service>-manifests`).
     required: true
   images:
     description: >-
@@ -15,6 +17,22 @@ inputs:
       baking (e.g. "db_migrator_services,db_migrator_migrator"). The bake refuses
       to proceed if any image is missing for the target tag.
     required: true
+  teleport-token:
+    description: >-
+      Teleport bot join-token name. Defaults to
+      `image-push-github-actions-<service>`. Override when the bot is named
+      per repo rather than per service (e.g. monorepos sharing one bot across
+      multiple services).
+    required: false
+    default: ''
+  kustomization-path:
+    description: >-
+      Path to the kustomization tree that `flux push artifact` packs. Default
+      is `./kustomization` (single-service repo). Override for monorepos that
+      keep each service's manifests under its own subdir
+      (e.g. `kustomization/campaigns`).
+    required: false
+    default: './kustomization'
   flux-version:
     description: 'flux CLI version (without v- prefix).'
     required: false
@@ -84,13 +102,15 @@ runs:
 
     - name: mint Teleport workload-identity JWT for AWS
       shell: bash
+      env:
+        TELEPORT_TOKEN: ${{ inputs.teleport-token != '' && inputs.teleport-token || format('image-push-github-actions-{0}', inputs.service) }}
       run: |
         cat > /tmp/tbot.yaml <<EOF
         version: v2
         proxy_server: ${{ inputs.teleport-fqdn }}
         onboarding:
           join_method: github
-          token: image-push-github-actions-${{ inputs.service }}
+          token: ${TELEPORT_TOKEN}
         oneshot: true
         storage:
           type: memory
@@ -167,22 +187,23 @@ runs:
         flux --version
 
     # ── Substitute the version placeholder ────────────────────────────────
-    # The placeholder lives in kustomization/base/helm-release-{app,init}.yaml
+    # The placeholder lives in <kustomization-path>/base/helm-release-{app,init}.yaml
     # as `packageVersion: ${APP_PACKAGE_VERSION_TO_BE_REPLACED}`. After the
     # sed pass, the bake refuses to push if any placeholder survived.
     - name: substitute APP_PACKAGE_VERSION_TO_BE_REPLACED
       shell: bash
       env:
         TAG: ${{ steps.ver.outputs.version }}
+        KUSTOMIZATION_PATH: ${{ inputs.kustomization-path }}
       run: |
-        find kustomization -type f -name '*.yaml' \
+        find "$KUSTOMIZATION_PATH" -type f -name '*.yaml' \
           -exec sed -i "s|\${APP_PACKAGE_VERSION_TO_BE_REPLACED}|${TAG}|g" {} +
-        if grep -rn '\${APP_PACKAGE_VERSION_TO_BE_REPLACED}' kustomization/ ; then
+        if grep -rn '\${APP_PACKAGE_VERSION_TO_BE_REPLACED}' "$KUSTOMIZATION_PATH" ; then
           echo "::error::APP_PACKAGE_VERSION_TO_BE_REPLACED placeholder still present after substitution"
           exit 1
         fi
         echo "--- packageVersion after substitution ---"
-        grep -rn packageVersion kustomization/base/ || true
+        grep -rn packageVersion "$KUSTOMIZATION_PATH/base/" || true
 
     # ── Bake the OCI artifact ─────────────────────────────────────────────
     - name: flux push artifact
@@ -192,10 +213,11 @@ runs:
         ECR_REGISTRY: ${{ inputs.ecr-registry }}
         IMAGE_MANIFESTS: ${{ inputs.service }}-manifests
         TAG: ${{ steps.ver.outputs.version }}
+        KUSTOMIZATION_PATH: ${{ inputs.kustomization-path }}
       run: |
         out=$(flux push artifact \
           "oci://${ECR_REGISTRY}/${IMAGE_MANIFESTS}:${TAG}" \
-          --path ./kustomization \
+          --path "$KUSTOMIZATION_PATH" \
           --source "https://github.com/${GITHUB_REPOSITORY}" \
           --revision "${GITHUB_SHA}" \
           --output json)
