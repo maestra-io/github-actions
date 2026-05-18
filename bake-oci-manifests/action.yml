@@ -1,0 +1,235 @@
+name: 'Bake OCI manifests artifact'
+description: >-
+  Bakes a microservice's kustomization/ tree into an OCI artifact at
+  ${ECR_REGISTRY}/<service>-manifests:<tag>, cosign-keyless-signs the digest,
+  and verifies the pulled artifact contains no leftover placeholders. Used by
+  the OCI + Kargo deploy pattern (see maestra-io/fluxcd/docs/microservice-deployment.md).
+
+inputs:
+  service:
+    description: 'Service name (kebab-case, e.g. db-migrator). Derives TELEPORT_TOKEN and IMAGE_MANIFESTS.'
+    required: true
+  images:
+    description: >-
+      Comma-separated list of image basenames to verify exist in ECR before
+      baking (e.g. "db_migrator_services,db_migrator_migrator"). The bake refuses
+      to proceed if any image is missing for the target tag.
+    required: true
+  flux-version:
+    description: 'flux CLI version (without v- prefix).'
+    required: false
+    default: '2.8.6'
+  aws-region:
+    description: 'AWS region for ECR.'
+    required: false
+    default: 'eu-central-1'
+  ecr-registry:
+    description: 'ECR registry host.'
+    required: false
+    default: '515260921971.dkr.ecr.eu-central-1.amazonaws.com'
+  teleport-fqdn:
+    description: 'Teleport proxy host:port.'
+    required: false
+    default: 'teleport.maestra.io:443'
+  aws-role-arn:
+    description: 'IAM role assumed via Teleport workload-identity OIDC.'
+    required: false
+    default: 'arn:aws:iam::515260921971:role/teleport-image-push'
+
+outputs:
+  version:
+    description: 'Resolved semver tag the artifact was baked at.'
+    value: ${{ steps.ver.outputs.version }}
+  digest:
+    description: 'OCI digest of the pushed manifests artifact.'
+    value: ${{ steps.push.outputs.digest }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: resolve version
+      id: ver
+      shell: bash
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          tag="${{ github.event.inputs.tag }}"
+        else
+          tag="${GITHUB_REF_NAME}"
+        fi
+        case "$tag" in
+          [0-9]*.[0-9]*.[0-9]*) ;;
+          *) echo "::error::tag '$tag' is not bare semver (e.g. 1.0.648)"; exit 1 ;;
+        esac
+        echo "version=$tag" >> "$GITHUB_OUTPUT"
+        echo "Baking manifests for ${{ inputs.service }} $tag"
+
+    - uses: actions/checkout@v6
+      with:
+        ref: ${{ steps.ver.outputs.version }}
+        fetch-depth: 1
+
+    # ── Teleport workload-identity → AWS STS → ECR ────────────────────────
+    - name: get teleport version
+      id: tp-version
+      shell: bash
+      run: |
+        version=$(curl -sf "https://${{ inputs.teleport-fqdn }}/webapi/find" \
+          | jq -r '.auto_update.tools_version // .server_version')
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+    - uses: teleport-actions/setup@v1
+      with:
+        version: ${{ steps.tp-version.outputs.version }}
+        proxy: ${{ inputs.teleport-fqdn }}
+
+    - name: mint Teleport workload-identity JWT for AWS
+      shell: bash
+      run: |
+        cat > /tmp/tbot.yaml <<EOF
+        version: v2
+        proxy_server: ${{ inputs.teleport-fqdn }}
+        onboarding:
+          join_method: github
+          token: image-push-github-actions-${{ inputs.service }}
+        oneshot: true
+        storage:
+          type: memory
+        services:
+          - type: workload-identity-jwt
+            destination:
+              type: directory
+              path: /tmp/tbot-output
+            selector:
+              name: image-push
+            audiences: ["sts.amazonaws.com"]
+        EOF
+        mkdir -p /tmp/tbot-output
+        tbot start -c /tmp/tbot.yaml || true
+        test -f /tmp/tbot-output/jwt_svid
+
+    - uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.aws-role-arn }}
+        aws-region: ${{ inputs.aws-region }}
+        web-identity-token-file: /tmp/tbot-output/jwt_svid
+
+    - uses: aws-actions/amazon-ecr-login@v2
+      with:
+        registries: "515260921971"
+
+    # ── Verify GitLab CI already pushed every image for this tag ──────────
+    # If any is missing, refuse to bake the bundle — a manifests artifact
+    # without working images is worse than no artifact at all.
+    - name: verify images exist
+      shell: bash
+      env:
+        ECR_REGISTRY: ${{ inputs.ecr-registry }}
+        AWS_REGION: ${{ inputs.aws-region }}
+        IMAGES: ${{ inputs.images }}
+        TAG: ${{ steps.ver.outputs.version }}
+      run: |
+        set -e
+        IFS=',' read -ra REPOS <<< "$IMAGES"
+        for repo in "${REPOS[@]}"; do
+          repo=$(echo "$repo" | xargs)
+          echo "checking ${ECR_REGISTRY}/${repo}:${TAG}"
+          aws ecr describe-images \
+            --repository-name "$repo" \
+            --image-ids "imageTag=${TAG}" \
+            --region "$AWS_REGION" >/dev/null \
+            || { echo "::error::${repo}:${TAG} missing in ECR — refusing to bake bundle"; exit 1; }
+        done
+
+    - name: ensure manifests repo exists (immutable tags)
+      shell: bash
+      env:
+        AWS_REGION: ${{ inputs.aws-region }}
+        IMAGE_MANIFESTS: ${{ inputs.service }}-manifests
+      run: |
+        # IMMUTABLE so a republish of the same tag (e.g. an accidental
+        # workflow_dispatch on an existing tag) fails fast at PutImage
+        # instead of silently overwriting a published artifact.
+        aws ecr describe-repositories --repository-names "$IMAGE_MANIFESTS" \
+          --region "$AWS_REGION" >/dev/null 2>&1 \
+          || aws ecr create-repository \
+               --repository-name "$IMAGE_MANIFESTS" \
+               --image-tag-mutability IMMUTABLE \
+               --region "$AWS_REGION" >/dev/null
+
+    # ── Tools ─────────────────────────────────────────────────────────────
+    - name: install flux CLI
+      shell: bash
+      env:
+        FLUX_VERSION: ${{ inputs.flux-version }}
+      run: |
+        curl -sL "https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/flux_${FLUX_VERSION}_linux_amd64.tar.gz" \
+          | sudo tar -xz -C /usr/local/bin flux
+        flux --version
+
+    # ── Substitute the version placeholder ────────────────────────────────
+    # The placeholder lives in kustomization/base/helm-release-{app,init}.yaml
+    # as `packageVersion: ${APP_PACKAGE_VERSION_TO_BE_REPLACED}`. After the
+    # sed pass, the bake refuses to push if any placeholder survived.
+    - name: substitute APP_PACKAGE_VERSION_TO_BE_REPLACED
+      shell: bash
+      env:
+        TAG: ${{ steps.ver.outputs.version }}
+      run: |
+        find kustomization -type f -name '*.yaml' \
+          -exec sed -i "s|\${APP_PACKAGE_VERSION_TO_BE_REPLACED}|${TAG}|g" {} +
+        if grep -rn '\${APP_PACKAGE_VERSION_TO_BE_REPLACED}' kustomization/ ; then
+          echo "::error::APP_PACKAGE_VERSION_TO_BE_REPLACED placeholder still present after substitution"
+          exit 1
+        fi
+        echo "--- packageVersion after substitution ---"
+        grep -rn packageVersion kustomization/base/ || true
+
+    # ── Bake the OCI artifact ─────────────────────────────────────────────
+    - name: flux push artifact
+      id: push
+      shell: bash
+      env:
+        ECR_REGISTRY: ${{ inputs.ecr-registry }}
+        IMAGE_MANIFESTS: ${{ inputs.service }}-manifests
+        TAG: ${{ steps.ver.outputs.version }}
+      run: |
+        out=$(flux push artifact \
+          "oci://${ECR_REGISTRY}/${IMAGE_MANIFESTS}:${TAG}" \
+          --path ./kustomization \
+          --source "https://github.com/${GITHUB_REPOSITORY}" \
+          --revision "${GITHUB_SHA}" \
+          --output json)
+        echo "$out" | jq .
+        echo "digest=$(echo "$out" | jq -r .digest)" >> "$GITHUB_OUTPUT"
+
+    - uses: sigstore/cosign-installer@v3
+
+    - name: cosign keyless sign manifests
+      shell: bash
+      env:
+        COSIGN_EXPERIMENTAL: "true"
+        ECR_REGISTRY: ${{ inputs.ecr-registry }}
+        IMAGE_MANIFESTS: ${{ inputs.service }}-manifests
+        DIGEST: ${{ steps.push.outputs.digest }}
+      run: cosign sign --yes "${ECR_REGISTRY}/${IMAGE_MANIFESTS}@${DIGEST}"
+
+    # ── Sanity: pull the artifact back and verify it contains what we sent
+    - name: verify artifact pullable
+      shell: bash
+      env:
+        ECR_REGISTRY: ${{ inputs.ecr-registry }}
+        IMAGE_MANIFESTS: ${{ inputs.service }}-manifests
+        TAG: ${{ steps.ver.outputs.version }}
+      run: |
+        mkdir -p /tmp/verify
+        flux pull artifact \
+          "oci://${ECR_REGISTRY}/${IMAGE_MANIFESTS}:${TAG}" \
+          --output /tmp/verify
+        ls -R /tmp/verify | head -30
+        # Match the placeholder form `${APP_PACKAGE_VERSION_TO_BE_REPLACED}` —
+        # base/helm-release-{app,init}.yaml legitimately mention the variable
+        # name in comments without the ${...} braces; those are safe.
+        if grep -rn '\${APP_PACKAGE_VERSION_TO_BE_REPLACED}' /tmp/verify ; then
+          echo "::error::Placeholder leaked into pulled artifact"
+          exit 1
+        fi
