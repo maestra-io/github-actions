@@ -146,13 +146,30 @@ jobs:
 
 ### Inputs
 
-- `service`: kebab-case service name. Derives `TELEPORT_TOKEN` (`image-push-github-actions-<service>`) and `IMAGE_MANIFESTS` (`<service>-manifests`). **(required)**
+- `service`: kebab-case service name. Used to derive the manifests ECR repo name (`<service>-manifests`) and the default `teleport-token` (`image-push-github-actions-<service>`). **(required)**
 - `images`: comma-separated list of image basenames the action will verify exist in ECR before baking. If any is missing, the bake fails. **(required)**
+- `teleport-token`: Teleport bot join-token name. Default `image-push-github-actions-<service>`. Override for monorepos where one bot serves multiple services (e.g. `image-push-github-actions-mindbox-mta` for `campaigns`/`mta`).
+- `kustomization-path`: Path to the kustomization tree to bake. Default `./kustomization`. Override for monorepos that keep each service's manifests under its own subdir (e.g. `kustomization/campaigns`).
 - `flux-version`: flux CLI version, no `v-` prefix. Default `2.8.6`.
 - `aws-region`: ECR region. Default `eu-central-1`.
 - `ecr-registry`: ECR registry host. Default `515260921971.dkr.ecr.eu-central-1.amazonaws.com`.
 - `teleport-fqdn`: Teleport proxy. Default `teleport.maestra.io:443`.
 - `aws-role-arn`: IAM role assumed via Teleport workload-identity. Default `arn:aws:iam::515260921971:role/teleport-image-push`.
+
+### Monorepo example (campaigns inside maestra-io/Mindbox.MTA)
+
+```yaml
+jobs:
+  bake:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: maestra-io/github-actions/bake-oci-manifests@main
+        with:
+          service: campaigns
+          images: campaigns_services,campaigns_lrt,campaigns_sqlmigrator
+          teleport-token: image-push-github-actions-mindbox-mta
+          kustomization-path: kustomization/campaigns
+```
 
 ### Outputs
 
