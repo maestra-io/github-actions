@@ -13,8 +13,20 @@ inputs:
     description: >-
       Comma-separated list of image basenames to verify exist in ECR before
       baking (e.g. "db_migrator_services,db_migrator_migrator"). The bake refuses
-      to proceed if any image is missing for the target tag.
-    required: true
+      to proceed if any image is missing for the target tag. Leave EMPTY for
+      artifacts that ship no app images (e.g. a Terraform-module bundle
+      consumed by a tofu Terraform CR) — the image-verify step is skipped.
+    required: false
+    default: ''
+  bake-path:
+    description: >-
+      Path within the repo packed into the OCI artifact and used for the
+      placeholder substitution + pull-verify. Default './kustomization' (k8s
+      manifest tree). Set './terraform' for a Terraform-module bundle. The
+      ${APP_PACKAGE_VERSION_TO_BE_REPLACED} substitution is a no-op when the
+      tree has no such placeholder (e.g. terraform), so it is safe for both.
+    required: false
+    default: './kustomization'
   flux-version:
     description: 'flux CLI version (without v- prefix).'
     required: false
@@ -119,8 +131,10 @@ runs:
 
     # ── Verify GitLab CI already pushed every image for this tag ──────────
     # If any is missing, refuse to bake the bundle — a manifests artifact
-    # without working images is worse than no artifact at all.
+    # without working images is worse than no artifact at all. Skipped when
+    # `images` is empty (artifact ships no app images, e.g. a TF-module bundle).
     - name: verify images exist
+      if: ${{ inputs.images != '' }}
       shell: bash
       env:
         ECR_REGISTRY: ${{ inputs.ecr-registry }}
@@ -167,22 +181,27 @@ runs:
         flux --version
 
     # ── Substitute the version placeholder ────────────────────────────────
-    # The placeholder lives in kustomization/base/helm-release-{app,init}.yaml
-    # as `packageVersion: ${APP_PACKAGE_VERSION_TO_BE_REPLACED}`. After the
-    # sed pass, the bake refuses to push if any placeholder survived.
+    # For a k8s-manifest tree the placeholder lives in
+    # <bake-path>/base/helm-release-{app,init}.yaml as
+    # `packageVersion: ${APP_PACKAGE_VERSION_TO_BE_REPLACED}`. After the sed
+    # pass, the bake refuses to push if any placeholder survived. For a tree
+    # with no such placeholder (e.g. a terraform bundle) the sed matches
+    # nothing and the guard grep finds nothing — a safe no-op.
     - name: substitute APP_PACKAGE_VERSION_TO_BE_REPLACED
       shell: bash
       env:
         TAG: ${{ steps.ver.outputs.version }}
+        BAKE_PATH: ${{ inputs.bake-path }}
       run: |
-        find kustomization -type f -name '*.yaml' \
+        test -d "$BAKE_PATH" || { echo "::error::bake-path '$BAKE_PATH' not found in repo"; exit 1; }
+        find "$BAKE_PATH" -type f -name '*.yaml' \
           -exec sed -i "s|\${APP_PACKAGE_VERSION_TO_BE_REPLACED}|${TAG}|g" {} +
-        if grep -rn '\${APP_PACKAGE_VERSION_TO_BE_REPLACED}' kustomization/ ; then
+        if grep -rn '\${APP_PACKAGE_VERSION_TO_BE_REPLACED}' "$BAKE_PATH" ; then
           echo "::error::APP_PACKAGE_VERSION_TO_BE_REPLACED placeholder still present after substitution"
           exit 1
         fi
-        echo "--- packageVersion after substitution ---"
-        grep -rn packageVersion kustomization/base/ || true
+        echo "--- packageVersion after substitution (if any) ---"
+        grep -rn packageVersion "$BAKE_PATH" || true
 
     # ── Bake the OCI artifact ─────────────────────────────────────────────
     - name: flux push artifact
@@ -192,10 +211,11 @@ runs:
         ECR_REGISTRY: ${{ inputs.ecr-registry }}
         IMAGE_MANIFESTS: ${{ inputs.service }}-manifests
         TAG: ${{ steps.ver.outputs.version }}
+        BAKE_PATH: ${{ inputs.bake-path }}
       run: |
         out=$(flux push artifact \
           "oci://${ECR_REGISTRY}/${IMAGE_MANIFESTS}:${TAG}" \
-          --path ./kustomization \
+          --path "${BAKE_PATH}" \
           --source "https://github.com/${GITHUB_REPOSITORY}" \
           --revision "${GITHUB_SHA}" \
           --output json)
