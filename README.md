@@ -144,10 +144,41 @@ jobs:
           images: db_migrator_services,db_migrator_migrator
 ```
 
+The example above suits a **mirrored** repo, where the bare-semver tag is pushed
+externally (by the GitLab→GitHub mirror) and triggers this workflow.
+
+For a **GitHub-native** repo (no GitLab mirror), the release tag is created in
+the release workflow with `GITHUB_TOKEN`, which cannot trigger a separate
+`on: push: tags` workflow. Bake from a `needs: build` job in the same run and
+pass the tag explicitly via `tag:`:
+
+```yaml
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      release-number: ${{ steps.release-number.outputs.release-number }}
+    steps:
+      # ... build + push images to ECR, then create the release/tag ...
+  bake:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: maestra-io/github-actions/bake-oci-manifests@main
+        with:
+          service: shopify-webhooks
+          images: shopify_webhooks_services,shopify_webhooks_worker
+          tag: ${{ needs.build.outputs.release-number }}
+```
+
 ### Inputs
 
 - `service`: kebab-case service name. Derives `TELEPORT_TOKEN` (`image-push-github-actions-<service>`) and `IMAGE_MANIFESTS` (`<service>-manifests`). **(required)**
 - `images`: comma-separated list of image basenames the action will verify exist in ECR before baking. If any is missing, the bake fails. **(required)**
+- `tag`: explicit bare-semver tag to bake. Default `''`. When empty, the tag is taken from the `workflow_dispatch` input (if any) or `GITHUB_REF_NAME` (the tag that triggered the run) — the behaviour for mirrored repos. **Set this for GitHub-native repos** that bake from a `needs: build` job in a push-to-`main` release run: there the release tag is created with `GITHUB_TOKEN`, which GitHub will not let trigger a separate `on: push: tags` workflow, and `GITHUB_REF_NAME` is `main` rather than the semver tag. Precedence: `tag` → `workflow_dispatch.inputs.tag` → `GITHUB_REF_NAME`.
 - `flux-version`: flux CLI version, no `v-` prefix. Default `2.8.6`.
 - `aws-region`: ECR region. Default `eu-central-1`.
 - `ecr-registry`: ECR registry host. Default `515260921971.dkr.ecr.eu-central-1.amazonaws.com`.
