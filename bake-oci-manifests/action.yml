@@ -9,6 +9,17 @@ inputs:
   service:
     description: 'Service name (kebab-case, e.g. db-migrator). Derives TELEPORT_TOKEN and IMAGE_MANIFESTS.'
     required: true
+  tag:
+    description: >-
+      Explicit bare-semver tag to bake. Use when calling this action from a job
+      that is NOT triggered by a tag push — e.g. a `bake` job in a push-to-main
+      release workflow on a GitHub-native repo, where the release tag is created
+      with GITHUB_TOKEN and so cannot trigger a separate `on: push: tags`
+      workflow. When set, it takes precedence over the workflow_dispatch input
+      and GITHUB_REF_NAME. Leave empty (default) to preserve the
+      tag-push/workflow_dispatch behavior.
+    required: false
+    default: ''
   images:
     description: >-
       Comma-separated list of image basenames to verify exist in ECR before
@@ -63,7 +74,9 @@ runs:
       id: ver
       shell: bash
       run: |
-        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+        if [ -n "${{ inputs.tag }}" ]; then
+          tag="${{ inputs.tag }}"
+        elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
           tag="${{ github.event.inputs.tag }}"
         else
           tag="${GITHUB_REF_NAME}"
