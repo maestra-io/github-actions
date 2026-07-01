@@ -1,0 +1,160 @@
+# maestra-io/github-actions/.github/workflows/ansible-deploy.yml
+#
+# Reusable APPLY leg for the on-merge deploy pipelines. It is ONE apply job for ONE env
+# with the omega-only approval gate. Repo deploy.yml keeps its own bespoke orchestration
+# (detect-changes, terraform-run interleave, teleport-register-run, strict needs/if chain)
+# and calls this reusable once per ansible env leg. The cross-tool ordering therefore stays
+# in the repo where it belongs; only the ansible apply body is deduplicated.
+name: Ansible Deploy Leg (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      playbook:
+        required: true
+        type: string
+      inventory:
+        description: "Inventory path relative to working_directory"
+        required: false
+        type: string
+        default: "inventory/teleport_inventory.py"
+      working_directory:
+        required: false
+        type: string
+        default: "ansible"
+      region:
+        required: true
+        type: string
+      environment:
+        required: true
+        type: string
+      site:
+        required: true
+        type: string
+      inventory_group_suffix:
+        required: false
+        type: string
+        default: ""
+      tags:
+        required: false
+        type: string
+        default: ""
+      use_mitogen:
+        required: false
+        type: boolean
+        default: true
+      windows_mode:
+        required: false
+        type: boolean
+        default: false
+      vault_mode:
+        required: false
+        type: string
+        default: "none"
+      vault_addr:
+        required: false
+        type: string
+        default: "https://vault.maestra.io"
+      teleport_app:
+        required: false
+        type: string
+        default: ""
+      vault_role:
+        required: false
+        type: string
+        default: ""
+      vault_secrets:
+        required: false
+        type: string
+        default: ""
+      mint_proxmox_token:
+        required: false
+        type: boolean
+        default: false
+      extra_env:
+        required: false
+        type: string
+        default: ""
+      extra_run_args:
+        required: false
+        type: string
+        default: ""
+      host_limit:
+        required: false
+        type: string
+        default: ""
+      no_hosts_fail_on_apply:
+        required: false
+        type: boolean
+        default: true
+      # Force an explicit gate name for repos whose deploy legs name it directly
+      # (e.g. us-omega-lw / eu-omega-lw). Empty -> derive omega-only from environment.
+      gh_environment:
+        required: false
+        type: string
+        default: ""
+      teleport_join_token:
+        required: false
+        type: string
+        default: "github-actions-infra-deploy"
+      teleport_fqdn:
+        required: false
+        type: string
+        default: "teleport.maestra.io:443"
+      requirements_pip:
+        required: false
+        type: string
+        default: "ansible/requirements-pip.txt"
+      requirements_galaxy:
+        required: false
+        type: string
+        default: "ansible/requirements.yml"
+      python_version:
+        required: false
+        type: string
+        default: "3.14"
+    secrets:
+      VECTOR_SIEM_BASIC_AUTH_USER:
+        required: false
+      VECTOR_SIEM_BASIC_AUTH_PASSWORD:
+        required: false
+      PROXMOX_MONITORING_PASSWORD:
+        required: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  apply:
+    uses: ./.github/workflows/ansible-run.yml
+    secrets: inherit
+    with:
+      playbook: ${{ inputs.playbook }}
+      inventory: ${{ inputs.inventory }}
+      working_directory: ${{ inputs.working_directory }}
+      region: ${{ inputs.region }}
+      environment: ${{ inputs.environment }}
+      site: ${{ inputs.site }}
+      inventory_group_suffix: ${{ inputs.inventory_group_suffix }}
+      tags: ${{ inputs.tags }}
+      check_mode: false
+      use_mitogen: ${{ inputs.use_mitogen }}
+      windows_mode: ${{ inputs.windows_mode }}
+      vault_mode: ${{ inputs.vault_mode }}
+      vault_addr: ${{ inputs.vault_addr }}
+      teleport_app: ${{ inputs.teleport_app }}
+      vault_role: ${{ inputs.vault_role }}
+      vault_secrets: ${{ inputs.vault_secrets }}
+      mint_proxmox_token: ${{ inputs.mint_proxmox_token }}
+      extra_env: ${{ inputs.extra_env }}
+      extra_run_args: ${{ inputs.extra_run_args }}
+      host_limit: ${{ inputs.host_limit }}
+      no_hosts_fail_on_apply: ${{ inputs.no_hosts_fail_on_apply }}
+      teleport_join_token: ${{ inputs.teleport_join_token }}
+      teleport_fqdn: ${{ inputs.teleport_fqdn }}
+      requirements_pip: ${{ inputs.requirements_pip }}
+      requirements_galaxy: ${{ inputs.requirements_galaxy }}
+      python_version: ${{ inputs.python_version }}
+      artifact_name: ansible-apply-${{ inputs.region }}-${{ inputs.environment }}-${{ inputs.site }}${{ inputs.inventory_group_suffix }}
+      gh_environment: ${{ inputs.gh_environment != '' && inputs.gh_environment || (inputs.environment == 'omega' && format('{0}-{1}-{2}', inputs.region, inputs.environment, inputs.site) || '') }}

@@ -1,0 +1,399 @@
+# maestra-io/github-actions/.github/workflows/ansible-run.yml
+#
+# Generic reusable Ansible runner. Covers EVERY consumer's run path:
+#   - Teleport auth (dynamic version discovery + binary cache)
+#   - Mitogen (Linux) OR linear/no-mitogen (Windows-over-SSH)
+#   - Vault: none | public (vault.maestra.io direct, JWT) | tunnel (tbot app-tunnel -> 127.0.0.1:8200)
+#   - Generic Vault secret map (multiline, passed straight to vault-action's `secrets:`)
+#   - Optional proxmox pveum API-token mint/cleanup (input-gated; inert for the other 6 repos)
+#   - No-hosts graceful-skip guard (sentinel log), log capture, artifact upload, step summary
+#
+# Path convention: `playbook` and `inventory` are relative to `working_directory`
+# (the Execute step runs with working-directory = inputs.working_directory).
+# `requirements_pip` / `requirements_galaxy` are workspace-root-relative (installed
+# before we cd into working_directory).
+name: Ansible Run (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      # --- what to run ---------------------------------------------------
+      playbook:
+        description: "Playbook path relative to working_directory, e.g. playbooks/nat-gateway.yml"
+        required: true
+        type: string
+      inventory:
+        description: "Inventory path relative to working_directory (dynamic teleport script or static hosts.yml)"
+        required: false
+        type: string
+        default: "inventory/teleport_inventory.py"
+      working_directory:
+        description: "Directory to run ansible from (holds ansible.cfg)"
+        required: false
+        type: string
+        default: "ansible"
+      # --- 3-axis targeting ----------------------------------------------
+      region:
+        required: true
+        type: string
+      environment:
+        required: true
+        type: string
+      site:
+        required: true
+        type: string
+      inventory_group_suffix:
+        description: "Suffix appended to <region>_<env>_<site> to form the inventory group / --limit (e.g. _nat_gateway, _vpn, _sql, _dc, _haproxy_public). Empty = bare triple."
+        required: false
+        type: string
+        default: ""
+      host_limit:
+        description: "Explicit --limit override; when set it wins over the computed group."
+        required: false
+        type: string
+        default: ""
+      tags:
+        description: "Comma-separated ansible --tags"
+        required: false
+        type: string
+        default: ""
+      verbosity:
+        description: "normal | -v | -vv | -vvv"
+        required: false
+        type: string
+        default: "normal"
+      check_mode:
+        required: false
+        type: boolean
+        default: false
+      # --- execution mode ------------------------------------------------
+      use_mitogen:
+        description: "Enable Mitogen linear strategy (Linux). Set false for Windows/PowerShell-over-SSH."
+        required: false
+        type: boolean
+        default: true
+      windows_mode:
+        description: "Windows-over-SSH target: forces linear strategy + host_key_checking off."
+        required: false
+        type: boolean
+        default: false
+      # --- vault ---------------------------------------------------------
+      vault_mode:
+        description: "none | public | tunnel"
+        required: false
+        type: string
+        default: "none"
+      vault_addr:
+        description: "Vault address (public mode: https://vault.maestra.io; tunnel mode: http://127.0.0.1:8200)"
+        required: false
+        type: string
+        default: "https://vault.maestra.io"
+      teleport_app:
+        description: "Teleport app name for the tbot Vault tunnel (tunnel mode only, e.g. vault-omicron). Empty = no tunnel."
+        required: false
+        type: string
+        default: ""
+      vault_role:
+        description: "Vault JWT role name (auth method jwt-github)"
+        required: false
+        type: string
+        default: ""
+      vault_secrets:
+        description: "Multiline map passed verbatim to hashicorp/vault-action `secrets:` (e.g. 'infrastructure/data/x field | ENV_NAME')"
+        required: false
+        type: string
+        default: ""
+      # --- proxmox-only optional pre-step (divergence class 1) -----------
+      mint_proxmox_token:
+        description: "Mint a per-run Proxmox pveum API token via tsh ssh (proxmox repo only)."
+        required: false
+        type: boolean
+        default: false
+      # --- misc ----------------------------------------------------------
+      extra_env:
+        description: "Extra KEY=VALUE lines injected into the Execute step env (may reference secrets already exported to \\$GITHUB_ENV)."
+        required: false
+        type: string
+        default: ""
+      extra_run_args:
+        description: "Extra args appended to ansible-playbook (e.g. -e vault_consul_template_token=... for haproxy CDP)."
+        required: false
+        type: string
+        default: ""
+      gh_environment:
+        description: "GitHub Environment for the approval gate; empty = ungated."
+        required: false
+        type: string
+        default: ""
+      artifact_name:
+        description: "Name of the uploaded plan/apply log artifact."
+        required: false
+        type: string
+        default: ""
+      teleport_join_token:
+        required: false
+        type: string
+        default: "github-actions-infra-deploy"
+      teleport_fqdn:
+        required: false
+        type: string
+        default: "teleport.maestra.io:443"
+      python_version:
+        required: false
+        type: string
+        default: "3.14"
+      requirements_pip:
+        required: false
+        type: string
+        default: "ansible/requirements-pip.txt"
+      requirements_galaxy:
+        required: false
+        type: string
+        default: "ansible/requirements.yml"
+      no_hosts_fail_on_apply:
+        description: "If true, an empty target group fails on apply (exit 1) but still skips on check_mode. mssql/ad want this."
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      # Optional GH-secret passthrough for repos that inject app creds into the run
+      # (proxmox VECTOR_SIEM_*/PROXMOX_MONITORING_PASSWORD). Harmlessly empty elsewhere.
+      VECTOR_SIEM_BASIC_AUTH_USER:
+        required: false
+      VECTOR_SIEM_BASIC_AUTH_PASSWORD:
+        required: false
+      PROXMOX_MONITORING_PASSWORD:
+        required: false
+
+permissions:
+  contents: read
+  id-token: write   # OIDC for Teleport join + Vault JWT
+
+jobs:
+  ansible:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.gh_environment }}
+    concurrency:
+      group: ansible-${{ inputs.region }}-${{ inputs.environment }}-${{ inputs.site }}${{ inputs.inventory_group_suffix }}
+      cancel-in-progress: false
+    env:
+      ANSIBLE_FORCE_COLOR: "1"
+      ANSIBLE_HOST_KEY_CHECKING: ${{ inputs.windows_mode && 'False' || 'True' }}
+      ANSIBLE_STRATEGY: ${{ (inputs.use_mitogen && !inputs.windows_mode) && 'mitogen_linear' || 'linear' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6 # TODO: SHA-pin via Renovate on landing
+
+      - name: Set up Python + uv
+        uses: astral-sh/setup-uv@v8.2.0 # TODO: SHA-pin via Renovate on landing
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - name: Install ansible + pip requirements
+        run: uv pip install --system -r "${{ inputs.requirements_pip }}"
+
+      - name: Cache Ansible Galaxy collections
+        uses: actions/cache@v6 # TODO: SHA-pin via Renovate on landing
+        with:
+          path: ~/.ansible/collections
+          key: galaxy-${{ runner.os }}-${{ hashFiles(inputs.requirements_galaxy) }}
+
+      - name: Install Galaxy collections/roles
+        if: ${{ hashFiles(inputs.requirements_galaxy) != '' }}
+        run: ansible-galaxy install -r "${{ inputs.requirements_galaxy }}" || true
+
+      - name: Get Teleport version from proxy
+        id: tp-version
+        run: |
+          VER="$(/usr/bin/curl -sf "https://${{ inputs.teleport_fqdn }}/webapi/find" \
+            | jq -r '.auto_update.tools_version // .server_version')"
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Teleport binaries
+        uses: actions/cache@v6 # TODO: SHA-pin via Renovate on landing
+        with:
+          path: ${{ runner.tool_cache }}/teleport
+          key: teleport-${{ runner.os }}-${{ runner.arch }}-${{ steps.tp-version.outputs.version }}
+
+      - name: Setup Teleport
+        uses: teleport-actions/setup@v1 # TODO: SHA-pin via Renovate on landing
+        with:
+          version: ${{ steps.tp-version.outputs.version }}
+
+      - name: Teleport auth (SSH)
+        uses: teleport-actions/auth@v2 # TODO: SHA-pin via Renovate on landing
+        with:
+          proxy: ${{ inputs.teleport_fqdn }}
+          token: ${{ inputs.teleport_join_token }}
+          certificate-ttl: 1h
+
+      # --- Mitogen (Linux only) ------------------------------------------
+      - name: Configure Mitogen strategy plugin
+        if: ${{ inputs.use_mitogen && !inputs.windows_mode }}
+        run: |
+          PLUGINS="$(python3 -c 'import ansible_mitogen, os; print(os.path.join(ansible_mitogen.__path__[0], "plugins", "strategy"))')"
+          echo "ANSIBLE_STRATEGY_PLUGINS=${PLUGINS}" >> "$GITHUB_ENV"
+
+      # --- Vault: tunnel mode (mssql/ad omicron) -------------------------
+      - name: Start Vault tunnel via Teleport
+        id: vault-tunnel
+        if: ${{ inputs.vault_mode == 'tunnel' && inputs.teleport_app != '' }}
+        run: |
+          cat > /tmp/tbot-vault-config.yaml <<EOF
+          version: v2
+          onboarding:
+            join_method: github
+            token: ${{ inputs.teleport_join_token }}
+          proxy_server: ${{ inputs.teleport_fqdn }}
+          services:
+            - type: application-tunnel
+              app_name: ${{ inputs.teleport_app }}
+              listen: tcp://127.0.0.1:8200
+          EOF
+          tbot start -c /tmp/tbot-vault-config.yaml &
+          echo "tunnel_pid=$!" >> "$GITHUB_OUTPUT"
+          for i in $(seq 1 15); do
+            (echo > /dev/tcp/127.0.0.1/8200) >/dev/null 2>&1 && break
+            sleep 1
+          done
+
+      # --- Vault: fetch secrets (public OR tunnel) -----------------------
+      - name: Retrieve secrets from Vault
+        if: ${{ inputs.vault_mode != 'none' && inputs.vault_secrets != '' }}
+        uses: hashicorp/vault-action@v4 # TODO: SHA-pin via Renovate on landing
+        with:
+          url: ${{ inputs.vault_addr }}
+          method: jwt
+          path: jwt-github
+          role: ${{ inputs.vault_role }}
+          jwtGithubAudience: https://github.com/maestra-io
+          exportEnv: true
+          secrets: ${{ inputs.vault_secrets }}
+
+      # --- Proxmox pveum token (divergence class 1, input-gated) ---------
+      - name: Mint Proxmox API token
+        id: mint-proxmox
+        if: ${{ inputs.mint_proxmox_token }}
+        run: |
+          set -euo pipefail
+          # Pick a candidate proxmox node in this region/env/site and mint a github-ci token.
+          NODES="$(tsh ls --format=names \
+            "role=proxmox,region=${{ inputs.region }},environment=${{ inputs.environment }},site=${{ inputs.site }}" || true)"
+          TOKEN_VALUE=""
+          TOKEN_NODE=""
+          for NODE in $(echo "$NODES" | shuf); do
+            OUT="$(gtimeout 30 tsh ssh --login=teleport-production "$NODE" '
+              pveum user add ansible-ci@pve 2>/dev/null || true
+              pveum acl modify / -user ansible-ci@pve -role Administrator
+              pveum user token remove ansible-ci@pve github-ci 2>/dev/null || true
+              pveum user token add ansible-ci@pve github-ci --privsep=0 --output-format=json
+            ' 2>/dev/null || true)"
+            TOKEN="$(echo "$OUT" | jq -r '.value // empty' 2>/dev/null || true)"
+            if [ -n "$TOKEN" ]; then
+              TOKEN_VALUE="$TOKEN"
+              TOKEN_NODE="$NODE"
+              break
+            fi
+          done
+          if [ -z "$TOKEN_VALUE" ]; then
+            echo "::error::Failed to mint Proxmox token on any candidate node"
+            exit 1
+          fi
+          echo "::add-mask::$TOKEN_VALUE"
+          echo "PROXMOX_API_TOKEN_SECRET=$TOKEN_VALUE" >> "$GITHUB_ENV"
+          echo "node=$TOKEN_NODE" >> "$GITHUB_OUTPUT"
+
+      # --- Execute -------------------------------------------------------
+      - name: Execute Ansible
+        id: execute
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          # optional app-cred passthroughs (empty for repos that don't set them)
+          VECTOR_SIEM_BASIC_AUTH_USER: ${{ secrets.VECTOR_SIEM_BASIC_AUTH_USER }}
+          VECTOR_SIEM_BASIC_AUTH_PASSWORD: ${{ secrets.VECTOR_SIEM_BASIC_AUTH_PASSWORD }}
+          PROXMOX_MONITORING_PASSWORD: ${{ secrets.PROXMOX_MONITORING_PASSWORD }}
+        run: |
+          set -uo pipefail
+
+          # inject caller-provided extra env
+          if [ -n "${{ inputs.extra_env }}" ]; then
+            while IFS= read -r line; do
+              [ -z "$line" ] && continue
+              export "$line"
+            done <<< "${{ inputs.extra_env }}"
+          fi
+
+          # check-mode display trim (matches source repos: hide ok/skipped hosts in plans)
+          if [ "${{ inputs.check_mode }}" = "true" ]; then
+            export ANSIBLE_DISPLAY_OK_HOSTS=false
+            export ANSIBLE_DISPLAY_SKIPPED_HOSTS=false
+          fi
+
+          # compute target group / --limit
+          LIMIT="${{ inputs.host_limit }}"
+          if [ -z "$LIMIT" ]; then
+            LIMIT="${{ inputs.region }}_${{ inputs.environment }}_${{ inputs.site }}${{ inputs.inventory_group_suffix }}"
+          fi
+
+          # verbosity
+          VERB="${{ inputs.verbosity }}"
+          [ "$VERB" = "normal" ] && VERB=""
+
+          # tags / check
+          TAGS_ARG=""; [ -n "${{ inputs.tags }}" ] && TAGS_ARG="--tags ${{ inputs.tags }}"
+          CHECK_ARG=""; [ "${{ inputs.check_mode }}" = "true" ] && CHECK_ARG="--check --diff"
+
+          MODE="apply"; [ "${{ inputs.check_mode }}" = "true" ] && MODE="plan"
+          SAFE_NAME="${{ inputs.region }}-${{ inputs.environment }}-${{ inputs.site }}${{ inputs.inventory_group_suffix }}"
+          mkdir -p "${{ github.workspace }}/logs"
+          LOG_FILE="${{ github.workspace }}/logs/${MODE}-${SAFE_NAME}.log"
+          echo "log_file=${LOG_FILE}" >> "$GITHUB_OUTPUT"
+
+          COMMON="-i ${{ inputs.inventory }} --limit ${LIMIT} ${TAGS_ARG} ${VERB} ${{ inputs.extra_run_args }}"
+
+          # no-hosts pre-flight guard
+          ansible-playbook ${{ inputs.playbook }} ${COMMON} --list-hosts > /tmp/list-hosts.txt 2>&1 || true
+          if grep -qiE 'no hosts (matched|to target)' /tmp/list-hosts.txt; then
+            echo "No hosts matched" | tee -a "$LOG_FILE"
+            if [ "${{ inputs.no_hosts_fail_on_apply }}" = "true" ] && [ "${{ inputs.check_mode }}" != "true" ]; then
+              exit 1
+            fi
+            exit 0
+          fi
+
+          set -o pipefail
+          ansible-playbook ${{ inputs.playbook }} ${COMMON} ${CHECK_ARG} 2>&1 | tee -a "$LOG_FILE"
+
+      # --- Vault tunnel teardown -----------------------------------------
+      - name: Stop Vault tunnel
+        if: ${{ always() && inputs.vault_mode == 'tunnel' && steps.vault-tunnel.outputs.tunnel_pid != '' }}
+        run: kill "${{ steps.vault-tunnel.outputs.tunnel_pid }}" || true
+
+      # --- Proxmox token cleanup -----------------------------------------
+      - name: Cleanup Proxmox API token
+        if: ${{ always() && inputs.mint_proxmox_token && steps.mint-proxmox.outputs.node != '' }}
+        run: |
+          gtimeout 30 tsh ssh --login=teleport-production "${{ steps.mint-proxmox.outputs.node }}" \
+            'pveum user token remove ansible-ci@pve github-ci' || true
+
+      - name: Generate summary
+        if: ${{ always() }}
+        run: |
+          {
+            echo "### Ansible ${{ inputs.check_mode && 'plan (check)' || 'apply' }} — ${{ inputs.region }}-${{ inputs.environment }}-${{ inputs.site }}${{ inputs.inventory_group_suffix }}"
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| playbook | \`${{ inputs.playbook }}\` |"
+            echo "| limit | \`${{ inputs.host_limit || format('{0}_{1}_{2}{3}', inputs.region, inputs.environment, inputs.site, inputs.inventory_group_suffix) }}\` |"
+            echo "| tags | \`${{ inputs.tags }}\` |"
+            echo "| check_mode | ${{ inputs.check_mode }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload log artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7 # TODO: SHA-pin via Renovate on landing
+        with:
+          name: ${{ inputs.artifact_name != '' && inputs.artifact_name || format('ansible-check-{0}-{1}-{2}{3}', inputs.region, inputs.environment, inputs.site, inputs.inventory_group_suffix) }}
+          path: logs/
+          if-no-files-found: warn

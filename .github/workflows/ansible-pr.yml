@@ -1,0 +1,244 @@
+# maestra-io/github-actions/.github/workflows/ansible-pr.yml
+#
+# Reusable PR workflow: lint -> check-mode matrix (fan-out to ansible-run) -> unified PR comment.
+#
+# The caller passes:
+#   - `envs`: a JSON array of {region,environment,site,inventory_group_suffix?,tags?,
+#             vault_mode?,vault_addr?,teleport_app?,vault_role?,vault_secrets?,
+#             mint_proxmox_token?,extra_run_args?,extra_env?} objects -> becomes the check matrix.
+#   - `playbook`, `use_mitogen`, `windows_mode`, etc. as shared defaults.
+#
+# Path convention: `playbook` / `inventory` / `lint_paths` are relative to `working_directory`.
+#
+# Standardized commenter flavor: FLAT plan-*.log + merge-multiple:true (the majority variant —
+# nat-gateway / vpn / mssql / ad / haproxy). Single sticky comment, marker <!-- ansible-plan-diff -->.
+# Log filenames carry the inventory_group_suffix (plan-<r>-<e>-<s><suffix>.log), so per-role
+# rows (e.g. haproxy _haproxy_public vs _haproxy_api) each get their own table row; the
+# commenter's parsing is prefix/extension stripping, so any suffix is tolerated.
+name: Ansible PR (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      envs:
+        description: "JSON array of per-env objects for the check matrix"
+        required: true
+        type: string
+      playbook:
+        required: true
+        type: string
+      inventory:
+        description: "Inventory path relative to working_directory"
+        required: false
+        type: string
+        default: "inventory/teleport_inventory.py"
+      working_directory:
+        required: false
+        type: string
+        default: "ansible"
+      use_mitogen:
+        required: false
+        type: boolean
+        default: true
+      windows_mode:
+        required: false
+        type: boolean
+        default: false
+      lint_paths:
+        description: "Paths passed to ansible-lint / yamllint, relative to working_directory"
+        required: false
+        type: string
+        default: "."
+      requirements_lint:
+        required: false
+        type: string
+        default: "ansible/requirements-lint.txt"
+      requirements_pip:
+        required: false
+        type: string
+        default: "ansible/requirements-pip.txt"
+      requirements_galaxy:
+        required: false
+        type: string
+        default: "ansible/requirements.yml"
+      python_version:
+        required: false
+        type: string
+        default: "3.14"
+      teleport_join_token:
+        required: false
+        type: string
+        default: "github-actions-infra-deploy"
+      teleport_fqdn:
+        required: false
+        type: string
+        default: "teleport.maestra.io:443"
+      extra_env:
+        description: "Extra KEY=VALUE lines for the Execute env (workflow-wide default; per-row extra_env in `envs` wins)"
+        required: false
+        type: string
+        default: ""
+      extra_run_args:
+        description: "Extra ansible-playbook args (workflow-wide default; per-row extra_run_args in `envs` wins)"
+        required: false
+        type: string
+        default: ""
+      no_hosts_fail_on_apply:
+        required: false
+        type: boolean
+        default: false
+      comment_max_chars:
+        description: "Max characters of log tail included per env section in the PR comment"
+        required: false
+        type: string
+        default: "4000"
+    secrets:
+      VECTOR_SIEM_BASIC_AUTH_USER:
+        required: false
+      VECTOR_SIEM_BASIC_AUTH_PASSWORD:
+        required: false
+      PROXMOX_MONITORING_PASSWORD:
+        required: false
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6 # TODO: SHA-pin via Renovate on landing
+      - uses: astral-sh/setup-uv@v8.2.0 # TODO: SHA-pin via Renovate on landing
+        with:
+          python-version: ${{ inputs.python_version }}
+      - name: Install lint deps
+        run: uv pip install --system ansible -r "${{ inputs.requirements_lint }}"
+      - name: Cache Ansible Galaxy collections
+        uses: actions/cache@v6 # TODO: SHA-pin via Renovate on landing
+        with:
+          path: ~/.ansible/collections
+          key: galaxy-${{ runner.os }}-${{ hashFiles(inputs.requirements_galaxy) }}
+      - name: Install Galaxy collections/roles
+        if: ${{ hashFiles(inputs.requirements_galaxy) != '' }}
+        run: ansible-galaxy collection install -r "${{ inputs.requirements_galaxy }}" || true
+      - name: yamllint
+        working-directory: ${{ inputs.working_directory }}
+        run: yamllint ${{ inputs.lint_paths }}
+      - name: ansible-lint
+        working-directory: ${{ inputs.working_directory }}
+        run: ansible-lint ${{ inputs.lint_paths }}
+
+  check:
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        env: ${{ fromJSON(inputs.envs) }}
+    uses: ./.github/workflows/ansible-run.yml
+    secrets: inherit
+    with:
+      playbook: ${{ inputs.playbook }}
+      inventory: ${{ inputs.inventory }}
+      working_directory: ${{ inputs.working_directory }}
+      region: ${{ matrix.env.region }}
+      environment: ${{ matrix.env.environment }}
+      site: ${{ matrix.env.site }}
+      inventory_group_suffix: ${{ matrix.env.inventory_group_suffix || '' }}
+      tags: ${{ matrix.env.tags || '' }}
+      check_mode: true
+      use_mitogen: ${{ inputs.use_mitogen }}
+      windows_mode: ${{ inputs.windows_mode }}
+      vault_mode: ${{ matrix.env.vault_mode || 'none' }}
+      vault_addr: ${{ matrix.env.vault_addr || 'https://vault.maestra.io' }}
+      teleport_app: ${{ matrix.env.teleport_app || '' }}
+      vault_role: ${{ matrix.env.vault_role || '' }}
+      vault_secrets: ${{ matrix.env.vault_secrets || '' }}
+      mint_proxmox_token: ${{ matrix.env.mint_proxmox_token || false }}
+      extra_env: ${{ matrix.env.extra_env || inputs.extra_env }}
+      extra_run_args: ${{ matrix.env.extra_run_args || inputs.extra_run_args }}
+      no_hosts_fail_on_apply: ${{ inputs.no_hosts_fail_on_apply }}
+      teleport_join_token: ${{ inputs.teleport_join_token }}
+      teleport_fqdn: ${{ inputs.teleport_fqdn }}
+      requirements_pip: ${{ inputs.requirements_pip }}
+      requirements_galaxy: ${{ inputs.requirements_galaxy }}
+      python_version: ${{ inputs.python_version }}
+      artifact_name: ansible-check-${{ matrix.env.region }}-${{ matrix.env.environment }}-${{ matrix.env.site }}${{ matrix.env.inventory_group_suffix || '' }}
+
+  comment:
+    needs: check
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all check logs (flat)
+        uses: actions/download-artifact@v8 # TODO: SHA-pin via Renovate on landing
+        with:
+          pattern: ansible-check-*
+          merge-multiple: true
+          path: logs
+      - name: Upsert plan-diff comment
+        uses: actions/github-script@v9 # TODO: SHA-pin via Renovate on landing
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const MARKER = '<!-- ansible-plan-diff -->';
+            const MAX_PER_ENV = parseInt('${{ inputs.comment_max_chars }}', 10) || 4000;
+            const logsDir = 'logs';
+
+            const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
+            const count = (s, re) => { const m = s.match(re); return m ? m.length : 0; };
+
+            let files = [];
+            try {
+              files = fs.readdirSync(logsDir)
+                .filter(f => f.startsWith('plan-') && f.endsWith('.log'));
+            } catch (e) { files = []; }
+
+            const rows = [];
+            const sections = [];
+            for (const f of files.sort()) {
+              const raw = stripAnsi(fs.readFileSync(path.join(logsDir, f), 'utf8'));
+              // filename = plan-<region>-<env>-<site><suffix>.log; the whole middle
+              // (incl. any inventory_group_suffix) becomes the row label.
+              const env = f.replace(/^plan-/, '').replace(/\.log$/, '');
+              const noHosts = /No hosts matched/i.test(raw);
+              const changed = count(raw, /changed=[1-9]/g);
+              const failed  = count(raw, /failed=[1-9]/g);
+              const unreach = count(raw, /unreachable=[1-9]/g);
+
+              let status;
+              if (noHosts) status = '⏭️ no hosts';
+              else if (failed || unreach) status = '❌ failed';
+              else if (changed) status = '📝 changes';
+              else status = '✅ no changes';
+
+              rows.push(`| \`${env}\` | ${status} | changed=${changed} failed=${failed} unreachable=${unreach} |`);
+
+              const hasChanges = changed > 0;
+              const hasFailed = failed > 0 || unreach > 0;
+              if (hasChanges || hasFailed) {
+                const body = raw.length > MAX_PER_ENV
+                  ? raw.slice(-MAX_PER_ENV) + '\n... (truncated)'
+                  : raw;
+                sections.push(`<details><summary>${env} — ${status}</summary>\n\n\`\`\`\n${body}\n\`\`\`\n</details>`);
+              }
+            }
+
+            const table = rows.length
+              ? ['| env | status | recap |', '| --- | --- | --- |', ...rows].join('\n')
+              : '_No ansible check logs found._';
+
+            const commentBody =
+              `${MARKER}\n## Ansible plan (check mode)\n\n${table}\n\n${sections.join('\n\n')}`;
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
+            const existing = comments.find(c => c.body && c.body.includes(MARKER));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body: commentBody });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body: commentBody });
+            }

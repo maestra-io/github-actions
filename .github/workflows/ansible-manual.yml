@@ -1,0 +1,164 @@
+# maestra-io/github-actions/.github/workflows/ansible-manual.yml
+#
+# Reusable manual-dispatch variant. A per-repo caller wires its workflow_dispatch inputs
+# (region/environment/site/check_mode/verbosity/host_limit/tags[/playbook]) straight through,
+# computes the omega-only gh_environment, and delegates to ansible-run.yml.
+#
+# This is a thin reusable so that all callers share the identical gh_environment gating rule
+# (only environment==omega gets a GitHub Environment approval gate).
+name: Ansible Manual (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      playbook:
+        required: true
+        type: string
+      inventory:
+        description: "Inventory path relative to working_directory"
+        required: false
+        type: string
+        default: "inventory/teleport_inventory.py"
+      working_directory:
+        required: false
+        type: string
+        default: "ansible"
+      region:
+        required: true
+        type: string
+      environment:
+        required: true
+        type: string
+      site:
+        required: true
+        type: string
+      inventory_group_suffix:
+        required: false
+        type: string
+        default: ""
+      check_mode:
+        required: false
+        type: boolean
+        default: false
+      verbosity:
+        required: false
+        type: string
+        default: "normal"
+      host_limit:
+        required: false
+        type: string
+        default: ""
+      tags:
+        required: false
+        type: string
+        default: ""
+      use_mitogen:
+        required: false
+        type: boolean
+        default: true
+      windows_mode:
+        required: false
+        type: boolean
+        default: false
+      vault_mode:
+        required: false
+        type: string
+        default: "none"
+      vault_addr:
+        required: false
+        type: string
+        default: "https://vault.maestra.io"
+      teleport_app:
+        required: false
+        type: string
+        default: ""
+      vault_role:
+        required: false
+        type: string
+        default: ""
+      vault_secrets:
+        required: false
+        type: string
+        default: ""
+      mint_proxmox_token:
+        required: false
+        type: boolean
+        default: false
+      extra_env:
+        required: false
+        type: string
+        default: ""
+      extra_run_args:
+        required: false
+        type: string
+        default: ""
+      no_hosts_fail_on_apply:
+        required: false
+        type: boolean
+        default: false
+      teleport_join_token:
+        required: false
+        type: string
+        default: "github-actions-infra-deploy"
+      teleport_fqdn:
+        required: false
+        type: string
+        default: "teleport.maestra.io:443"
+      requirements_pip:
+        required: false
+        type: string
+        default: "ansible/requirements-pip.txt"
+      requirements_galaxy:
+        required: false
+        type: string
+        default: "ansible/requirements.yml"
+      python_version:
+        required: false
+        type: string
+        default: "3.14"
+    secrets:
+      VECTOR_SIEM_BASIC_AUTH_USER:
+        required: false
+      VECTOR_SIEM_BASIC_AUTH_PASSWORD:
+        required: false
+      PROXMOX_MONITORING_PASSWORD:
+        required: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  run:
+    uses: ./.github/workflows/ansible-run.yml
+    secrets: inherit
+    with:
+      playbook: ${{ inputs.playbook }}
+      inventory: ${{ inputs.inventory }}
+      working_directory: ${{ inputs.working_directory }}
+      region: ${{ inputs.region }}
+      environment: ${{ inputs.environment }}
+      site: ${{ inputs.site }}
+      inventory_group_suffix: ${{ inputs.inventory_group_suffix }}
+      check_mode: ${{ inputs.check_mode }}
+      verbosity: ${{ inputs.verbosity }}
+      host_limit: ${{ inputs.host_limit }}
+      tags: ${{ inputs.tags }}
+      use_mitogen: ${{ inputs.use_mitogen }}
+      windows_mode: ${{ inputs.windows_mode }}
+      vault_mode: ${{ inputs.vault_mode }}
+      vault_addr: ${{ inputs.vault_addr }}
+      teleport_app: ${{ inputs.teleport_app }}
+      vault_role: ${{ inputs.vault_role }}
+      vault_secrets: ${{ inputs.vault_secrets }}
+      mint_proxmox_token: ${{ inputs.mint_proxmox_token }}
+      extra_env: ${{ inputs.extra_env }}
+      extra_run_args: ${{ inputs.extra_run_args }}
+      no_hosts_fail_on_apply: ${{ inputs.no_hosts_fail_on_apply }}
+      teleport_join_token: ${{ inputs.teleport_join_token }}
+      teleport_fqdn: ${{ inputs.teleport_fqdn }}
+      requirements_pip: ${{ inputs.requirements_pip }}
+      requirements_galaxy: ${{ inputs.requirements_galaxy }}
+      python_version: ${{ inputs.python_version }}
+      # Approval gate only for omega; omicron passes '' (ungated).
+      gh_environment: ${{ inputs.environment == 'omega' && format('{0}-{1}-{2}', inputs.region, inputs.environment, inputs.site) || '' }}
