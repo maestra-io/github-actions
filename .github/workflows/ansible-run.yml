@@ -228,6 +228,7 @@ jobs:
           version: ${{ steps.tp-version.outputs.version }}
 
       - name: Teleport auth (SSH)
+        id: teleport-auth
         uses: teleport-actions/auth@v2 # TODO: SHA-pin via Renovate on landing
         with:
           proxy: ${{ inputs.teleport_fqdn }}
@@ -281,6 +282,9 @@ jobs:
       - name: Mint Proxmox API token
         id: mint-proxmox
         if: ${{ inputs.mint_proxmox_token }}
+        env:
+          TELEPORT_IDENTITY_FILE: ${{ steps.teleport-auth.outputs.identity-file }}
+          TELEPORT_PROXY: ${{ inputs.teleport_fqdn }}
         run: |
           set -euo pipefail
           # Pick a candidate proxmox node in this region/env/site and mint a github-ci token.
@@ -289,7 +293,7 @@ jobs:
           TOKEN_VALUE=""
           TOKEN_NODE=""
           for NODE in $(echo "$NODES" | shuf); do
-            OUT="$(gtimeout 30 tsh ssh --login=teleport-production "$NODE" '
+            OUT="$(timeout 30 tsh ssh --login=teleport-production "$NODE" '
               pveum user add ansible-ci@pve 2>/dev/null || true
               pveum acl modify / -user ansible-ci@pve -role Administrator
               pveum user token remove ansible-ci@pve github-ci 2>/dev/null || true
@@ -315,6 +319,13 @@ jobs:
         id: execute
         working-directory: ${{ inputs.working_directory }}
         env:
+          # Teleport identity for the dynamic inventory + tsh ProxyCommand:
+          # teleport_inventory.py reads TELEPORT_PROXY (tsh ls / cluster name) and
+          # TBOT_DEST_DIR (IdentityFile/CertificateFile ssh args); tsh reads
+          # TELEPORT_IDENTITY_FILE automatically. Without these, SSH auth fails.
+          TELEPORT_IDENTITY_FILE: ${{ steps.teleport-auth.outputs.identity-file }}
+          TBOT_DEST_DIR: ${{ steps.teleport-auth.outputs.destination-dir }}
+          TELEPORT_PROXY: ${{ inputs.teleport_fqdn }}
           # optional app-cred passthroughs (empty for repos that don't set them)
           VECTOR_SIEM_BASIC_AUTH_USER: ${{ secrets.VECTOR_SIEM_BASIC_AUTH_USER }}
           VECTOR_SIEM_BASIC_AUTH_PASSWORD: ${{ secrets.VECTOR_SIEM_BASIC_AUTH_PASSWORD }}
