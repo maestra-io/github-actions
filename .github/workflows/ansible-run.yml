@@ -178,7 +178,9 @@ jobs:
       cancel-in-progress: false
     env:
       ANSIBLE_FORCE_COLOR: "1"
-      ANSIBLE_HOST_KEY_CHECKING: ${{ inputs.windows_mode && 'False' || 'True' }}
+      # All source repos ran with host key checking off: hosts are reached via
+      # ephemeral tsh ProxyCommand and CI runners never hold host keys.
+      ANSIBLE_HOST_KEY_CHECKING: "False"
       ANSIBLE_STRATEGY: ${{ (inputs.use_mitogen && !inputs.windows_mode) && 'mitogen_linear' || 'linear' }}
     steps:
       - name: Checkout
