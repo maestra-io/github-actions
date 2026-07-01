@@ -110,9 +110,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6 # TODO: SHA-pin via Renovate on landing
-      - uses: astral-sh/setup-uv@v8.2.0 # TODO: SHA-pin via Renovate on landing
+      - uses: actions/setup-python@v6 # TODO: SHA-pin via Renovate on landing
         with:
           python-version: ${{ inputs.python_version }}
+      - uses: astral-sh/setup-uv@v8.2.0 # TODO: SHA-pin via Renovate on landing
+        with:
+          enable-cache: true
       - name: Install lint deps
         run: uv pip install --system ansible -r "${{ inputs.requirements_lint }}"
       - name: Cache Ansible Galaxy collections

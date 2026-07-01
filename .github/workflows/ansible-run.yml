@@ -184,10 +184,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6 # TODO: SHA-pin via Renovate on landing
 
-      - name: Set up Python + uv
-        uses: astral-sh/setup-uv@v8.2.0 # TODO: SHA-pin via Renovate on landing
+      - name: Set up Python
+        uses: actions/setup-python@v6 # TODO: SHA-pin via Renovate on landing
         with:
           python-version: ${{ inputs.python_version }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.2.0 # TODO: SHA-pin via Renovate on landing
+        with:
+          enable-cache: true
 
       - name: Install ansible + pip requirements
         run: uv pip install --system -r "${{ inputs.requirements_pip }}"
