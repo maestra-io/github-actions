@@ -294,10 +294,10 @@ jobs:
           TOKEN_NODE=""
           for NODE in $(echo "$NODES" | shuf); do
             OUT="$(timeout 30 tsh ssh --login=teleport-production "$NODE" '
-              pveum user add ansible-ci@pve 2>/dev/null || true
-              pveum acl modify / -user ansible-ci@pve -role Administrator
-              pveum user token remove ansible-ci@pve github-ci 2>/dev/null || true
-              pveum user token add ansible-ci@pve github-ci --privsep=0 --output-format=json
+              sudo pveum user add ansible-ci@pve 2>/dev/null || true
+              sudo pveum acl modify / -user ansible-ci@pve -role Administrator
+              sudo pveum user token remove ansible-ci@pve github-ci 2>/dev/null || true
+              sudo pveum user token add ansible-ci@pve github-ci --privsep=0 --output-format=json
             ' 2>/dev/null || true)"
             TOKEN="$(echo "$OUT" | jq -r '.value // empty' 2>/dev/null || true)"
             if [ -n "$TOKEN" ]; then
@@ -391,8 +391,8 @@ jobs:
       - name: Cleanup Proxmox API token
         if: ${{ always() && inputs.mint_proxmox_token && steps.mint-proxmox.outputs.node != '' }}
         run: |
-          gtimeout 30 tsh ssh --login=teleport-production "${{ steps.mint-proxmox.outputs.node }}" \
-            'pveum user token remove ansible-ci@pve github-ci' || true
+          timeout 30 tsh ssh --login=teleport-production "${{ steps.mint-proxmox.outputs.node }}" \
+            'sudo pveum user token remove ansible-ci@pve github-ci' || true
 
       - name: Generate summary
         if: ${{ always() }}
