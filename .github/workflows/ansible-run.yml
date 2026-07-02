@@ -207,7 +207,12 @@ jobs:
 
       - name: Install Galaxy collections/roles
         if: ${{ hashFiles(inputs.requirements_galaxy) != '' }}
-        run: ansible-galaxy install -r "${{ inputs.requirements_galaxy }}" || true
+        # From working_directory so ansible.cfg's roles_path/collections_path apply —
+        # repos like vpn-maestra resolve roles from repo-relative paths, not ~/.ansible
+        # (source repos all ran `cd ansible && ansible-galaxy install`). No `|| true`:
+        # a galaxy failure must surface here, not later as "role not found".
+        working-directory: ${{ inputs.working_directory }}
+        run: ansible-galaxy install -r "${GITHUB_WORKSPACE}/${{ inputs.requirements_galaxy }}"
 
       - name: Get Teleport version from proxy
         id: tp-version
@@ -253,6 +258,10 @@ jobs:
             join_method: github
             token: ${{ inputs.teleport_join_token }}
           proxy_server: ${{ inputs.teleport_fqdn }}
+          # memory storage: default /var/lib/teleport is not writable on hosted
+          # runners (mkdir: permission denied -> tunnel never opens).
+          storage:
+            type: memory
           services:
             - type: application-tunnel
               app_name: ${{ inputs.teleport_app }}

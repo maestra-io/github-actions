@@ -125,7 +125,10 @@ jobs:
           key: galaxy-${{ runner.os }}-${{ hashFiles(inputs.requirements_galaxy) }}
       - name: Install Galaxy collections/roles
         if: ${{ hashFiles(inputs.requirements_galaxy) != '' }}
-        run: ansible-galaxy collection install -r "${{ inputs.requirements_galaxy }}" || true
+        # From working_directory so ansible.cfg's roles_path/collections_path apply
+        # (matches the runner and the source repos' `cd ansible && ansible-galaxy install`).
+        working-directory: ${{ inputs.working_directory }}
+        run: ansible-galaxy install -r "${GITHUB_WORKSPACE}/${{ inputs.requirements_galaxy }}"
       - name: yamllint
         working-directory: ${{ inputs.working_directory }}
         run: yamllint ${{ inputs.lint_paths }}
