@@ -143,9 +143,12 @@ jobs:
     needs: [fmt, plan]
     if: ${{ always() && github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-      actions: read
+    # NO job-level permissions block here: a CALLED workflow may not request
+    # permissions the caller didn't grant (the source repos' standalone
+    # terraform-pr had `actions: read` here -> as a reusable this made GitHub
+    # reject the whole workflow with a blank startup_failure). Inherits the
+    # caller grant (contents:read, id-token:write, pull-requests:write) --
+    # same-run artifact download works without actions:read (phase-1 proven).
     steps:
       - name: Download all plan artifacts
         uses: actions/download-artifact@v8 # TODO: SHA-pin via Renovate on landing
