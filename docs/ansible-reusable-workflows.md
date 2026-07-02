@@ -248,3 +248,24 @@ Every caller is `uses: maestra-io/github-actions/.github/workflows/<x>.yml@<sha>
 - [ ] omega-only gate preserved (`gh_environment` derivation), omicron ungated.
 - [ ] `deploy.yml` terraform/teleport-register ordering + POC `if:` gates left untouched in-repo.
 - [ ] PR commenter converged to the flat flavor (proxmox/hyperv drop the per-dir readLog).
+# Patch for ~/work/github-actions/docs/ansible-reusable-workflows.md
+# Append the following section at the end of the file:
+
+---
+
+## Status
+
+**Ansible phase: DONE.** All 7 consumer repos migrated and merged as of
+2026-07-02; central family released as **v1.0.5** (`ansible-run.yml`,
+`ansible-pr.yml`, `ansible-manual.yml`, `ansible-deploy.yml`).
+
+The **Terraform workflow family** (`terraform-run.yml`, `terraform-pr.yml`,
+`terraform-manual.yml`) follows the same pattern — repo-local shim keeps the
+existing caller surface, deploy orchestration stays repo-local, per-repo
+deltas become inputs. Its input contract and per-repo migration mapping live
+in [docs/terraform-reusable-workflows.md](terraform-reusable-workflows.md).
+Key differences from the ansible family: per-run Proxmox pveum tokens
+(`<prefix>-<run_id>-<attempt>`), an ordering contract ending with the Proxmox
+API tunnel as the last `tsh ssh`, and `gh_environment` always passed verbatim
+by the caller (never derived centrally — GitHub Environment naming differs
+per repo: dashes vs underscores).

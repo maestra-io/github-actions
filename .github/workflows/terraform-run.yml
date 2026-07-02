@@ -1,0 +1,749 @@
+# maestra-io/github-actions/.github/workflows/terraform-run.yml
+#
+# Generic reusable Terraform runner (Proxmox-over-Teleport family). Covers EVERY
+# consumer's run path (maestra-nat-gateway, vpn-maestra, mssql-maestra,
+# active-directory-maestra, haproxy-maestra):
+#   - Teleport auth (dynamic version discovery + binary cache); the exported
+#     TELEPORT_IDENTITY_FILE / TBOT_DEST_DIR / TELEPORT_PROXY env is a HIDDEN
+#     CONTRACT consumed by terraform local-exec `tsh` provisioners in the repos.
+#   - Vault: none | public (vault.maestra.io direct, JWT) | tunnel (tbot
+#     application-tunnel -> 127.0.0.1:8200). Secret map passed verbatim to
+#     hashicorp/vault-action with TF_VAR_* export names chosen by the caller.
+#   - Per-run Proxmox pveum API token `<prefix>-<run_id>-<attempt>` (fixes the
+#     static-token 401 race between concurrent runs; json-first parse with
+#     box-table fallback), removed in always() cleanup.
+#   - AWS state creds via Teleport Workload Identity (terraform-state-s3),
+#     plus optional extra WI legs (e.g. haproxy's route53/cert-manager).
+#   - Optional per-node SSH tunnels + temp root ed25519 key (bpg/proxmox
+#     native SSH transport) and the Proxmox API tunnel.
+#
+# ORDERING CONTRACT (do not reorder): vault tunnel -> vault fetch -> pveum mint
+# -> workload identities -> node SSH tunnels + temp key -> API tunnel (the LAST
+# `tsh ssh` before terraform — additional tsh connections can kill a resumable
+# background tunnel, hence --no-resume on the API tunnel) -> terraform.
+# Cleanup (always()) removes the token, the temp key, and every tunnel PID.
+#
+# Env dir convention: terraform runs in `terraform/environments/<env_dir>`;
+# `env_dir` defaults to `environment` (vpn eu exception: env_dir=eu-omega).
+name: Terraform Run (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      # --- 3-axis targeting ----------------------------------------------
+      region:
+        description: "Target region label (e.g. us, eu)"
+        required: true
+        type: string
+      environment:
+        description: "Target environment label (e.g. omega, omicron)"
+        required: true
+        type: string
+      site:
+        description: "Target site label (e.g. lw)"
+        required: true
+        type: string
+      env_dir:
+        description: >-
+          Subdir under terraform/environments/ to run in. Defaults to
+          `environment` when empty; set explicitly when the directory name
+          differs from the environment label (e.g. eu-omega for region=eu).
+        required: false
+        type: string
+        default: ""
+      # --- what to run -----------------------------------------------------
+      action:
+        description: "Terraform action: plan or apply"
+        required: false
+        type: string
+        default: "plan"
+      terraform_version:
+        required: false
+        type: string
+        default: "1.14.6"
+      replace_targets:
+        description: "Comma-separated resource addresses passed as -replace=... (composed safely, no eval)"
+        required: false
+        type: string
+        default: ""
+      parallelism:
+        description: "Value for terraform -parallelism on plan and apply. Empty = terraform default."
+        required: false
+        type: string
+        default: ""
+      # --- vault -----------------------------------------------------------
+      vault_mode:
+        description: "none | public | tunnel"
+        required: false
+        type: string
+        default: "none"
+      vault_addr:
+        description: "Vault address (public mode: https://vault.maestra.io; tunnel mode: http://127.0.0.1:8200)"
+        required: false
+        type: string
+        default: "https://vault.maestra.io"
+      teleport_app:
+        description: "Teleport app name for the tbot Vault tunnel (tunnel mode only, e.g. vault-omicron)"
+        required: false
+        type: string
+        default: ""
+      vault_role:
+        description: "Vault JWT role name (auth method jwt-github)"
+        required: false
+        type: string
+        default: ""
+      vault_secrets:
+        description: "Multiline map passed verbatim to hashicorp/vault-action `secrets:` — name the exports TF_VAR_* directly (e.g. 'infrastructure/data/x pwd | TF_VAR_admin_password')"
+        required: false
+        type: string
+        default: ""
+      # --- proxmox ---------------------------------------------------------
+      proxmox_token_prefix:
+        description: "pveum API token name prefix; actual token is <prefix>-<run_id>-<attempt> (per-run, race-safe)"
+        required: true
+        type: string
+      proxmox_host:
+        description: "Teleport node name of the Proxmox host used for token mint + API tunnel. Empty = nodes.json .nodes[0].teleport_host"
+        required: false
+        type: string
+        default: ""
+      api_tunnel:
+        description: "Open the Proxmox API tunnel (port from nodes.json .api_tunnel_port, default 8006)"
+        required: false
+        type: boolean
+        default: true
+      node_ssh_tunnels:
+        description: "Open one SSH tunnel per nodes.json node + inject a temp root ed25519 key + ssh-agent (bpg/proxmox native SSH transport). Requires nodes.json."
+        required: false
+        type: boolean
+        default: false
+      # --- haproxy-shaped specials ------------------------------------------
+      mask_sensitive_jq_path:
+        description: "jq field accessor (e.g. .registration_secret) whose plan values get ::add-mask:: + redaction in the plan artifact. Empty = plain plan output."
+        required: false
+        type: string
+        default: ""
+      rolling:
+        description: "Rolling apply: update VMs of <rolling_module_prefix> one at a time with an interval between targets"
+        required: false
+        type: boolean
+        default: false
+      rolling_interval:
+        description: "Seconds to wait between rolling apply targets"
+        required: false
+        type: number
+        default: 180
+      rolling_module_prefix:
+        description: "Module address prefix targeted by rolling apply"
+        required: false
+        type: string
+        default: "module.haproxy"
+      extra_workload_identities:
+        description: "Multiline `selector=ENV_VAR=/dest/dir` lines; each mints a WI JWT and exports ENV_VAR=<dest>/jwt_svid (e.g. cert-manager=TF_VAR_route53_web_identity_token_file=/tmp/tbot-route53)"
+        required: false
+        type: string
+        default: ""
+      # --- misc --------------------------------------------------------------
+      extra_env:
+        description: "Extra KEY=VALUE lines appended to GITHUB_ENV early (e.g. TF_VAR_teleport_token=..., TF_VAR_proxmox_api_endpoint=...)"
+        required: false
+        type: string
+        default: ""
+      gh_environment:
+        description: "GitHub Environment for the approval gate; empty = ungated. Caller passes VERBATIM (naming differs per repo — dashes vs underscores); central never derives it."
+        required: false
+        type: string
+        default: ""
+      artifact_name:
+        description: "Name of the uploaded plan artifact. Empty = tf-plan-<region>-<environment>-<site>."
+        required: false
+        type: string
+        default: ""
+      teleport_join_token:
+        required: false
+        type: string
+        default: "github-actions-infra-deploy"
+      teleport_fqdn:
+        required: false
+        type: string
+        default: "teleport.maestra.io:443"
+
+permissions:
+  contents: read
+  id-token: write   # OIDC for Teleport join + Vault JWT
+
+jobs:
+  terraform:
+    name: "${{ inputs.action }} · ${{ inputs.region }} · ${{ inputs.environment }} · ${{ inputs.site }}"
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.gh_environment }}
+    env:
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+      TELEPORT_FQDN: ${{ inputs.teleport_fqdn }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6 # TODO: SHA-pin via Renovate on landing
+
+      - name: Inject caller extra env
+        if: ${{ inputs.extra_env != '' }}
+        run: |
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            echo "$line" >> "$GITHUB_ENV"
+          done <<< "${{ inputs.extra_env }}"
+
+      - name: Set Terraform plugin cache
+        run: echo "TF_PLUGIN_CACHE_DIR=${{ runner.temp }}/terraform-plugins" >> "$GITHUB_ENV"
+
+      - name: Cache Terraform providers
+        uses: actions/cache@v6 # TODO: SHA-pin via Renovate on landing
+        with:
+          path: ${{ runner.temp }}/terraform-plugins
+          # NOTE: no .terraform.lock.hcl exists in any consumer today -> the key
+          # is a degenerate static key. Kept as-is deliberately (harvest decision).
+          key: tf-providers-${{ hashFiles('terraform/**/.terraform.lock.hcl') }}
+
+      - name: Get Teleport version from proxy
+        id: tp-version
+        run: |
+          VER="$(/usr/bin/curl -sf "https://${TELEPORT_FQDN}/webapi/find" \
+            | jq -r '.auto_update.tools_version // .server_version')"
+          echo "Detected Teleport version: $VER"
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Teleport binaries
+        uses: actions/cache@v6 # TODO: SHA-pin via Renovate on landing
+        with:
+          path: ${{ runner.tool_cache }}/teleport
+          key: teleport-${{ runner.os }}-${{ runner.arch }}-${{ steps.tp-version.outputs.version }}
+
+      - name: Setup Teleport
+        uses: teleport-actions/setup@v1 # TODO: SHA-pin via Renovate on landing
+        with:
+          version: ${{ steps.tp-version.outputs.version }}
+          proxy: ${{ inputs.teleport_fqdn }}
+
+      - name: Teleport auth
+        id: teleport-auth
+        uses: teleport-actions/auth@v2 # TODO: SHA-pin via Renovate on landing
+        with:
+          proxy: ${{ inputs.teleport_fqdn }}
+          token: ${{ inputs.teleport_join_token }}
+          certificate-ttl: 30m
+
+      - name: Export Teleport identity for subsequent steps
+        # HIDDEN CONTRACT: terraform local-exec provisioners in the consumer
+        # repos run bare `tsh ssh ...` and rely on this ambient session.
+        run: |
+          echo "TELEPORT_IDENTITY_FILE=${{ steps.teleport-auth.outputs.identity-file }}" >> "$GITHUB_ENV"
+          echo "TBOT_DEST_DIR=${{ steps.teleport-auth.outputs.destination-dir }}" >> "$GITHUB_ENV"
+          echo "TELEPORT_PROXY=${TELEPORT_FQDN}" >> "$GITHUB_ENV"
+
+      # --- Vault: tunnel mode (mssql/ad omicron) ---------------------------
+      - name: Start Vault tunnel via Teleport
+        id: vault-tunnel
+        if: ${{ inputs.vault_mode == 'tunnel' && inputs.teleport_app != '' }}
+        run: |
+          cat > /tmp/tbot-vault-config.yaml <<EOF
+          version: v2
+          onboarding:
+            join_method: github
+            token: ${{ inputs.teleport_join_token }}
+          proxy_server: ${{ inputs.teleport_fqdn }}
+          # memory storage: default /var/lib/teleport is not writable on hosted
+          # runners (mkdir: permission denied -> tunnel never opens).
+          storage:
+            type: memory
+          services:
+            - type: application-tunnel
+              app_name: ${{ inputs.teleport_app }}
+              listen: tcp://127.0.0.1:8200
+          EOF
+          tbot start -c /tmp/tbot-vault-config.yaml &
+          echo "tunnel_pid=$!" >> "$GITHUB_OUTPUT"
+          for i in $(seq 1 15); do
+            (echo > /dev/tcp/127.0.0.1/8200) >/dev/null 2>&1 && break
+            if [ "$i" -eq 15 ]; then
+              echo "::error::vault tunnel (tbot app-tunnel ${{ inputs.teleport_app }}) did not open in 15s"
+              exit 1
+            fi
+            sleep 1
+          done
+
+      # --- Vault: fetch secrets (public OR tunnel) -------------------------
+      - name: Retrieve secrets from Vault
+        if: ${{ inputs.vault_mode != 'none' && inputs.vault_secrets != '' }}
+        uses: hashicorp/vault-action@v4 # TODO: SHA-pin via Renovate on landing
+        with:
+          url: ${{ inputs.vault_addr }}
+          method: jwt
+          path: jwt-github
+          role: ${{ inputs.vault_role }}
+          jwtGithubAudience: https://github.com/maestra-io
+          exportEnv: true
+          secrets: ${{ inputs.vault_secrets }}
+
+      # --- Node topology ----------------------------------------------------
+      # Envs without nodes.json (haproxy omicron) skip node tunnels entirely and
+      # must provide `proxmox_host` for the mint + API tunnel.
+      - name: Load node configuration from nodes.json
+        id: nodes
+        working-directory: terraform/environments/${{ inputs.env_dir != '' && inputs.env_dir || inputs.environment }}
+        run: |
+          if [ ! -f nodes.json ]; then
+            echo "has_nodes_json=false" >> "$GITHUB_OUTPUT"
+            echo "api_port=8006" >> "$GITHUB_OUTPUT"
+            echo "No nodes.json present — proxmox_host input drives mint/API tunnel."
+            exit 0
+          fi
+
+          NODES_JSON=$(cat nodes.json)
+          API_PORT=$(echo "$NODES_JSON" | jq -r '.api_tunnel_port // 8006')
+          echo "api_port=$API_PORT" >> "$GITHUB_OUTPUT"
+
+          NODE_NAMES=$(echo "$NODES_JSON" | jq -r '.nodes[].name' | tr '\n' ' ')
+          TELEPORT_HOSTS=$(echo "$NODES_JSON" | jq -r '.nodes[].teleport_host' | tr '\n' ' ')
+          SSH_PORTS=$(echo "$NODES_JSON" | jq -r '.nodes[].ssh_tunnel_port' | tr '\n' ' ')
+          NODE_COUNT=$(echo "$NODES_JSON" | jq '.nodes | length')
+
+          echo "has_nodes_json=true" >> "$GITHUB_OUTPUT"
+          echo "node_names=$NODE_NAMES" >> "$GITHUB_OUTPUT"
+          echo "teleport_hosts=$TELEPORT_HOSTS" >> "$GITHUB_OUTPUT"
+          echo "ssh_ports=$SSH_PORTS" >> "$GITHUB_OUTPUT"
+          echo "node_count=$NODE_COUNT" >> "$GITHUB_OUTPUT"
+          echo "Loaded $NODE_COUNT node(s): $NODE_NAMES"
+
+      # --- Proxmox pveum token (ALWAYS per-run name — race-safe) -----------
+      - name: Create Proxmox API token
+        id: api-token
+        run: |
+          set -euo pipefail
+
+          # Per-run token name: concurrent runs never remove each other's token
+          # (the static-name scheme caused documented 401 races).
+          TOKEN_NAME="${{ inputs.proxmox_token_prefix }}-${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "token_name=$TOKEN_NAME" >> "$GITHUB_OUTPUT"
+
+          PROXMOX_HOST="${{ inputs.proxmox_host }}"
+          if [ -z "$PROXMOX_HOST" ]; then
+            HOSTS=(${{ steps.nodes.outputs.teleport_hosts }})
+            if [ "${#HOSTS[@]}" -eq 0 ]; then
+              echo "::error::No proxmox_host input and no nodes.json to derive one from"
+              exit 1
+            fi
+            PROXMOX_HOST="${HOSTS[0]}"
+          fi
+          echo "Creating API token ${TOKEN_NAME} on ${PROXMOX_HOST}..."
+          echo "host=$PROXMOX_HOST" >> "$GITHUB_OUTPUT"
+
+          # `--output-format=json` keeps us out of the unicode-table parsing
+          # business (the regex-on-`│` parser once extracted the literal string
+          # "value" on some PVE 9.x output paths -> every API call 401'd).
+          # Box-table grep kept as fallback for pveum builds that ignore the flag.
+          TOKEN_OUTPUT=$(tsh ssh "teleport-production@${PROXMOX_HOST}" -- \
+            "sudo pveum user add ci@pve --comment 'Terraform CI automation' 2>/dev/null || true && \
+             sudo pveum acl modify / -user ci@pve -role Administrator 2>/dev/null || true && \
+             sudo pveum user token remove ci@pve ${TOKEN_NAME} 2>/dev/null || true && \
+             sudo pveum user token add ci@pve ${TOKEN_NAME} --privsep=0 --output-format=json")
+
+          TOKEN_VALUE=$(echo "$TOKEN_OUTPUT" | jq -er '.value // empty' 2>/dev/null || true)
+          if [ -z "$TOKEN_VALUE" ]; then
+            TOKEN_VALUE=$(echo "$TOKEN_OUTPUT" | grep -E '^\│\s*value' | awk -F'│' '{print $3}' | tr -d ' ' || true)
+          fi
+          if [ -z "$TOKEN_VALUE" ]; then
+            TOKEN_VALUE=$(echo "$TOKEN_OUTPUT" | grep "value" | awk -F'│' '{print $3}' | tr -d ' ' || true)
+          fi
+          if [ -z "$TOKEN_VALUE" ]; then
+            echo "::error::Failed to extract API token from pveum output. Raw: $TOKEN_OUTPUT"
+            exit 1
+          fi
+
+          echo "::add-mask::${TOKEN_VALUE}"
+          echo "PROXMOX_VE_API_TOKEN=ci@pve!${TOKEN_NAME}=${TOKEN_VALUE}" >> "$GITHUB_ENV"
+          echo "API token created successfully"
+
+      # --- AWS state creds via Teleport Workload Identity -------------------
+      - name: Get AWS credentials via Teleport Workload Identity
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/tbot-aws
+
+          cat > /tmp/tbot-aws-config.yaml <<EOF
+          version: v2
+          proxy_server: ${TELEPORT_FQDN}
+          onboarding:
+            join_method: github
+            token: ${{ inputs.teleport_join_token }}
+          storage:
+            type: memory
+          oneshot: true
+          services:
+            - type: workload-identity-jwt
+              destination:
+                type: directory
+                path: /tmp/tbot-aws
+              selector:
+                name: terraform-state-s3
+              audiences:
+                - sts.amazonaws.com
+          EOF
+
+          tbot start -c /tmp/tbot-aws-config.yaml
+
+          if [ ! -f /tmp/tbot-aws/jwt_svid ]; then
+            echo "::error::Failed to obtain AWS JWT from Teleport Workload Identity"
+            exit 1
+          fi
+
+          echo "AWS_WEB_IDENTITY_TOKEN_FILE=/tmp/tbot-aws/jwt_svid" >> "$GITHUB_ENV"
+          echo "AWS_ROLE_ARN=arn:aws:iam::515260921971:role/teleport-terraform-state" >> "$GITHUB_ENV"
+          echo "AWS credentials configured via Teleport Workload Identity"
+
+      # --- Extra WI legs (e.g. haproxy route53 via cert-manager) ------------
+      - name: Get extra workload identities
+        if: ${{ inputs.extra_workload_identities != '' }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r line; do
+            line="$(echo "$line" | xargs)"
+            [ -z "$line" ] && continue
+            SELECTOR="${line%%=*}"
+            REST="${line#*=}"
+            ENV_VAR="${REST%%=*}"
+            DEST="${REST#*=}"
+            if [ -z "$SELECTOR" ] || [ -z "$ENV_VAR" ] || [ -z "$DEST" ] || [ "$ENV_VAR" = "$DEST" ]; then
+              echo "::error::Bad extra_workload_identities line (want selector=ENV_VAR=/dest/dir): $line"
+              exit 1
+            fi
+            mkdir -p "$DEST"
+            CFG="/tmp/tbot-wi-${SELECTOR}.yaml"
+            cat > "$CFG" <<EOF
+          version: v2
+          proxy_server: ${TELEPORT_FQDN}
+          onboarding:
+            join_method: github
+            token: ${{ inputs.teleport_join_token }}
+          storage:
+            type: memory
+          oneshot: true
+          services:
+            - type: workload-identity-jwt
+              destination:
+                type: directory
+                path: ${DEST}
+              selector:
+                name: ${SELECTOR}
+              audiences:
+                - sts.amazonaws.com
+          EOF
+            tbot start -c "$CFG"
+            if [ ! -f "${DEST}/jwt_svid" ]; then
+              echo "::error::Failed to obtain JWT for workload identity '${SELECTOR}'"
+              exit 1
+            fi
+            echo "${ENV_VAR}=${DEST}/jwt_svid" >> "$GITHUB_ENV"
+            echo "Workload identity '${SELECTOR}' exported as ${ENV_VAR}"
+          done <<< "${{ inputs.extra_workload_identities }}"
+
+      # --- Per-node SSH tunnels + temp key (bpg native SSH transport) -------
+      - name: Start per-node SSH tunnels to Proxmox
+        id: ssh-tunnel
+        if: ${{ inputs.node_ssh_tunnels && steps.nodes.outputs.has_nodes_json == 'true' }}
+        run: |
+          set -euo pipefail
+          HOSTS=(${{ steps.nodes.outputs.teleport_hosts }})
+          PORTS=(${{ steps.nodes.outputs.ssh_ports }})
+          TUNNEL_PIDS=""
+
+          for i in "${!HOSTS[@]}"; do
+            HOST="${HOSTS[$i]}"
+            PORT="${PORTS[$i]}"
+            echo "  - localhost:${PORT} -> ${HOST}:22"
+            tsh ssh -i "$TELEPORT_IDENTITY_FILE" \
+              -L "${PORT}:localhost:22" \
+              "teleport-production@${HOST}" \
+              "sleep infinity" &
+            TUNNEL_PIDS="$TUNNEL_PIDS $!"
+          done
+          echo "tunnel_pids=${TUNNEL_PIDS}" >> "$GITHUB_OUTPUT"
+
+          for PORT in "${PORTS[@]}"; do
+            for i in $(seq 1 15); do
+              (echo >/dev/tcp/localhost/$PORT) 2>/dev/null && break
+              [ "$i" -eq 15 ] && { echo "::error::SSH tunnel on port $PORT never came up"; exit 1; }
+              sleep 1
+            done
+          done
+          echo "All SSH tunnels up (PIDs:${TUNNEL_PIDS})"
+
+      - name: Setup temporary SSH key for Proxmox provider
+        if: ${{ inputs.node_ssh_tunnels && steps.nodes.outputs.has_nodes_json == 'true' }}
+        run: |
+          set -euo pipefail
+          HOSTS=(${{ steps.nodes.outputs.teleport_hosts }})
+
+          ssh-keygen -t ed25519 -f /tmp/proxmox-key -N "" -q
+
+          for HOST in "${HOSTS[@]}"; do
+            echo "Injecting temp SSH key into $HOST..."
+            tsh ssh -i "$TELEPORT_IDENTITY_FILE" \
+              "teleport-production@${HOST}" \
+              "sudo mkdir -p /root/.ssh && sudo tee -a /root/.ssh/authorized_keys > /dev/null" \
+              < /tmp/proxmox-key.pub
+          done
+
+          eval "$(ssh-agent -s)"
+          ssh-add /tmp/proxmox-key
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
+          # Base64 payload only (field 2) — for precise sed removal in cleanup
+          TMP_KEY_DATA=$(awk '{print $2}' /tmp/proxmox-key.pub)
+          echo "TMP_KEY_DATA=$TMP_KEY_DATA" >> "$GITHUB_ENV"
+
+      # --- Proxmox API tunnel — MUST be the LAST tsh ssh before terraform ---
+      # Additional tsh connections can kill a resumable background tunnel, so
+      # this runs after every other tsh interaction and uses --no-resume.
+      - name: Start Proxmox API tunnel
+        id: api-tunnel
+        if: ${{ inputs.api_tunnel }}
+        run: |
+          API_PORT=${{ steps.nodes.outputs.api_port }}
+          HOST="${{ steps.api-token.outputs.host }}"
+          # Local port comes from nodes.json .api_tunnel_port; the REMOTE side
+          # is FIXED at 8006 — Proxmox always listens on 8006. This removes the
+          # old triple coupling (local port == remote port == api_tunnel_port).
+          # All repos currently use 8006:8006, so no behavior change today.
+          echo "Starting API tunnel: localhost:${API_PORT} -> ${HOST}:8006"
+
+          tsh ssh --no-resume -i "$TELEPORT_IDENTITY_FILE" \
+            -L "${API_PORT}:localhost:8006" \
+            "teleport-production@${HOST}" \
+            "sleep infinity" &
+          TUNNEL_PID=$!
+          echo "tunnel_pid=$TUNNEL_PID" >> "$GITHUB_OUTPUT"
+
+          # Readiness: TCP accept alone only proves the LOCAL bind; the
+          # unauthenticated /api2/json/version probe proves HTTPS end-to-end
+          # through the tunnel to the Proxmox API (no token required).
+          for i in $(seq 1 15); do
+            if (echo >/dev/tcp/localhost/$API_PORT) 2>/dev/null \
+               && curl -sk --max-time 5 "https://127.0.0.1:${API_PORT}/api2/json/version" >/dev/null; then
+              break
+            fi
+            [ "$i" -eq 15 ] && { echo "::error::Proxmox API tunnel on port $API_PORT not serving HTTPS after 15 attempts"; exit 1; }
+            sleep 1
+          done
+          echo "Proxmox API tunnel started (PID: $TUNNEL_PID)"
+
+      # --- Terraform ---------------------------------------------------------
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4 # TODO: SHA-pin via Renovate on landing
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        working-directory: terraform/environments/${{ inputs.env_dir != '' && inputs.env_dir || inputs.environment }}
+        run: terraform init
+
+      - name: Terraform Plan
+        working-directory: terraform/environments/${{ inputs.env_dir != '' && inputs.env_dir || inputs.environment }}
+        run: |
+          set -euo pipefail
+
+          PLAN_ARGS=(-out=tfplan -input=false)
+          if [ -n "${{ inputs.parallelism }}" ]; then
+            PLAN_ARGS+=("-parallelism=${{ inputs.parallelism }}")
+          fi
+          # -replace targets composed as array elements — NO eval (quoting-safe).
+          # Trim is plain bash (NOT `echo | xargs`): addresses like
+          # module.sql["sql01"] need their double quotes intact, and xargs
+          # strips unescaped quotes. Elements are appended verbatim post-trim.
+          if [ -n "${{ inputs.replace_targets }}" ]; then
+            IFS=',' read -ra TARGETS <<< "${{ inputs.replace_targets }}"
+            for target in "${TARGETS[@]}"; do
+              target="${target#"${target%%[![:space:]]*}"}"   # ltrim
+              target="${target%"${target##*[![:space:]]}"}"   # rtrim
+              [ -n "$target" ] && PLAN_ARGS+=("-replace=${target}")
+            done
+            echo "Replace targets: ${PLAN_ARGS[*]}"
+          fi
+
+          PLAN_TXT="plan-${{ inputs.region }}-${{ inputs.environment }}-${{ inputs.site }}.txt"
+
+          MASK_PATH="${{ inputs.mask_sensitive_jq_path }}"
+          if [ -n "$MASK_PATH" ]; then
+            # IMPORTANT: terraform plan's stdout may include cleartext sensitive
+            # values on creates/replacements (e.g. the gravitational/teleport
+            # provider does NOT mark registration_secret as Sensitive). The GHA
+            # log mask is registered BELOW, so plan stdout would leak the secret
+            # into the runner log before the mask is in place. Suppress plan
+            # stdout; read the plan via `terraform show` after masking is set up.
+            terraform plan "${PLAN_ARGS[@]}" >/dev/null
+
+            # Register every matching value with the GHA log mask, which scrubs
+            # it from every subsequent step's stdout/stderr (rolling apply,
+            # `terraform show -json`, artifact upload).
+            while IFS= read -r secret; do
+              [ -n "$secret" ] || continue
+              echo "::add-mask::$secret"
+            done < <(
+              terraform show -json tfplan \
+                | jq -r '.. | objects | ${{ inputs.mask_sensitive_jq_path }}? // empty'
+            )
+
+            # Belt-and-braces: also redact the value in the persisted plan text
+            # artifact, in case the masker misses any rendering form.
+            FIELD="${MASK_PATH#.}"
+            terraform show -no-color tfplan \
+              | sed -E "s/(${FIELD}[[:space:]]*=[[:space:]]*)\"[^\"]*\"/\1\"<redacted>\"/g" \
+              > "$PLAN_TXT"
+          else
+            terraform plan "${PLAN_ARGS[@]}"
+            terraform show -no-color tfplan > "$PLAN_TXT"
+          fi
+
+      - name: Terraform Apply
+        if: ${{ inputs.action == 'apply' }}
+        working-directory: terraform/environments/${{ inputs.env_dir != '' && inputs.env_dir || inputs.environment }}
+        run: |
+          PAR_ARG=""
+          if [ -n "${{ inputs.parallelism }}" ]; then
+            PAR_ARG="-parallelism=${{ inputs.parallelism }}"
+          fi
+
+          # rolling=false -> just apply the saved plan in parallel.
+          if [[ "${{ inputs.rolling }}" != "true" ]]; then
+            terraform apply -auto-approve ${PAR_ARG} tfplan
+            exit 0
+          fi
+
+          INTERVAL=${{ inputs.rolling_interval }}
+          if ! [[ "$INTERVAL" =~ ^[0-9]+$ ]]; then
+            echo "::error::rolling_interval must be a non-negative integer (seconds). Got: $INTERVAL"
+            exit 1
+          fi
+
+          PREFIX='${{ inputs.rolling_module_prefix }}'
+          PLAN_JSON=$(terraform show -json tfplan)
+
+          # Rolling apply targets <prefix>[X] one at a time. If the plan also
+          # touches anything outside the prefix (provider config drift, firewall
+          # security groups, route53 records, etc.) rolling can't cover it, so
+          # fall back to a normal parallel apply rather than refusing to deploy.
+          NON_VM=$(echo "$PLAN_JSON" | jq -r --arg p "$PREFIX" '
+            [.resource_changes[]
+             | select(.change.actions != ["no-op"])
+             | select(.address | startswith($p) | not)
+             | .address] | unique | .[]')
+          if [ -n "$NON_VM" ]; then
+            echo "::notice::Plan touches resources outside ${PREFIX} — rolling skipped, running normal apply:"
+            echo "$NON_VM"
+            terraform apply -auto-approve ${PAR_ARG} tfplan
+            exit 0
+          fi
+
+          CHANGED=$(echo "$PLAN_JSON" | jq -r --arg p "$PREFIX" '
+            [.resource_changes[]
+             | select(.address | startswith($p))
+             | select(.change.actions != ["no-op"])
+             | .address
+             | capture("\\[\"(?<key>[^\"]+)\"\\]").key
+            ] | unique | .[]')
+
+          if [ -z "$CHANGED" ]; then
+            echo "No ${PREFIX} changes detected in plan."
+            exit 0
+          fi
+
+          # Order: privates first (internal traffic), then publics, then api
+          # (both external/customer-facing). Within each role, process numeric
+          # suffix in reverse so 02 goes before 01 — pairs with ansible's
+          # serial:1 convention. Every role must be listed here or its VMs are
+          # silently dropped from the rolling apply. (Ported verbatim from
+          # haproxy-maestra — rolling is haproxy-shaped by design.)
+          PRIVATE=$(echo "$CHANGED" | grep '^haproxy-private' | sort -r || true)
+          PUBLIC=$(echo "$CHANGED" | grep '^haproxy-public' | sort -r || true)
+          API=$(echo "$CHANGED" | grep '^haproxy-api' | sort -r || true)
+          ORDERED=$(echo -e "${PRIVATE}\n${PUBLIC}\n${API}" | sed '/^$/d')
+
+          TOTAL=$(echo "$ORDERED" | wc -l | tr -d ' ')
+          COUNT=0
+
+          echo "Rolling apply for $TOTAL VM(s): $(echo $ORDERED | tr '\n' ' ')"
+          echo "Interval between VMs: ${INTERVAL}s"
+
+          for VM in $ORDERED; do
+            COUNT=$((COUNT + 1))
+            TARGET="${PREFIX}[\"${VM}\"]"
+            echo "::group::[$COUNT/$TOTAL] Applying ${TARGET}"
+            terraform apply -auto-approve -target="$TARGET"
+            echo "::endgroup::"
+
+            if [ "$COUNT" -lt "$TOTAL" ]; then
+              echo "Waiting ${INTERVAL}s before next VM..."
+              sleep "$INTERVAL"
+            fi
+          done
+
+      - name: Upload plan artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7 # TODO: SHA-pin via Renovate on landing
+        with:
+          name: ${{ inputs.artifact_name != '' && inputs.artifact_name || format('tf-plan-{0}-{1}-{2}', inputs.region, inputs.environment, inputs.site) }}
+          path: terraform/environments/${{ inputs.env_dir != '' && inputs.env_dir || inputs.environment }}/plan-${{ inputs.region }}-${{ inputs.environment }}-${{ inputs.site }}.txt
+          retention-days: 30
+
+      # --- Cleanup ------------------------------------------------------------
+      - name: Cleanup
+        if: ${{ always() }}
+        run: |
+          # Stop Vault tunnel
+          if [ -n "${{ steps.vault-tunnel.outputs.tunnel_pid }}" ]; then
+            kill "${{ steps.vault-tunnel.outputs.tunnel_pid }}" 2>/dev/null || true
+          fi
+
+          # Remove the per-run Proxmox API token
+          API_HOST="${{ steps.api-token.outputs.host }}"
+          TOKEN_NAME="${{ steps.api-token.outputs.token_name }}"
+          if [ -n "$API_HOST" ] && [ -n "$TOKEN_NAME" ]; then
+            timeout 60 tsh ssh "teleport-production@${API_HOST}" -- \
+              "sudo pveum user token remove ci@pve ${TOKEN_NAME} 2>/dev/null || true" || true
+            echo "API token cleaned up"
+          fi
+
+          # Remove the temp SSH key from each node's root authorized_keys —
+          # precise sed by the base64 payload so we never touch unrelated lines.
+          if [ -n "${TMP_KEY_DATA:-}" ]; then
+            for HOST in ${{ steps.nodes.outputs.teleport_hosts }}; do
+              tsh ssh -i "$TELEPORT_IDENTITY_FILE" \
+                "teleport-production@${HOST}" \
+                "sudo sed -i '\|${TMP_KEY_DATA}|d' /root/.ssh/authorized_keys" || true
+            done
+          fi
+          kill "${SSH_AGENT_PID:-}" 2>/dev/null || true
+
+          # Kill all tunnels (node SSH + API)
+          for PID in ${{ steps.ssh-tunnel.outputs.tunnel_pids }} ${{ steps.api-tunnel.outputs.tunnel_pid }}; do
+            kill "$PID" 2>/dev/null || true
+          done
+          rm -f /tmp/proxmox-key /tmp/proxmox-key.pub
+
+      - name: Generate summary
+        if: ${{ always() }}
+        run: |
+          {
+            echo "## Terraform ${{ inputs.action }}"
+            echo ""
+            echo "| Parameter | Value |"
+            echo "|-----------|-------|"
+            echo "| **Region** | ${{ inputs.region }} |"
+            echo "| **Environment** | ${{ inputs.environment }} |"
+            echo "| **Env dir** | \`terraform/environments/${{ inputs.env_dir != '' && inputs.env_dir || inputs.environment }}\` |"
+            echo "| **Site** | ${{ inputs.site }} |"
+            echo "| **Action** | ${{ inputs.action }} |"
+            echo "| **Rolling** | ${{ inputs.rolling }} |"
+            echo "| **Status** | ${{ job.status }} |"
+            echo "| **Timestamp** | $(date -u) |"
+          } >> "$GITHUB_STEP_SUMMARY"

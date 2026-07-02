@@ -1,0 +1,163 @@
+# maestra-io/github-actions/.github/workflows/terraform-manual.yml
+#
+# Reusable manual-dispatch variant. A per-repo caller wires its
+# workflow_dispatch inputs (region/environment/site/action[/replace_targets])
+# straight through and delegates to terraform-run.yml.
+#
+# UNLIKE ansible-manual, this does NOT derive gh_environment: GitHub
+# Environment names differ per repo (dashes `us-omega-lw` in nat/vpn vs
+# underscores `us_omega_lw` in AD/mssql), so the caller computes its gate
+# expression and passes the result VERBATIM.
+#
+# NOTE: active-directory-maestra does NOT use this workflow. Its manual
+# caller routes through the REPO SHIM instead (manual -> shim -> central-run,
+# depth 3) so the dual-vault env-conditional expressions (omicron tunnel vs
+# omega public) live in exactly 2 places — the shim and the PR matrix rows —
+# not in a third copy here.
+name: Terraform Manual (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      region:
+        required: true
+        type: string
+      environment:
+        required: true
+        type: string
+      site:
+        required: true
+        type: string
+      env_dir:
+        required: false
+        type: string
+        default: ""
+      action:
+        required: false
+        type: string
+        default: "plan"
+      terraform_version:
+        required: false
+        type: string
+        default: "1.14.6"
+      replace_targets:
+        required: false
+        type: string
+        default: ""
+      parallelism:
+        required: false
+        type: string
+        default: ""
+      vault_mode:
+        required: false
+        type: string
+        default: "none"
+      vault_addr:
+        required: false
+        type: string
+        default: "https://vault.maestra.io"
+      teleport_app:
+        required: false
+        type: string
+        default: ""
+      vault_role:
+        required: false
+        type: string
+        default: ""
+      vault_secrets:
+        required: false
+        type: string
+        default: ""
+      proxmox_token_prefix:
+        required: true
+        type: string
+      proxmox_host:
+        required: false
+        type: string
+        default: ""
+      api_tunnel:
+        required: false
+        type: boolean
+        default: true
+      node_ssh_tunnels:
+        required: false
+        type: boolean
+        default: false
+      mask_sensitive_jq_path:
+        required: false
+        type: string
+        default: ""
+      rolling:
+        required: false
+        type: boolean
+        default: false
+      rolling_interval:
+        required: false
+        type: number
+        default: 180
+      rolling_module_prefix:
+        required: false
+        type: string
+        default: "module.haproxy"
+      extra_workload_identities:
+        required: false
+        type: string
+        default: ""
+      extra_env:
+        required: false
+        type: string
+        default: ""
+      gh_environment:
+        description: "Passed VERBATIM to terraform-run (caller computes its own gate expression; naming differs per repo)"
+        required: false
+        type: string
+        default: ""
+      artifact_name:
+        required: false
+        type: string
+        default: ""
+      teleport_join_token:
+        required: false
+        type: string
+        default: "github-actions-infra-deploy"
+      teleport_fqdn:
+        required: false
+        type: string
+        default: "teleport.maestra.io:443"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  run:
+    uses: ./.github/workflows/terraform-run.yml
+    secrets: inherit
+    with:
+      region: ${{ inputs.region }}
+      environment: ${{ inputs.environment }}
+      site: ${{ inputs.site }}
+      env_dir: ${{ inputs.env_dir }}
+      action: ${{ inputs.action }}
+      terraform_version: ${{ inputs.terraform_version }}
+      replace_targets: ${{ inputs.replace_targets }}
+      parallelism: ${{ inputs.parallelism }}
+      vault_mode: ${{ inputs.vault_mode }}
+      vault_addr: ${{ inputs.vault_addr }}
+      teleport_app: ${{ inputs.teleport_app }}
+      vault_role: ${{ inputs.vault_role }}
+      vault_secrets: ${{ inputs.vault_secrets }}
+      proxmox_token_prefix: ${{ inputs.proxmox_token_prefix }}
+      proxmox_host: ${{ inputs.proxmox_host }}
+      api_tunnel: ${{ inputs.api_tunnel }}
+      node_ssh_tunnels: ${{ inputs.node_ssh_tunnels }}
+      mask_sensitive_jq_path: ${{ inputs.mask_sensitive_jq_path }}
+      rolling: ${{ inputs.rolling }}
+      rolling_interval: ${{ inputs.rolling_interval }}
+      rolling_module_prefix: ${{ inputs.rolling_module_prefix }}
+      extra_workload_identities: ${{ inputs.extra_workload_identities }}
+      extra_env: ${{ inputs.extra_env }}
+      gh_environment: ${{ inputs.gh_environment }}
+      artifact_name: ${{ inputs.artifact_name }}
+      teleport_join_token: ${{ inputs.teleport_join_token }}
+      teleport_fqdn: ${{ inputs.teleport_fqdn }}
