@@ -1,0 +1,275 @@
+# maestra-io/github-actions/.github/workflows/terraform-pr.yml
+#
+# Reusable PR workflow: fmt ∥ plan matrix (fan-out to terraform-run) -> unified
+# PR comment. The caller passes:
+#   - `envs`: a JSON array of {region,environment,site,env_dir?,proxmox_host?,
+#             proxmox_token_prefix?,vault_mode?,vault_addr?,teleport_app?,
+#             vault_role?,vault_secrets?,parallelism?,mask_sensitive_jq_path?,
+#             extra_env?,extra_workload_identities?,replace_targets?} objects
+#             -> becomes the plan matrix. Per-row values win over the
+#             workflow-wide defaults below.
+#   - workflow-wide defaults for everything else.
+#
+# Booleans (node_ssh_tunnels / api_tunnel) are workflow-wide only: `x || y`
+# expression fallback can't distinguish per-row `false` from absent, so rows
+# don't override booleans (same convention as ansible-pr's mint_proxmox_token).
+#
+# Commenter: FLAT plan-*.txt artifacts + merge-multiple:true, single sticky
+# comment, marker <!-- terraform-plan-diff -->. Row labels are filename-derived
+# (plan-<region>-<env>-<site>[<suffix>].txt — prefix/extension stripping, so
+# any suffix is tolerated). Change detection: !('No changes.' ||
+# 'Your infrastructure matches the configuration.').
+name: Terraform PR (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      envs:
+        description: "JSON array of per-env objects for the plan matrix"
+        required: true
+        type: string
+      proxmox_token_prefix:
+        description: "pveum token name prefix (per-run suffix added by terraform-run); per-row override wins"
+        required: true
+        type: string
+      terraform_version:
+        required: false
+        type: string
+        default: "1.14.6"
+      node_ssh_tunnels:
+        description: "Per-node SSH tunnels + temp key (bpg native SSH transport). Workflow-wide."
+        required: false
+        type: boolean
+        default: false
+      api_tunnel:
+        description: "Open the Proxmox API tunnel. Workflow-wide."
+        required: false
+        type: boolean
+        default: true
+      mask_sensitive_jq_path:
+        description: "Workflow-wide default; per-row override wins"
+        required: false
+        type: string
+        default: ""
+      parallelism:
+        description: "Workflow-wide default; per-row override wins"
+        required: false
+        type: string
+        default: ""
+      extra_env:
+        description: "Extra KEY=VALUE lines (workflow-wide default; per-row extra_env wins)"
+        required: false
+        type: string
+        default: ""
+      extra_workload_identities:
+        description: "Workflow-wide default; per-row override wins"
+        required: false
+        type: string
+        default: ""
+      teleport_join_token:
+        required: false
+        type: string
+        default: "github-actions-infra-deploy"
+      teleport_fqdn:
+        required: false
+        type: string
+        default: "teleport.maestra.io:443"
+      comment_max_chars:
+        description: "Max characters of plan tail included per env section in the PR comment"
+        required: false
+        type: string
+        default: "4000"
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+jobs:
+  # ── Format check (no infra access needed) ─────────────────────────────
+  fmt:
+    name: Format check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6 # TODO: SHA-pin via Renovate on landing
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4 # TODO: SHA-pin via Renovate on landing
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+          terraform_wrapper: false
+
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive terraform/
+
+  # ── Plan for all environments (parallel with fmt) ─────────────────────
+  plan:
+    strategy:
+      fail-fast: false
+      matrix:
+        env: ${{ fromJSON(inputs.envs) }}
+    uses: ./.github/workflows/terraform-run.yml
+    secrets: inherit
+    with:
+      region: ${{ matrix.env.region }}
+      environment: ${{ matrix.env.environment }}
+      site: ${{ matrix.env.site }}
+      env_dir: ${{ matrix.env.env_dir || '' }}
+      action: plan
+      terraform_version: ${{ inputs.terraform_version }}
+      replace_targets: ${{ matrix.env.replace_targets || '' }}
+      parallelism: ${{ matrix.env.parallelism || inputs.parallelism }}
+      vault_mode: ${{ matrix.env.vault_mode || 'none' }}
+      vault_addr: ${{ matrix.env.vault_addr || 'https://vault.maestra.io' }}
+      teleport_app: ${{ matrix.env.teleport_app || '' }}
+      vault_role: ${{ matrix.env.vault_role || '' }}
+      vault_secrets: ${{ matrix.env.vault_secrets || '' }}
+      proxmox_token_prefix: ${{ matrix.env.proxmox_token_prefix || inputs.proxmox_token_prefix }}
+      proxmox_host: ${{ matrix.env.proxmox_host || '' }}
+      api_tunnel: ${{ inputs.api_tunnel }}
+      node_ssh_tunnels: ${{ inputs.node_ssh_tunnels }}
+      mask_sensitive_jq_path: ${{ matrix.env.mask_sensitive_jq_path || inputs.mask_sensitive_jq_path }}
+      extra_workload_identities: ${{ matrix.env.extra_workload_identities || inputs.extra_workload_identities }}
+      extra_env: ${{ matrix.env.extra_env || inputs.extra_env }}
+      teleport_join_token: ${{ inputs.teleport_join_token }}
+      teleport_fqdn: ${{ inputs.teleport_fqdn }}
+      artifact_name: tf-plan-${{ matrix.env.region }}-${{ matrix.env.environment }}-${{ matrix.env.site }}
+
+  # ── Post / update PR comment ────────────────────────────────────────────
+  comment:
+    name: Update PR comment
+    needs: [fmt, plan]
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      actions: read
+    steps:
+      - name: Download all plan artifacts
+        uses: actions/download-artifact@v8 # TODO: SHA-pin via Renovate on landing
+        with:
+          path: plans
+          pattern: tf-plan-*
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Post PR comment
+        uses: actions/github-script@v9 # TODO: SHA-pin via Renovate on landing
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const MARKER = '<!-- terraform-plan-diff -->';
+            const MAX_PER_ENV = parseInt('${{ inputs.comment_max_chars }}', 10) || 4000;
+
+            const fmtStatus = '${{ needs.fmt.result }}';
+            const planStatus = '${{ needs.plan.result }}';
+
+            const icon = (s) => s === 'success' ? '✅' : s === 'skipped' ? '⏭️' : '❌';
+
+            function hasChanges(plan) {
+              if (!plan) return false;
+              return !plan.includes('No changes.') && !plan.includes('Your infrastructure matches the configuration.');
+            }
+
+            const statusRows = [];
+            const diffSections = [];
+
+            statusRows.push(
+              `| Format check | ${icon(fmtStatus)} \`${fmtStatus}\` |`,
+            );
+
+            // Scan plans/ for plan-<region>-<env>-<site>[<suffix>].txt files
+            // (merge-multiple: true). The whole middle (incl. any suffix)
+            // becomes the row label.
+            const plansDir = 'plans';
+            let envCount = 0;
+
+            try {
+              const files = fs.readdirSync(plansDir)
+                .filter(f => f.startsWith('plan-') && f.endsWith('.txt'))
+                .sort();
+
+              for (const f of files) {
+                envCount++;
+                const label = f.replace(/^plan-/, '').replace(/\.txt$/, '');
+                const plan = fs.readFileSync(path.join(plansDir, f), 'utf8').trim();
+                const changed = hasChanges(plan);
+
+                if (!plan) {
+                  statusRows.push(`| Plan ${label} | ❌ \`failed\` |`);
+                } else if (changed) {
+                  statusRows.push(`| Plan ${label} | 🔄 \`changes detected\` |`);
+                } else {
+                  statusRows.push(`| Plan ${label} | ✅ \`no changes\` |`);
+                }
+
+                if (changed && plan) {
+                  let content = plan;
+                  if (content.length > MAX_PER_ENV) {
+                    content = '…(truncated)\n' + content.slice(-MAX_PER_ENV);
+                  }
+                  diffSections.push([
+                    `<details><summary>${label}</summary>`,
+                    '',
+                    '```diff',
+                    content,
+                    '```',
+                    '',
+                    '</details>',
+                  ].join('\n'));
+                }
+              }
+            } catch {
+              // plans directory doesn't exist
+            }
+
+            if (envCount === 0) {
+              statusRows.push(`| Plan (all environments) | ${icon(planStatus)} \`${planStatus}\` |`);
+            }
+
+            const body = [
+              MARKER,
+              `## Terraform PR Checks`,
+              '',
+              `| Check | Status |`,
+              `|-------|--------|`,
+              ...statusRows,
+              '',
+              `**Commit:** \`${context.sha.slice(0, 8)}\``,
+            ];
+
+            if (diffSections.length > 0) {
+              body.push('', '### Plan output', '', ...diffSections);
+            }
+
+            body.push('', `_Updated: ${new Date().toISOString()}_`);
+
+            const bodyText = body.join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existing = comments.find(c => c.body && c.body.includes(MARKER));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body: bodyText,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: bodyText,
+              });
+            }
