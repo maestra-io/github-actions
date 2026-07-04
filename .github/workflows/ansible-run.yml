@@ -339,6 +339,13 @@ jobs:
           VECTOR_SIEM_BASIC_AUTH_USER: ${{ secrets.VECTOR_SIEM_BASIC_AUTH_USER }}
           VECTOR_SIEM_BASIC_AUTH_PASSWORD: ${{ secrets.VECTOR_SIEM_BASIC_AUTH_PASSWORD }}
           PROXMOX_MONITORING_PASSWORD: ${{ secrets.PROXMOX_MONITORING_PASSWORD }}
+          # Token for `gh` CLI tasks (e.g. `gh release download` from a private
+          # repo). It MUST be set here in the reusable's own context, where
+          # github.token is populated. A caller cannot forward it: github.token
+          # (and secrets.*) resolve to EMPTY inside a reusable-workflow `with:`
+          # input, so forwarding it through `extra_env` shipped an empty value
+          # and `gh` ran unauthenticated (rc=4).
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -uo pipefail
 
@@ -346,6 +353,9 @@ jobs:
           if [ -n "${{ inputs.extra_env }}" ]; then
             while IFS= read -r line; do
               [ -z "$line" ] && continue
+              # skip a KEY= line with an empty value so it can't clobber a real
+              # step-env value (e.g. a caller forwarding an empty github.token)
+              case "$line" in *=) continue ;; esac
               export "$line"
             done <<< "${{ inputs.extra_env }}"
           fi
