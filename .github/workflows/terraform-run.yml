@@ -658,15 +658,24 @@ jobs:
           fi
 
           # Order: privates first (internal traffic), then publics, then api
-          # (both external/customer-facing). Within each role, process numeric
-          # suffix in reverse so 02 goes before 01 — pairs with ansible's
-          # serial:1 convention. Every role must be listed here or its VMs are
-          # silently dropped from the rolling apply. (Ported verbatim from
-          # haproxy-maestra — rolling is haproxy-shaped by design.)
+          # and cdp (all external/customer-facing). Within each role, process
+          # numeric suffix in reverse so 02 goes before 01 — pairs with
+          # ansible's serial:1 convention. Every role must be listed here or
+          # its VMs are dropped from the rolling apply — the unmatched-key
+          # check below turns that former silent drop into a hard error.
+          # (Ported verbatim from haproxy-maestra — rolling is haproxy-shaped
+          # by design.)
           PRIVATE=$(echo "$CHANGED" | grep '^haproxy-private' | sort -r || true)
           PUBLIC=$(echo "$CHANGED" | grep '^haproxy-public' | sort -r || true)
           API=$(echo "$CHANGED" | grep '^haproxy-api' | sort -r || true)
-          ORDERED=$(echo -e "${PRIVATE}\n${PUBLIC}\n${API}" | sed '/^$/d')
+          CDP=$(echo "$CHANGED" | grep '^haproxy-cdp' | sort -r || true)
+          ORDERED=$(echo -e "${PRIVATE}\n${PUBLIC}\n${API}\n${CDP}" | sed '/^$/d')
+
+          UNMATCHED=$(comm -23 <(echo "$CHANGED" | sort) <(echo "$ORDERED" | sort) | sed '/^$/d')
+          if [ -n "$UNMATCHED" ]; then
+            echo "::error::Rolling apply has no ordering for these changed VM keys (add their role to the PRIVATE/PUBLIC/API/CDP lists): $UNMATCHED"
+            exit 1
+          fi
 
           TOTAL=$(echo "$ORDERED" | wc -l | tr -d ' ')
           COUNT=0
