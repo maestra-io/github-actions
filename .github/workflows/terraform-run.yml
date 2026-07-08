@@ -628,7 +628,8 @@ jobs:
           PREFIX='${{ inputs.rolling_module_prefix }}'
           PLAN_JSON=$(terraform show -json tfplan)
 
-          # Rolling apply targets <prefix>[X] one at a time. If the plan also
+          # Rolling apply targets each changed resource by its full plan
+          # address one at a time. If the plan also
           # touches anything outside the prefix (provider config drift, firewall
           # security groups, route53 records, etc.) rolling can't cover it, so
           # fall back to a normal parallel apply rather than refusing to deploy.
@@ -649,7 +650,6 @@ jobs:
              | select(.address | startswith($p))
              | select(.change.actions != ["no-op"])
              | .address
-             | capture("\\[\"(?<key>[^\"]+)\"\\]").key
             ] | unique | .[]')
 
           if [ -z "$CHANGED" ]; then
@@ -665,10 +665,10 @@ jobs:
           # check below turns that former silent drop into a hard error.
           # (Ported verbatim from haproxy-maestra — rolling is haproxy-shaped
           # by design.)
-          PRIVATE=$(echo "$CHANGED" | grep '^haproxy-private' | sort -r || true)
-          PUBLIC=$(echo "$CHANGED" | grep '^haproxy-public' | sort -r || true)
-          API=$(echo "$CHANGED" | grep '^haproxy-api' | sort -r || true)
-          CDP=$(echo "$CHANGED" | grep '^haproxy-cdp' | sort -r || true)
+          PRIVATE=$(echo "$CHANGED" | grep '\["haproxy-private' | sort -r || true)
+          PUBLIC=$(echo "$CHANGED" | grep '\["haproxy-public' | sort -r || true)
+          API=$(echo "$CHANGED" | grep '\["haproxy-api' | sort -r || true)
+          CDP=$(echo "$CHANGED" | grep '\["haproxy-cdp' | sort -r || true)
           ORDERED=$(echo -e "${PRIVATE}\n${PUBLIC}\n${API}\n${CDP}" | sed '/^$/d')
 
           UNMATCHED=$(comm -23 <(echo "$CHANGED" | sort) <(echo "$ORDERED" | sort) | sed '/^$/d')
@@ -685,7 +685,7 @@ jobs:
 
           for VM in $ORDERED; do
             COUNT=$((COUNT + 1))
-            TARGET="${PREFIX}[\"${VM}\"]"
+            TARGET="${VM}"
             echo "::group::[$COUNT/$TOTAL] Applying ${TARGET}"
             terraform apply -auto-approve -target="$TARGET"
             echo "::endgroup::"
