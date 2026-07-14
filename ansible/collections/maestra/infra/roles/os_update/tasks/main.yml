@@ -118,30 +118,77 @@
           FAILED on {{ inventory_hostname }} — un-draining this host, then aborting
           the fleet (the GH matrix is fail-fast, no further host is touched).
 
+  # EVERY step here is individually rescued. A bare list of tasks in `always` is a
+  # trap: the first one that fails ABORTS the rest of the block, so a single bad
+  # probe inside the undrain silently skips the marker clear and the unsilence — and
+  # the host ends up flagged as stranded (and silenced) while it is actually fine.
+  # That is exactly what happened to us-omicron-lw-haproxy-cdp-01 (run 29367636656):
+  # undrain's `wait_for 127.0.0.1:443` timed out (that farm binds its real IPs, not
+  # loopback) AFTER haproxy had already been started, the rest of `always` never ran,
+  # and the leftover marker + silence then blocked the NEXT run on the
+  # one-host-at-a-time guard.
   always:
     - name: Restore the pre-existing hold set
-      ansible.builtin.include_tasks: holds.yml
-      vars:
-        os_update_holds_action: restore
+      block:
+        - name: Restore holds
+          ansible.builtin.include_tasks: holds.yml
+          vars:
+            os_update_holds_action: restore
+      rescue:
+        - name: Hold restore failed — carry on with the rest of the cleanup
+          ansible.builtin.debug:
+            msg: >-
+              WARNING: could not restore the pre-existing apt holds on {{ inventory_hostname }}.
+              Check `apt-mark showhold` by hand. Continuing with the undrain.
 
     - name: UNDRAIN — put the host back into rotation (idempotent)
-      ansible.builtin.include_tasks: "{{ os_update_hooks_dir }}/undrain.yml"
+      block:
+        - name: Undrain
+          ansible.builtin.include_tasks: "{{ os_update_hooks_dir }}/undrain.yml"
+      rescue:
+        - name: The undrain itself failed — the host may still be OUT of rotation
+          ansible.builtin.set_fact:
+            os_update_undrain_failed: true
 
+        - name: Say so loudly
+          ansible.builtin.debug:
+            msg: >-
+              UNDRAIN FAILED on {{ inventory_hostname }} — it may still be out of rotation.
+              The drain marker is deliberately LEFT IN PLACE so OsUpdateHostStrandedDrain
+              fires and a human finishes the job:
+              gh workflow run os-update.yml -f mode=undrain-only -f host_limit={{ inventory_hostname }}
+
+    # Only when the undrain actually succeeded. If it did not, the marker MUST stay:
+    # it is the one signal that says "this host is still out of rotation".
     - name: Clear the drain marker
       ansible.builtin.include_tasks: marker.yml
       vars:
         os_update_marker_action: clear
+      when: not (os_update_undrain_failed | default(false))
 
     - name: SETTLE — traffic is actually flowing again and the pair is redundant
       ansible.builtin.include_tasks: "{{ os_update_hooks_dir }}/settle.yml"
-      when: not (os_update_failed | default(false))
+      when:
+        - not (os_update_failed | default(false))
+        - not (os_update_undrain_failed | default(false))
 
+    # Always dropped, even on a failed undrain: the silences are time-boxed anyway,
+    # and a stranded host is precisely the case where we want the alerts to fire.
     - name: Drop the silences
-      ansible.builtin.include_tasks: unsilence.yml
+      block:
+        - name: Unsilence
+          ansible.builtin.include_tasks: unsilence.yml
+      rescue:
+        - name: Could not expire the silences — the dead-man endsAt still covers us
+          ansible.builtin.debug:
+            msg: "WARNING: could not expire the maintenance silences; they expire on their own in <= {{ os_update_silence_minutes }} min."
 
-    - name: Fail the job (after the host was returned to rotation)
+    - name: Fail the job
       ansible.builtin.fail:
         msg: >-
-          OS update FAILED on {{ inventory_hostname }}. The host was un-drained
-          (or the undrain itself failed — read above). No further host is touched.
-      when: os_update_failed | default(false)
+          OS update FAILED on {{ inventory_hostname }}.
+          {{ 'The host was un-drained and is back in rotation.'
+             if not (os_update_undrain_failed | default(false))
+             else 'THE UNDRAIN ALSO FAILED — the host may still be OUT of rotation, and the drain marker was left in place on purpose.' }}
+          No further host is touched (the matrix is fail-fast).
+      when: (os_update_failed | default(false)) or (os_update_undrain_failed | default(false))

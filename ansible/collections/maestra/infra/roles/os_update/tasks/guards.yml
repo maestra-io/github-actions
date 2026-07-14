@@ -28,6 +28,16 @@
   when: (os_update_am_url | default('')) | length > 0
 
 - name: Which other hosts hold an open os-update drain window
+  # The self-exclusion pattern is the PLAIN string `host=<me> ` with a trailing space —
+  # not `host=<me>(\s|$)`. This is YAML: inside a folded scalar a backslash is literal,
+  # so `(\\s|$)` reached the regex engine as an escaped backslash and never matched.
+  # The host's own silence then counted as "somebody else is draining", and the guard
+  # blocked a re-run of the very host that had left the silence behind
+  # (us-omicron-lw-haproxy-cdp-01, run 29368611005).
+  #
+  # The comment always continues with ` run=...` after the hostname, so the trailing
+  # space is an exact, escape-free discriminator — and it still tells `...-cdp-01`
+  # apart from a hypothetical `...-cdp-011`.
   ansible.builtin.set_fact:
     os_update_other_drains: >-
       {{ os_update_silences.json
@@ -35,7 +45,7 @@
          | selectattr('status.state', 'equalto', 'active')
          | selectattr('createdBy', 'defined')
          | selectattr('createdBy', 'search', '^gha-os-update')
-         | rejectattr('comment', 'search', 'host=' ~ inventory_hostname ~ '(\\s|$)')
+         | rejectattr('comment', 'search', 'host=' ~ inventory_hostname ~ ' ')
          | map(attribute='comment')
          | list }}
   when: (os_update_am_url | default('')) | length > 0
