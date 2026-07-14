@@ -107,14 +107,15 @@ on:
         required: false
       PROXMOX_MONITORING_PASSWORD:
         required: false
-      SOC_DISPATCH_TOKEN:
+      SOC_DISPATCH_APP_PRIVATE_KEY:
         description: >-
-          Token with actions:write on maestra-io/soc, used to kick a vulnerability
-          re-scan of exactly the hosts we just patched. The job's own GITHUB_TOKEN
-          cannot do this: it is scoped to the calling repo, and the SOC scan's
-          database secret lives in the soc repo (so `secrets: inherit` on a reusable
-          workflow would not carry it either). Absent = the re-scan is SKIPPED with a
-          loud warning and the exact command to run by hand — never a silent green.
+          PEM private key of the GitHub App that dispatches the SOC vuln-scan (paired
+          with the org variable SOC_DISPATCH_APP_ID). The job's own GITHUB_TOKEN cannot
+          trigger a workflow in maestra-io/soc — it is scoped to the calling repo — so
+          the soc-rescan step mints a short-lived, soc-only installation token from this
+          App and calls the SAME vuln-scan.yaml the weekly cron uses, just scoped to the
+          hosts we patched. Absent (App not set up) = the re-scan is SKIPPED with a loud
+          warning and the exact command to run by hand — never a silent green.
         required: false
 
 permissions:
@@ -324,10 +325,31 @@ jobs:
     if: ${{ inputs.mode == 'apply' && needs.apply.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
+      # A dedicated GitHub App (org variable SOC_DISPATCH_APP_ID + org secret
+      # SOC_DISPATCH_APP_PRIVATE_KEY) scoped to actions:write on maestra-io/soc only.
+      # We mint a short-lived installation token from it here, scoped to just that repo.
+      # This calls the SAME vuln-scan.yaml the weekly cron runs — no duplicated scanner
+      # logic; the only thing we add is triggering it, for the hosts we patched, now.
+      #
+      # If the App is not configured, `create-github-app-token` fails; we let it fail
+      # SOFT (continue-on-error) so a missing SOC integration never fails an otherwise
+      # good patch run — but the next step turns "no token" into a loud warning, never a
+      # silent green.
+      - name: Mint a soc-scoped token from the dispatch App
+        id: soc-token
+        if: ${{ vars.SOC_DISPATCH_APP_ID != '' }}
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.SOC_DISPATCH_APP_ID }}
+          private-key: ${{ secrets.SOC_DISPATCH_APP_PRIVATE_KEY }}
+          owner: maestra-io
+          repositories: soc
+
       - name: Re-scan the patched hosts and push to SOC
         env:
           HOSTS: ${{ needs.enumerate.outputs.hosts }}
-          SOC_TOKEN: ${{ secrets.SOC_DISPATCH_TOKEN }}
+          SOC_TOKEN: ${{ steps.soc-token.outputs.token }}
         run: |
           set -euo pipefail
           LIST="$(printf '%s' "${HOSTS}" | jq -r 'join(",")')"
@@ -336,22 +358,23 @@ jobs:
             # Loud, never silently green. A skipped re-scan means SOC keeps showing the
             # PRE-PATCH findings, and the next person to look at the board concludes the
             # fleet is still vulnerable — or, worse, that the patch run did nothing.
-            echo "::warning::SOC re-scan SKIPPED — no SOC_DISPATCH_TOKEN. The hosts ARE patched, but the SOC board still shows pre-patch findings until someone runs: gh workflow run vuln-scan.yaml --repo maestra-io/soc -f hosts=${LIST}"
+            echo "::warning::SOC re-scan SKIPPED — the SOC dispatch App is not configured (org var SOC_DISPATCH_APP_ID / secret SOC_DISPATCH_APP_PRIVATE_KEY). The hosts ARE patched, but the SOC board still shows pre-patch findings until someone runs: gh workflow run vuln-scan.yaml --repo maestra-io/soc -f hosts=${LIST}"
             {
-              echo "### SOC re-scan SKIPPED — no \`SOC_DISPATCH_TOKEN\`"
+              echo "### SOC re-scan SKIPPED — dispatch App not configured"
               echo ""
               echo "The hosts **are** patched, but the SOC board still shows the pre-patch"
               echo "findings until it is re-scanned. Run it by hand:"
               echo ""
               echo "    gh workflow run vuln-scan.yaml --repo maestra-io/soc -f hosts=${LIST}"
               echo ""
-              echo "To make this automatic: add a fine-grained PAT with **actions: write** on"
-              echo "\`maestra-io/soc\` as the \`SOC_DISPATCH_TOKEN\` secret of this repo."
+              echo "To make this automatic: create a GitHub App with **Actions: write** on"
+              echo "\`maestra-io/soc\`, then set the org variable \`SOC_DISPATCH_APP_ID\` and the"
+              echo "org secret \`SOC_DISPATCH_APP_PRIVATE_KEY\`."
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
-          echo "Dispatching a SOC vuln-scan for: ${LIST}"
+          echo "Dispatching the SOC vuln-scan (the same weekly workflow) for: ${LIST}"
           GH_TOKEN="${SOC_TOKEN}" gh workflow run vuln-scan.yaml \
             --repo maestra-io/soc \
             -f hosts="${LIST}" \
