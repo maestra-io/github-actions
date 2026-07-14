@@ -1,0 +1,27 @@
+---
+# A headless VM that fails to boot once must not sit in the GRUB menu forever.
+#
+# Ubuntu writes `recordfail=1` on an unclean shutdown / failed boot, and GRUB then
+# IGNORES GRUB_TIMEOUT and waits for a keypress unless GRUB_RECORDFAIL_TIMEOUT is
+# set. Live on us-omicron-lw-haproxy-public-01: GRUB_TIMEOUT=0,
+# GRUB_TIMEOUT_STYLE=hidden, and no GRUB_RECORDFAIL_TIMEOUT at all — i.e. today the
+# first bad kernel turns "one host down, its peer carries the traffic" into "one
+# host down until a human opens the Proxmox console".
+#
+# This is the difference between a recoverable failed reboot and a manual rescue,
+# so it is a hard prerequisite of the reboot, not a nice-to-have.
+
+- name: GRUB must time out even after a recorded boot failure
+  ansible.builtin.lineinfile:
+    path: /etc/default/grub
+    regexp: '^#?\s*GRUB_RECORDFAIL_TIMEOUT='
+    line: "GRUB_RECORDFAIL_TIMEOUT={{ os_update_grub_recordfail_timeout | default(5) }}"
+    state: present
+    validate: /bin/true
+  register: os_update_grub
+
+- name: Regenerate grub.cfg
+  ansible.builtin.command:
+    argv: [update-grub]
+  when: os_update_grub.changed
+  changed_when: true

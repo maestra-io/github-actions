@@ -1,0 +1,29 @@
+---
+# Runs in `always`. An already-expired silence is not an error — but a failure to
+# reach Alertmanager IS worth showing, so we surface it rather than swallowing it.
+# We expire the silences we created; if the runner is killed the endsAt dead-man
+# expires them anyway.
+
+- name: Expire the maintenance silences
+  ansible.builtin.uri:
+    url: "{{ os_update_am_url }}/api/v2/silence/{{ item }}"
+    method: DELETE
+    status_code: [200, 404, 500]
+  delegate_to: localhost
+  become: false
+  check_mode: false
+  loop: "{{ os_update_silence_ids | default([]) }}"
+  register: os_update_unsilence
+  failed_when: false
+
+- name: Report any silence we could not expire (the dead-man endsAt still covers us)
+  ansible.builtin.debug:
+    msg: >-
+      Could not expire silence {{ item.item }} (status {{ item.status | default('?') }});
+      it expires on its own in <= {{ os_update_silence_minutes }} min.
+  loop: "{{ os_update_unsilence.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item | default('') }}"
+  when:
+    - item.status is defined
+    - item.status not in [200, 404]

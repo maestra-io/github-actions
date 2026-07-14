@@ -1,0 +1,147 @@
+---
+# Driver. One host per run (the reusable workflow fans out a per-host matrix);
+# `serial: 1` in the consumer playbook is only a safety net for a local operator.
+#
+# Order is load-bearing:
+#   vars -> guards -> marker(read) -> plan -> PREFLIGHT -> [silence -> drain ->
+#   boot_safety -> holds -> apt -> reboot -> kernel_gc -> VERIFY]
+#   always: holds(restore) -> UNDRAIN -> marker(clear) -> SETTLE -> unsilence
+#
+# PREFLIGHT sits immediately before the drain, in the same block — not in an
+# earlier play. Ansible finishes an entire play (all serial batches) before
+# starting the next one, so a preflight in play 1 would evaluate "is my peer
+# healthy?" long before the drain in play 2 ever touches the host.
+
+- name: Load the consumer repo's per-role vars (peers, expectations, silence sets)
+  ansible.builtin.include_tasks: "{{ os_update_hooks_dir }}/vars.yml"
+
+- name: Guard — nobody else in this contour is currently drained
+  ansible.builtin.include_tasks: guards.yml
+
+# ── escape hatch ───────────────────────────────────────────────────────────
+# Deliberately skips preflight: the peer gates there are exactly what fails in
+# the scenario this hatch exists for (a run died mid-drain and the pair is
+# already degraded).
+- name: UNDRAIN-ONLY (escape hatch)
+  when: os_update_mode == 'undrain-only'
+  block:
+    - name: Put the host back into rotation
+      ansible.builtin.include_tasks: "{{ os_update_hooks_dir }}/undrain.yml"
+
+    - name: Clear the drain marker
+      ansible.builtin.include_tasks: marker.yml
+      vars:
+        os_update_marker_action: clear
+
+    - name: Prove it is actually serving again
+      ansible.builtin.include_tasks: "{{ os_update_hooks_dir }}/settle.yml"
+
+    - name: Drop any silence this host still owns
+      ansible.builtin.include_tasks: unsilence.yml
+
+    - name: End of play for this host
+      ansible.builtin.meta: end_host
+
+- name: Read the drain marker (was this host left drained by an earlier run?)
+  ansible.builtin.include_tasks: marker.yml
+  vars:
+    os_update_marker_action: read
+
+- name: Plan — what would this update do (read-only, every probe check_mode:false)
+  ansible.builtin.include_tasks: plan.yml
+
+- name: PREFLIGHT — is the peer healthy, and is this host safe to reboot
+  ansible.builtin.include_tasks: "{{ os_update_hooks_dir }}/preflight.yml"
+
+- name: Plan report
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}
+      kernel={{ ansible_facts.kernel }} newest={{ os_update_newest_kernel }}
+      pending_pkgs={{ os_update_pending | length }}
+      needs_upgrade={{ os_update_needed }}
+      needs_reboot={{ os_update_reboot_needed }}
+      boot_free_mb={{ os_update_boot_free_mb }}
+      resuming_drain={{ os_update_resuming }}
+      pre_existing_holds={{ os_update_holds_before }}
+
+- name: Nothing to do — host is current, it is NOT drained and NOT rebooted
+  ansible.builtin.debug:
+    msg: "{{ inventory_hostname }}: already up to date, no reboot pending — untouched."
+  when:
+    - os_update_mode == 'apply'
+    - not (os_update_needed or os_update_reboot_needed or os_update_resuming)
+
+- name: APPLY
+  when:
+    - os_update_mode == 'apply'
+    - os_update_needed or os_update_reboot_needed or os_update_resuming
+  block:
+    # Silences go up BEFORE the drain, not before the reboot: HaproxySystemdUnitFailed
+    # (for: 1m) and the BGP/VRRP alerts fire on the drain itself.
+    - name: Silence this host's alerts (dead-man window)
+      ansible.builtin.include_tasks: silence.yml
+
+    - name: DRAIN — take the host out of rotation, persistently, and prove it
+      ansible.builtin.include_tasks: "{{ os_update_hooks_dir }}/drain.yml"
+
+    - name: Make the box safe to reboot headless
+      ansible.builtin.include_tasks: boot_safety.yml
+
+    - name: Pin the IaC-owned packages
+      ansible.builtin.include_tasks: holds.yml
+      vars:
+        os_update_holds_action: apply
+
+    - name: Upgrade
+      ansible.builtin.include_tasks: apt.yml
+      when: os_update_needed
+
+    - name: Reboot
+      ansible.builtin.include_tasks: reboot.yml
+      when: os_update_reboot_needed
+
+    - name: Reclaim /boot if it is tight
+      ansible.builtin.include_tasks: kernel_gc.yml
+
+    - name: VERIFY — the host is healthy again (still out of rotation)
+      ansible.builtin.include_tasks: "{{ os_update_hooks_dir }}/verify.yml"
+
+  rescue:
+    - name: Record the failure (we still un-drain in always)
+      ansible.builtin.set_fact:
+        os_update_failed: true
+
+    - name: Announce
+      ansible.builtin.debug:
+        msg: >-
+          FAILED on {{ inventory_hostname }} — un-draining this host, then aborting
+          the fleet (the GH matrix is fail-fast, no further host is touched).
+
+  always:
+    - name: Restore the pre-existing hold set
+      ansible.builtin.include_tasks: holds.yml
+      vars:
+        os_update_holds_action: restore
+
+    - name: UNDRAIN — put the host back into rotation (idempotent)
+      ansible.builtin.include_tasks: "{{ os_update_hooks_dir }}/undrain.yml"
+
+    - name: Clear the drain marker
+      ansible.builtin.include_tasks: marker.yml
+      vars:
+        os_update_marker_action: clear
+
+    - name: SETTLE — traffic is actually flowing again and the pair is redundant
+      ansible.builtin.include_tasks: "{{ os_update_hooks_dir }}/settle.yml"
+      when: not (os_update_failed | default(false))
+
+    - name: Drop the silences
+      ansible.builtin.include_tasks: unsilence.yml
+
+    - name: Fail the job (after the host was returned to rotation)
+      ansible.builtin.fail:
+        msg: >-
+          OS update FAILED on {{ inventory_hostname }}. The host was un-drained
+          (or the undrain itself failed — read above). No further host is touched.
+      when: os_update_failed | default(false)

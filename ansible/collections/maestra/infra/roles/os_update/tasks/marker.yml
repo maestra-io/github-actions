@@ -1,0 +1,80 @@
+---
+# On-disk drain marker + a node_exporter textfile metric.
+#
+# The marker is NOT the interlock (that's the Alertmanager silence — see guards.yml).
+# It answers a different question, on the host itself: "did a previous run die
+# after draining me?" A runner that is cancelled or times out never executes
+# `always`, so the host can be left masked/stopped with nothing in-band to say so.
+#
+# The metric feeds OsUpdateHostStrandedDrain, whose expr uses last_over_time() so
+# it survives the reboot window (the series is gone while the box is down).
+
+- name: Read the marker
+  when: os_update_marker_action == 'read'
+  block:
+    - name: Slurp
+      ansible.builtin.slurp:
+        src: "{{ os_update_marker_file }}"
+      register: os_update_marker_raw
+      failed_when: false
+      check_mode: false
+
+    - name: Interpret
+      ansible.builtin.set_fact:
+        os_update_resuming: "{{ os_update_marker_raw.content is defined }}"
+        os_update_marker: >-
+          {{ (os_update_marker_raw.content | b64decode | from_json)
+             if (os_update_marker_raw.content is defined) else {} }}
+
+    - name: Announce a resumed drain
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} is ALREADY DRAINED by run
+          {{ os_update_marker.run | default('?') }} at {{ os_update_marker.started | default('?') }}.
+          Re-draining idempotently and finishing the job.
+      when: os_update_resuming
+
+- name: Write the marker
+  when: os_update_marker_action == 'write'
+  block:
+    - name: Marker dir
+      ansible.builtin.file:
+        path: "{{ os_update_marker_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Marker file
+      ansible.builtin.copy:
+        dest: "{{ os_update_marker_file }}"
+        mode: "0644"
+        content: |
+          {{ {'host': inventory_hostname,
+              'farm': os_update_farm,
+              'run': os_update_run_url,
+              'started': ansible_facts.date_time.iso8601} | to_nice_json }}
+
+    - name: Textfile metric (feeds OsUpdateHostStrandedDrain)
+      ansible.builtin.copy:
+        dest: "{{ node_exporter_textfile_dir }}/os_update.prom"
+        mode: "0644"
+        content: |
+          # HELP os_update_drained 1 while an os-update run holds this host out of rotation.
+          # TYPE os_update_drained gauge
+          os_update_drained{run="{{ os_update_run_url }}"} 1
+
+- name: Clear the marker
+  when: os_update_marker_action == 'clear'
+  block:
+    - name: Remove the marker file
+      ansible.builtin.file:
+        path: "{{ os_update_marker_file }}"
+        state: absent
+
+    - name: Zero the metric (deleting the file would leave the last scrape stale)
+      ansible.builtin.copy:
+        dest: "{{ node_exporter_textfile_dir }}/os_update.prom"
+        mode: "0644"
+        content: |
+          # HELP os_update_drained 1 while an os-update run holds this host out of rotation.
+          # TYPE os_update_drained gauge
+          os_update_drained{run=""} 0

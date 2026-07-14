@@ -1,0 +1,63 @@
+---
+# The host is drained and the drain is persistent across the reboot (that is the
+# contract drain.yml must satisfy) — so a reboot here does not put it back into
+# rotation behind our back.
+#
+# Connection notes: these hosts are reached through a `tsh` ProxyCommand, so
+# "reachable again" means the Teleport agent has re-registered with the proxy, not
+# merely that sshd is listening. ansible.builtin.reboot re-runs the ProxyCommand on
+# each retry, so it converges — but post_reboot_delay must cover agent
+# re-registration or the first probes burn on "node not found".
+#
+# The play runs with strategy: linear and mitogen disabled: mitogen's connection
+# multiplexer does not survive reboot/wait_for_connection.
+
+- name: Reboot
+  ansible.builtin.reboot:
+    reboot_timeout: "{{ os_update_reboot_timeout | int }}"
+    post_reboot_delay: "{{ os_update_post_reboot_delay | int }}"
+    connect_timeout: "{{ os_update_connect_timeout | int }}"
+    msg: "os-update {{ os_update_run_url }} (issues-maestra#1104)"
+  register: os_update_reboot_result
+
+- name: Record that we rebooted
+  ansible.builtin.set_fact:
+    os_update_rebooted: true
+
+- name: Wait for systemd to finish booting
+  ansible.builtin.command:
+    argv: [systemctl, is-system-running, --wait]
+  register: os_update_systemd_state
+  # `degraded` = booted, but some unit failed. That is NOT a reason to abort here:
+  # the units we deliberately masked for the drain (haproxy / keepalived / frr) can
+  # legitimately colour the system degraded. verify.yml is what decides whether the
+  # host is healthy; this task only proves the boot finished.
+  failed_when: os_update_systemd_state.stdout not in ['running', 'degraded']
+  changed_when: false
+  check_mode: false
+
+- name: Show failed units when degraded
+  ansible.builtin.command:
+    argv: [systemctl, list-units, --state=failed, --no-legend, --no-pager]
+  register: os_update_failed_units
+  changed_when: false
+  check_mode: false
+  when: os_update_systemd_state.stdout == 'degraded'
+
+- name: Failed units after boot
+  ansible.builtin.debug:
+    var: os_update_failed_units.stdout_lines
+  when: os_update_systemd_state.stdout == 'degraded'
+
+- name: Confirm we booted the kernel we installed
+  ansible.builtin.setup:
+    gather_subset: [min]
+
+- name: Kernel after reboot
+  ansible.builtin.assert:
+    that: ansible_facts.kernel == os_update_newest_kernel
+    fail_msg: >-
+      Booted {{ ansible_facts.kernel }} but the newest installed kernel is
+      {{ os_update_newest_kernel }} — GRUB booted an older entry. Investigate before
+      putting this host back into rotation.
+    success_msg: "Booted {{ ansible_facts.kernel }} (newest installed)."
