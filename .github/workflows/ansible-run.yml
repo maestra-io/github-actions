@@ -280,8 +280,24 @@ jobs:
         with:
           version: ${{ steps.tp-version.outputs.version }}
 
+      # teleport-actions/auth mints the certificate by running tbot, whose heartbeat
+      # to the proxy intermittently fails ("keepalive ping failed to receive ACK
+      # within timeout") and reds a whole run before a single task has executed.
+      # The first attempt is therefore allowed to fail; the retry is the one that
+      # decides the job. Both steps' outputs are read with `a || b` downstream —
+      # exactly one of them produces an identity.
       - name: Teleport auth (SSH)
         id: teleport-auth
+        continue-on-error: true
+        uses: teleport-actions/auth@v2 # TODO: SHA-pin via Renovate on landing
+        with:
+          proxy: ${{ inputs.teleport_fqdn }}
+          token: ${{ inputs.teleport_join_token }}
+          certificate-ttl: ${{ inputs.certificate_ttl }}
+
+      - name: Teleport auth (SSH) — retry
+        id: teleport-auth-retry
+        if: steps.teleport-auth.outcome == 'failure'
         uses: teleport-actions/auth@v2 # TODO: SHA-pin via Renovate on landing
         with:
           proxy: ${{ inputs.teleport_fqdn }}
@@ -398,7 +414,7 @@ jobs:
         id: mint-proxmox
         if: ${{ inputs.mint_proxmox_token }}
         env:
-          TELEPORT_IDENTITY_FILE: ${{ steps.teleport-auth.outputs.identity-file }}
+          TELEPORT_IDENTITY_FILE: ${{ steps.teleport-auth.outputs.identity-file || steps.teleport-auth-retry.outputs.identity-file }}
           TELEPORT_PROXY: ${{ inputs.teleport_fqdn }}
         run: |
           set -euo pipefail
@@ -438,8 +454,8 @@ jobs:
           # teleport_inventory.py reads TELEPORT_PROXY (tsh ls / cluster name) and
           # TBOT_DEST_DIR (IdentityFile/CertificateFile ssh args); tsh reads
           # TELEPORT_IDENTITY_FILE automatically. Without these, SSH auth fails.
-          TELEPORT_IDENTITY_FILE: ${{ steps.teleport-auth.outputs.identity-file }}
-          TBOT_DEST_DIR: ${{ steps.teleport-auth.outputs.destination-dir }}
+          TELEPORT_IDENTITY_FILE: ${{ steps.teleport-auth.outputs.identity-file || steps.teleport-auth-retry.outputs.identity-file }}
+          TBOT_DEST_DIR: ${{ steps.teleport-auth.outputs.destination-dir || steps.teleport-auth-retry.outputs.destination-dir }}
           TELEPORT_PROXY: ${{ inputs.teleport_fqdn }}
           # optional app-cred passthroughs (empty for repos that don't set them)
           VECTOR_SIEM_BASIC_AUTH_USER: ${{ secrets.VECTOR_SIEM_BASIC_AUTH_USER }}
