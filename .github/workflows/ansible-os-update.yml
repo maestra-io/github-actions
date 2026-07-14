@@ -205,6 +205,14 @@ jobs:
   # Read-only across the WHOLE group: pending packages, reboot decision, /boot
   # headroom, peer health, and "is anyone already drained". Never gated — you
   # approve `apply` after you have read the plan.
+  #
+  # This job is the ONE place the playbook's "one host per job" guard must be
+  # relaxed: the guard exists to stop a human running a fleet-wide APPLY by hand
+  # (which would skip the GH-level fail-fast, per-host approval and artifact trail),
+  # but a plan is read-only and is deliberately farm-wide — you want to see every
+  # host's pending packages in one table. Without os_update_allow_multi the guard
+  # fires on the plan itself and the run dies before it reaches a host (run
+  # 29360255290).
   plan:
     needs: enumerate
     uses: ./.github/workflows/ansible-run.yml
@@ -237,6 +245,7 @@ jobs:
       extra_run_args: >-
         -e os_update_mode=plan
         -e os_update_am_url=http://127.0.0.1:9093
+        -e os_update_allow_multi=true
         ${{ inputs.extra_run_args }}
       artifact_name: os-update-plan-${{ inputs.region }}-${{ inputs.environment }}-${{ inputs.site }}${{ inputs.inventory_group_suffix }}-${{ github.run_number }}
 
