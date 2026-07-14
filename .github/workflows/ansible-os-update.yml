@@ -107,6 +107,15 @@ on:
         required: false
       PROXMOX_MONITORING_PASSWORD:
         required: false
+      SOC_DISPATCH_TOKEN:
+        description: >-
+          Token with actions:write on maestra-io/soc, used to kick a vulnerability
+          re-scan of exactly the hosts we just patched. The job's own GITHUB_TOKEN
+          cannot do this: it is scoped to the calling repo, and the SOC scan's
+          database secret lives in the soc repo (so `secrets: inherit` on a reusable
+          workflow would not carry it either). Absent = the re-scan is SKIPPED with a
+          loud warning and the exact command to run by hand — never a silent green.
+        required: false
 
 permissions:
   contents: read
@@ -287,3 +296,57 @@ jobs:
       # omicron is not. Never invent an environment name for omicron — GitHub would
       # silently create it WITHOUT protection rules, which reads like a gate and isn't one.
       gh_environment: ${{ inputs.environment == 'omega' && format('{0}-{1}-{2}', inputs.region, inputs.environment, inputs.site) || '' }}
+
+  # Close the loop. The fleet is not "patched" because `uname -r` changed — it is
+  # patched when the vulnerability scanner AGREES. So re-scan exactly the hosts we
+  # just touched and push the findings to the SOC portal, instead of leaving the
+  # board stale until the next weekly sweep (Monday 05:00 UTC).
+  #
+  # This is also the only end-to-end check on the update payload itself: the kernel
+  # gate proves we booted a newer kernel, but only the scan proves the CVEs that put
+  # this fleet on the SOC board in the first place are actually gone.
+  soc-rescan:
+    needs: [enumerate, apply]
+    if: ${{ inputs.mode == 'apply' && needs.apply.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Re-scan the patched hosts and push to SOC
+        env:
+          HOSTS: ${{ needs.enumerate.outputs.hosts }}
+          SOC_TOKEN: ${{ secrets.SOC_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          LIST="$(printf '%s' "${HOSTS}" | jq -r 'join(",")')"
+
+          if [ -z "${SOC_TOKEN}" ]; then
+            # Loud, never silently green. A skipped re-scan means SOC keeps showing the
+            # PRE-PATCH findings, and the next person to look at the board concludes the
+            # fleet is still vulnerable — or, worse, that the patch run did nothing.
+            echo "::warning::SOC re-scan SKIPPED — no SOC_DISPATCH_TOKEN. The hosts ARE patched, but the SOC board still shows pre-patch findings until someone runs: gh workflow run vuln-scan.yaml --repo maestra-io/soc -f hosts=${LIST}"
+            {
+              echo "### SOC re-scan SKIPPED — no \`SOC_DISPATCH_TOKEN\`"
+              echo ""
+              echo "The hosts **are** patched, but the SOC board still shows the pre-patch"
+              echo "findings until it is re-scanned. Run it by hand:"
+              echo ""
+              echo "    gh workflow run vuln-scan.yaml --repo maestra-io/soc -f hosts=${LIST}"
+              echo ""
+              echo "To make this automatic: add a fine-grained PAT with **actions: write** on"
+              echo "\`maestra-io/soc\` as the \`SOC_DISPATCH_TOKEN\` secret of this repo."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "Dispatching a SOC vuln-scan for: ${LIST}"
+          GH_TOKEN="${SOC_TOKEN}" gh workflow run vuln-scan.yaml \
+            --repo maestra-io/soc \
+            -f hosts="${LIST}" \
+            -f dry_run=false
+
+          {
+            echo "### SOC re-scan dispatched"
+            echo ""
+            echo "Hosts: \`${LIST}\`"
+            echo ""
+            echo "<https://github.com/maestra-io/soc/actions/workflows/vuln-scan.yaml>"
+          } >> "$GITHUB_STEP_SUMMARY"
