@@ -11,7 +11,8 @@ description: >-
   Alertmanager silences, drain marker). The role-specific half (preflight /
   drain / verify / undrain) is implemented by each consumer repo as a task-file
   contract — see docs/ansible-os-update.md.
-license_expression: MIT
+license:
+  - MIT
 tags:
   - infrastructure
   - patching
