@@ -17,7 +17,6 @@
     regexp: '^#?\s*GRUB_RECORDFAIL_TIMEOUT='
     line: "GRUB_RECORDFAIL_TIMEOUT={{ os_update_grub_recordfail_timeout | default(5) }}"
     state: present
-    validate: /bin/true
   register: os_update_grub
 
 - name: Regenerate grub.cfg
