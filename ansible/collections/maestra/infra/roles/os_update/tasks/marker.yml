@@ -54,13 +54,27 @@
               'started': ansible_facts.date_time.iso8601} | to_nice_json }}
 
     - name: Textfile metric (feeds OsUpdateHostStrandedDrain)
+      # NO labels on the gauge. The run URL used to be a label here, and that made the
+      # alert fire on every SUCCESSFUL run: the drain wrote
+      #   os_update_drained{run="https://.../runs/29361170519"} 1
+      # and the clear wrote
+      #   os_update_drained{run=""} 0
+      # An empty label value is dropped by Prometheus, so those are two DIFFERENT
+      # series. The clear never zeroed the first one — it just went stale at 1, and
+      # OsUpdateHostStrandedDrain's `last_over_time(os_update_drained[45m]) == 1` kept
+      # matching it for 45 minutes after the host was healthy and back in rotation.
+      # (That is Rootly #I4bW6B, fired 2026-07-14 on a fleet that was entirely fine.)
+      #
+      # Label-free means write(1) and clear(0) hit the SAME series, which is the only
+      # way last_over_time() can mean what the alert needs it to mean. The run URL
+      # lives in the marker file, which is where the reconcile path reads it from.
       ansible.builtin.copy:
         dest: "{{ node_exporter_textfile_dir }}/os_update.prom"
         mode: "0644"
         content: |
           # HELP os_update_drained 1 while an os-update run holds this host out of rotation.
           # TYPE os_update_drained gauge
-          os_update_drained{run="{{ os_update_run_url }}"} 1
+          os_update_drained 1
 
 - name: Clear the marker
   when: os_update_marker_action == 'clear'
@@ -71,10 +85,11 @@
         state: absent
 
     - name: Zero the metric (deleting the file would leave the last scrape stale)
+      # Same series as the write — no labels. See the comment there for why.
       ansible.builtin.copy:
         dest: "{{ node_exporter_textfile_dir }}/os_update.prom"
         mode: "0644"
         content: |
           # HELP os_update_drained 1 while an os-update run holds this host out of rotation.
           # TYPE os_update_drained gauge
-          os_update_drained{run=""} 0
+          os_update_drained 0
