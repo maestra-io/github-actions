@@ -155,8 +155,22 @@ jobs:
         with:
           version: ${{ steps.tp-version.outputs.version }}
 
+      # teleport-actions/auth mints the certificate by running tbot, whose heartbeat
+      # to the proxy intermittently fails ("keepalive ping failed to receive ACK
+      # within timeout") and reds a whole run before a single host is touched. The
+      # first attempt is allowed to fail; the retry decides the job.
       - name: Teleport auth
         id: teleport-auth
+        continue-on-error: true
+        uses: teleport-actions/auth@v2
+        with:
+          proxy: teleport.maestra.io:443
+          token: github-actions-infra-deploy
+          certificate-ttl: 30m
+
+      - name: Teleport auth — retry
+        id: teleport-auth-retry
+        if: steps.teleport-auth.outcome == 'failure'
         uses: teleport-actions/auth@v2
         with:
           proxy: teleport.maestra.io:443
@@ -167,8 +181,8 @@ jobs:
         id: list
         working-directory: ${{ inputs.working_directory }}
         env:
-          TELEPORT_IDENTITY_FILE: ${{ steps.teleport-auth.outputs.identity-file }}
-          TBOT_DEST_DIR: ${{ steps.teleport-auth.outputs.destination-dir }}
+          TELEPORT_IDENTITY_FILE: ${{ steps.teleport-auth.outputs.identity-file || steps.teleport-auth-retry.outputs.identity-file }}
+          TBOT_DEST_DIR: ${{ steps.teleport-auth.outputs.destination-dir || steps.teleport-auth-retry.outputs.destination-dir }}
           TELEPORT_PROXY: teleport.maestra.io:443
           GROUP: ${{ inputs.region }}_${{ inputs.environment }}_${{ inputs.site }}${{ inputs.inventory_group_suffix }}
           HOST_LIMIT: ${{ inputs.host_limit }}

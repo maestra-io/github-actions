@@ -224,8 +224,22 @@ jobs:
           version: ${{ steps.tp-version.outputs.version }}
           proxy: ${{ inputs.teleport_fqdn }}
 
+      # teleport-actions/auth mints the certificate by running tbot, whose heartbeat
+      # to the proxy intermittently fails ("keepalive ping failed to receive ACK
+      # within timeout") and reds a whole run before any terraform executes. The
+      # first attempt is allowed to fail; the retry decides the job.
       - name: Teleport auth
         id: teleport-auth
+        continue-on-error: true
+        uses: teleport-actions/auth@v2 # TODO: SHA-pin via Renovate on landing
+        with:
+          proxy: ${{ inputs.teleport_fqdn }}
+          token: ${{ inputs.teleport_join_token }}
+          certificate-ttl: 30m
+
+      - name: Teleport auth — retry
+        id: teleport-auth-retry
+        if: steps.teleport-auth.outcome == 'failure'
         uses: teleport-actions/auth@v2 # TODO: SHA-pin via Renovate on landing
         with:
           proxy: ${{ inputs.teleport_fqdn }}
@@ -236,8 +250,8 @@ jobs:
         # HIDDEN CONTRACT: terraform local-exec provisioners in the consumer
         # repos run bare `tsh ssh ...` and rely on this ambient session.
         run: |
-          echo "TELEPORT_IDENTITY_FILE=${{ steps.teleport-auth.outputs.identity-file }}" >> "$GITHUB_ENV"
-          echo "TBOT_DEST_DIR=${{ steps.teleport-auth.outputs.destination-dir }}" >> "$GITHUB_ENV"
+          echo "TELEPORT_IDENTITY_FILE=${{ steps.teleport-auth.outputs.identity-file || steps.teleport-auth-retry.outputs.identity-file }}" >> "$GITHUB_ENV"
+          echo "TBOT_DEST_DIR=${{ steps.teleport-auth.outputs.destination-dir || steps.teleport-auth-retry.outputs.destination-dir }}" >> "$GITHUB_ENV"
           echo "TELEPORT_PROXY=${TELEPORT_FQDN}" >> "$GITHUB_ENV"
 
       # --- Vault: tunnel mode (mssql/ad omicron) ---------------------------
