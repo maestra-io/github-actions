@@ -1,0 +1,75 @@
+---
+# dpkg holds are the mechanism that keeps the OS upgrade off the IaC-owned
+# packages (custom haproxy/haproxy-otel builds, pinned frr, consul, and the
+# teleport agent we are literally connected through).
+#
+# Two things this deliberately does NOT do:
+#   * it does not try to scope apt to the Ubuntu archive via Dir::Etc::SourceList.
+#     On 24.04 the repos are deb822 .sources under sources.list.d (SourceParts) —
+#     overriding SourceList alone silently leaves every third-party repo enabled,
+#     i.e. a protection that reads correct and does nothing.
+#   * it does not trust the hold to be enough on its own: apt is free to satisfy a
+#     dependency by REMOVING a held package. The tripwire below catches that.
+
+- name: Apply holds
+  when: os_update_holds_action == 'apply'
+  block:
+    - name: Gather installed packages
+      ansible.builtin.package_facts:
+        manager: apt
+      check_mode: false
+
+    - name: Which pinned packages are actually installed here and not already held
+      ansible.builtin.set_fact:
+        os_update_our_holds: >-
+          {{ (os_update_pinned_base + os_update_pinned_extra)
+             | unique
+             | select('in', ansible_facts.packages)
+             | difference(os_update_holds_before)
+             | list }}
+
+    - name: Hold them
+      ansible.builtin.command:
+        argv: "{{ ['apt-mark', 'hold'] + os_update_our_holds }}"
+      register: os_update_hold_cmd
+      changed_when: "'set on hold' in os_update_hold_cmd.stdout"
+      check_mode: false
+      when: os_update_our_holds | length > 0
+
+    - name: Re-simulate with the holds in place
+      ansible.builtin.command:
+        argv: [apt-get, -s, dist-upgrade]
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+      register: os_update_sim_held
+      changed_when: false
+      check_mode: false
+
+    - name: TRIPWIRE — no IaC-owned package may be installed, upgraded OR REMOVED
+      # `Remv haproxy-otel` is the catastrophic case: its postrm un-diverts
+      # /usr/sbin/haproxy and the load balancer never comes back after the reboot.
+      # Matching only `^Inst` would miss it entirely.
+      ansible.builtin.assert:
+        that:
+          - >-
+            os_update_sim_held.stdout_lines
+            | select('match', '^(Inst|Remv|Purg) (' ~ ((os_update_pinned_base + os_update_pinned_extra) | unique | join('|')) ~ ')( |$)')
+            | list | length == 0
+        fail_msg: >-
+          apt wants to touch a pinned package despite the holds:
+          {{ os_update_sim_held.stdout_lines
+             | select('match', '^(Inst|Remv|Purg) (' ~ ((os_update_pinned_base + os_update_pinned_extra) | unique | join('|')) ~ ')( |$)')
+             | list }}
+          Refusing to upgrade. Investigate the dependency that forces this.
+
+- name: Restore the pre-existing hold set
+  when: os_update_holds_action == 'restore'
+  block:
+    - name: Unhold only what WE held (someone else's pins stay put)
+      ansible.builtin.command:
+        argv: "{{ ['apt-mark', 'unhold'] + os_update_our_holds }}"
+      register: os_update_unhold_cmd
+      changed_when: "'canceled' in os_update_unhold_cmd.stdout"
+      check_mode: false
+      failed_when: false
+      when: (os_update_our_holds | default([]) | length) > 0

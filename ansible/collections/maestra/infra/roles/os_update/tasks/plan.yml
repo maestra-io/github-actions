@@ -1,0 +1,92 @@
+---
+# Read-only. EVERY probe carries check_mode:false on purpose — command/shell/apt
+# are SKIPPED under --check, which leaves their registers undefined and turns any
+# assert built on them into either a crash or (worse, with `| default`) a silent
+# pass. The dry run of this workflow is `os_update_mode=plan`, not `--check`.
+
+- name: Refresh the package index
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 0
+    lock_timeout: 300
+  check_mode: false
+  changed_when: false
+
+- name: Simulate the upgrade
+  ansible.builtin.command:
+    argv: [apt-get, -s, dist-upgrade]
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  register: os_update_sim
+  changed_when: false
+  check_mode: false
+
+- name: Packages the upgrade would install/upgrade
+  ansible.builtin.set_fact:
+    os_update_pending: "{{ os_update_sim.stdout_lines | select('match', '^Inst ') | list }}"
+    # Removals are the dangerous class: a resolver working around a hold can
+    # decide to REMOVE the pinned package instead of upgrading it. `Remv haproxy-otel`
+    # would un-divert /usr/sbin/haproxy and the LB never comes back.
+    os_update_removals: "{{ os_update_sim.stdout_lines | select('match', '^(Remv|Purg) ') | list }}"
+
+- name: Existing package holds (someone else's pins — we must restore them verbatim)
+  ansible.builtin.command:
+    argv: [apt-mark, showhold]
+  register: os_update_holds_cmd
+  changed_when: false
+  check_mode: false
+
+- name: Newest installed kernel vs the running one
+  # A host can need a reboot with ZERO pending packages (kernel installed by an
+  # earlier run/unattended-upgrade but never booted) — proven live on
+  # us-omicron-lw-haproxy-public-01 (running 110, 124 installed, 134 available).
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      ls -1 /boot/vmlinuz-* 2>/dev/null \
+        | sed 's|.*/vmlinuz-||' \
+        | sort -V \
+        | tail -1
+  register: os_update_newest_kernel_cmd
+  changed_when: false
+  check_mode: false
+
+- name: Is a reboot flagged by the package manager
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+  register: os_update_reboot_flag
+  check_mode: false
+
+- name: Free space on /boot
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      df -Pm /boot | awk 'NR==2 {print $4}'
+  register: os_update_boot_free_cmd
+  changed_when: false
+  check_mode: false
+
+- name: Derive the plan
+  ansible.builtin.set_fact:
+    os_update_holds_before: "{{ os_update_holds_cmd.stdout_lines | default([]) }}"
+    os_update_newest_kernel: "{{ os_update_newest_kernel_cmd.stdout | trim }}"
+    os_update_boot_free_mb: "{{ os_update_boot_free_cmd.stdout | trim | int }}"
+    os_update_needed: "{{ (os_update_pending | length) > 0 }}"
+    # Two INDEPENDENT conditions, both first-class:
+    #   - the package manager asked for a reboot, OR
+    #   - a newer kernel is installed than the one we booted, OR
+    #   - the upgrade we are about to run installs a kernel.
+    os_update_reboot_needed: >-
+      {{ os_update_reboot_flag.stat.exists
+         or ((os_update_newest_kernel_cmd.stdout | trim) not in ['', ansible_facts.kernel])
+         or ((os_update_pending | select('search', '^Inst linux-image')) | list | length > 0) }}
+
+- name: Guard — /boot must have room to unpack a kernel (a full /boot fails AFTER the drain)
+  ansible.builtin.assert:
+    that: (os_update_boot_free_mb | int) >= (os_update_boot_free_min_mb | int)
+    fail_msg: >-
+      /boot has only {{ os_update_boot_free_mb }} MB free (need
+      {{ os_update_boot_free_min_mb }}). Reclaim it first — do not drain a host we
+      then cannot upgrade.

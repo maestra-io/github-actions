@@ -1,0 +1,21 @@
+---
+namespace: maestra
+name: infra
+version: 1.0.0
+readme: README.md
+authors:
+  - Maestra Infrastructure
+description: >-
+  Shared Ansible content for Maestra infrastructure repos. Holds the os_update
+  role: the generic half of the fleet OS-update workflow (plan, apt, reboot,
+  Alertmanager silences, drain marker). The role-specific half (preflight /
+  drain / verify / undrain) is implemented by each consumer repo as a task-file
+  contract — see docs/ansible-os-update.md.
+license_expression: MIT
+tags:
+  - infrastructure
+  - patching
+repository: https://github.com/maestra-io/github-actions
+documentation: https://github.com/maestra-io/github-actions/blob/main/docs/ansible-os-update.md
+build_ignore:
+  - '*.tar.gz'

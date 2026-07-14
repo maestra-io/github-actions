@@ -1,0 +1,57 @@
+---
+# maestra.infra.os_update — generic half of the fleet OS-update workflow.
+# The role-specific half lives in each consumer repo under
+# ansible/tasks/os-update/{vars,preflight,drain,verify,undrain,settle}.yml
+# (contract: docs/ansible-os-update.md).
+
+# plan | apply | undrain-only
+os_update_mode: plan
+
+# Where the consumer repo's hook task-files live (playbook_dir = <repo>/ansible/playbooks).
+os_update_hooks_dir: "{{ playbook_dir }}/../tasks/os-update"
+
+# Alertmanager, reached through the tbot app-tunnel started by ansible-run.yml
+# (tbot_tunnels: app=alertmanager listen=9093). Empty = refuse to apply.
+os_update_am_url: ""
+
+# Dead-man window for the maintenance silences. MUST stay below the `for:` of
+# the OsUpdateHostStrandedDrain alert, or the safety net silences itself.
+os_update_silence_minutes: 25
+
+# Reboot behaviour. post_reboot_delay covers Teleport agent re-registration:
+# the host is SSH-reachable only once its teleport agent is back in the proxy's
+# inventory, and ansible reconnects through the tsh ProxyCommand.
+os_update_reboot_timeout: 900
+os_update_post_reboot_delay: 45
+os_update_connect_timeout: 30
+
+# Packages that are owned by IaC (custom builds, pinned versions, or the very
+# transport we are riding on) and must NEVER be touched by the OS upgrade.
+# `teleport` is on this list because its postinst restarts the agent we are
+# connected through. Consumers add their own via os_update_pinned_extra.
+os_update_pinned_base:
+  - teleport
+  - frr
+  - frr-pythontools
+  - consul
+os_update_pinned_extra: []
+
+# Kernel GC only when /boot is genuinely tight — autoremove --purge has a wider
+# blast radius than "delete old kernels", so we don't run it speculatively.
+os_update_boot_free_gc_threshold_mb: 500
+os_update_boot_free_min_mb: 400
+
+# Drain marker: survives a runner crash, so a re-run can tell "this host was
+# left drained by a previous run" from "this host is healthy and in rotation".
+os_update_marker_dir: /var/lib/os-update
+os_update_marker_file: /var/lib/os-update/drained.json
+node_exporter_textfile_dir: /var/lib/node_exporter
+
+# Run URL, injected by the reusable workflow for the silence comment + marker.
+os_update_run_url: manual
+
+# Escape hatch for a deliberate fleet-wide local run (the playbook is normally
+# driven one host per GH job, so >1 host in the play means someone bypassed the
+# GH-level fail-fast / approval / artifact trail).
+os_update_allow_multi: false
+os_update_allow_single_node: false

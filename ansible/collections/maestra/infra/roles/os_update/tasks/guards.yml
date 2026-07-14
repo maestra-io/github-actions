@@ -1,0 +1,56 @@
+---
+# "Is any OTHER host in this contour currently drained?"
+#
+# The source of truth is the Alertmanager silence, NOT a metric written by the
+# host being drained: a node_exporter textfile metric disappears exactly during
+# the reboot, so `count(os_update_drained{...}) == 0` evaluates over an EMPTY
+# vector — neither true nor false — and fails OPEN in the one window the guard
+# exists for. The silence lives off-box and carries an endsAt (dead-man).
+
+- name: Guard — an Alertmanager tunnel is mandatory before we drain anything
+  ansible.builtin.assert:
+    that: (os_update_am_url | default('')) | length > 0
+    fail_msg: >-
+      No Alertmanager URL. Refusing to drain/reboot without maintenance silences —
+      a rebooting LB/gateway pages Rootly within 1-3 minutes. The reusable workflow
+      opens the tunnel with `tbot_tunnels: app=alertmanager listen=9093`.
+  when: os_update_mode in ['apply', 'undrain-only']
+
+- name: Fetch the active silences
+  ansible.builtin.uri:
+    url: "{{ os_update_am_url }}/api/v2/silences"
+    return_content: true
+    status_code: 200
+  delegate_to: localhost
+  become: false
+  check_mode: false
+  register: os_update_silences
+  when: (os_update_am_url | default('')) | length > 0
+
+- name: Which other hosts hold an open os-update drain window
+  ansible.builtin.set_fact:
+    os_update_other_drains: >-
+      {{ os_update_silences.json
+         | default([])
+         | selectattr('status.state', 'equalto', 'active')
+         | selectattr('createdBy', 'defined')
+         | selectattr('createdBy', 'search', '^gha-os-update')
+         | rejectattr('comment', 'search', 'host=' ~ inventory_hostname ~ '(\\s|$)')
+         | map(attribute='comment')
+         | list }}
+  when: (os_update_am_url | default('')) | length > 0
+
+- name: Guard — exactly one host at a time, contour-wide
+  ansible.builtin.assert:
+    that: (os_update_other_drains | default([]) | length) == 0
+    fail_msg: >-
+      Another os-update drain window is open: {{ os_update_other_drains | default([]) }}.
+      Two hosts out of rotation at once is how a redundant pair becomes an outage. STOP.
+  when: os_update_mode == 'apply'
+
+- name: Guard — this host must have a peer (draining a singleton IS the outage)
+  ansible.builtin.assert:
+    that: (os_update_peers | length) > 0 or (os_update_allow_single_node | bool)
+    fail_msg: >-
+      {{ inventory_hostname }} has no peer in {{ os_update_farm }}. Draining it takes
+      the service down. Pass -e os_update_allow_single_node=true if that is genuinely intended.

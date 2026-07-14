@@ -1,0 +1,37 @@
+---
+# One Alertmanager silence PER matcher set. Matchers WITHIN a single silence are
+# ANDed — folding `instance=<host>` AND `alertname=BgpPeerDown` AND
+# `node_group=<peer's group>` into one silence produces a silence that matches
+# NOTHING, and the alerts we most need to suppress are the ones that fire on the
+# SURVIVING peer (BgpPeerDown) and on the far side (StrongSwanIKETunnelDown on the
+# EC2 hubs), whose `instance` is not ours.
+
+- name: Invariant — the dead-man window must expire before the stranded-drain alert fires
+  # OsUpdateHostStrandedDrain has `for: 30m`. If the silence outlived it, the safety
+  # net that detects "a runner died and left this host drained" would be silenced by
+  # the very run that stranded the host.
+  ansible.builtin.assert:
+    that: (os_update_silence_minutes | int) < 30
+    fail_msg: "os_update_silence_minutes must stay below OsUpdateHostStrandedDrain's for: (30m)."
+
+- name: Create the maintenance silences
+  ansible.builtin.uri:
+    url: "{{ os_update_am_url }}/api/v2/silences"
+    method: POST
+    body_format: json
+    body:
+      matchers: "{{ item }}"
+      startsAt: "{{ '%Y-%m-%dT%H:%M:%S.000Z' | strftime(ansible_facts.date_time.epoch | int) }}"
+      endsAt: "{{ '%Y-%m-%dT%H:%M:%S.000Z' | strftime((ansible_facts.date_time.epoch | int) + (os_update_silence_minutes | int) * 60) }}"
+      createdBy: "gha-os-update"
+      comment: "OS update issues-maestra#1104 host={{ inventory_hostname }} run={{ os_update_run_url }}"
+    status_code: 200
+  delegate_to: localhost
+  become: false
+  check_mode: false
+  loop: "{{ os_update_silence_sets }}"
+  register: os_update_silence_post
+
+- name: Remember the silence IDs so `always` can drop them
+  ansible.builtin.set_fact:
+    os_update_silence_ids: "{{ os_update_silence_post.results | map(attribute='json.silenceID') | list }}"

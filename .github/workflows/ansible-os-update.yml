@@ -1,0 +1,272 @@
+# maestra-io/github-actions/.github/workflows/ansible-os-update.yml
+#
+# Rolling OS update (apt + kernel + reboot) for the pet VMs — haproxy farms, NAT
+# gateways, VPN hosts. issues-maestra#1104.
+#
+# WHY A PER-HOST MATRIX AND NOT `serial: 1` INSIDE ONE ANSIBLE RUN
+# teleport-actions/auth mints ONE SSH certificate per job, at job start
+# (ansible-run.yml). A 12-host farm at ~14 min/host is ~2.5h — well past any
+# certificate TTL the bot role will grant, and the cert dies on every remaining
+# host at the same instant. haproxy-maestra already has this burn on record
+# (deploy.yml: "rolling_interval=180s stretches the apply past the Teleport SSH
+# session lifetime — run 25733140071 lost the API tunnel ~16 minutes in").
+# One job per host = a fresh cert per host, and "Re-run failed jobs" becomes the
+# resume button: it replays the failed host and everything fail-fast cancelled,
+# in order, reusing enumerate/plan.
+#
+# The per-host jobs deliberately keep the FARM-level concurrency group of
+# ansible-run.yml (they do not pass a concurrency_suffix), so an os-update can
+# never interleave with a normal config deploy of the same farm — a deploy landing
+# mid-drain would happily unmask keepalived/haproxy on a host we just drained.
+name: Ansible OS Update (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      playbook:
+        description: "Playbook path relative to working_directory."
+        required: false
+        type: string
+        default: "playbooks/os-update.yml"
+      inventory:
+        required: false
+        type: string
+        default: "inventory/teleport_inventory.py"
+      working_directory:
+        required: false
+        type: string
+        default: "ansible"
+      region:
+        required: true
+        type: string
+      environment:
+        required: true
+        type: string
+      site:
+        required: true
+        type: string
+      inventory_group_suffix:
+        description: "Suffix appended to <region>_<env>_<site> to form the target group (_nat_gateway, _vpn, _haproxy_public, ...)."
+        required: false
+        type: string
+        default: ""
+      host_limit:
+        description: "Single-host escape hatch. When set, the matrix is that one host."
+        required: false
+        type: string
+        default: ""
+      mode:
+        description: "plan | apply | undrain-only. `plan` mutates nothing."
+        required: false
+        type: string
+        default: "plan"
+      order:
+        description: >-
+          Explicit host order, CSV. Empty = alphabetical. Every name must exist in the
+          target group (a typo fails the run rather than silently skipping a host).
+        required: false
+        type: string
+        default: ""
+      alertmanager_app:
+        description: "Teleport app for the Alertmanager tunnel (maintenance silences)."
+        required: false
+        type: string
+        default: "alertmanager"
+      silence_minutes:
+        description: "Dead-man window for the silences. Must stay < OsUpdateHostStrandedDrain's for: (30m)."
+        required: false
+        type: number
+        default: 25
+      reboot_timeout:
+        required: false
+        type: number
+        default: 900
+      post_reboot_delay:
+        description: "Seconds to wait after reboot before probing — must cover Teleport agent re-registration."
+        required: false
+        type: number
+        default: 45
+      certificate_ttl:
+        description: "Per-HOST job, so 1h is ample. Capped by the bot role's max_session_ttl."
+        required: false
+        type: string
+        default: "1h"
+      max_hosts:
+        description: "Refuse to run if the group is bigger than this (typo/label-drift guard)."
+        required: false
+        type: number
+        default: 20
+      extra_run_args:
+        required: false
+        type: string
+        default: ""
+    secrets:
+      VECTOR_SIEM_BASIC_AUTH_USER:
+        required: false
+      VECTOR_SIEM_BASIC_AUTH_PASSWORD:
+        required: false
+      PROXMOX_MONITORING_PASSWORD:
+        required: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  enumerate:
+    runs-on: ubuntu-latest
+    outputs:
+      hosts: ${{ steps.list.outputs.hosts }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+
+      - name: Install ansible
+        run: uv pip install --system -r ansible/requirements-pip.txt
+
+      - name: Get Teleport version from proxy
+        id: tp-version
+        run: |
+          VER="$(/usr/bin/curl -sf "https://teleport.maestra.io:443/webapi/find" \
+            | jq -r '.auto_update.tools_version // .server_version')"
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Teleport
+        uses: teleport-actions/setup@v1
+        with:
+          version: ${{ steps.tp-version.outputs.version }}
+
+      - name: Teleport auth
+        id: teleport-auth
+        uses: teleport-actions/auth@v2
+        with:
+          proxy: teleport.maestra.io:443
+          token: github-actions-infra-deploy
+          certificate-ttl: 30m
+
+      - name: Build the host list
+        id: list
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          TELEPORT_IDENTITY_FILE: ${{ steps.teleport-auth.outputs.identity-file }}
+          TBOT_DEST_DIR: ${{ steps.teleport-auth.outputs.destination-dir }}
+          TELEPORT_PROXY: teleport.maestra.io:443
+          GROUP: ${{ inputs.region }}_${{ inputs.environment }}_${{ inputs.site }}${{ inputs.inventory_group_suffix }}
+          HOST_LIMIT: ${{ inputs.host_limit }}
+          ORDER: ${{ inputs.order }}
+          MAX_HOSTS: ${{ inputs.max_hosts }}
+        run: |
+          set -euo pipefail
+          ansible-inventory -i "${{ inputs.inventory }}" --list > /tmp/inv.json
+
+          if [ -n "${HOST_LIMIT}" ]; then
+            HOSTS="$(jq -cn --arg h "${HOST_LIMIT}" '[$h]')"
+          elif [ -n "${ORDER}" ]; then
+            # Explicit order. Every named host must be in the group — a typo must fail
+            # the run, not silently drop a host from the fleet sweep.
+            HOSTS="$(jq -c --arg g "${GROUP}" --arg o "${ORDER}" '
+              ($o | split(",") | map(gsub("^\\s+|\\s+$";""))) as $want
+              | (.[$g].hosts // []) as $have
+              | ($want - $have) as $bogus
+              | if ($bogus | length) > 0
+                then error("hosts not in group \($g): \($bogus | join(", "))")
+                else $want end' /tmp/inv.json)"
+          else
+            HOSTS="$(jq -c --arg g "${GROUP}" '(.[$g].hosts // []) | sort' /tmp/inv.json)"
+          fi
+
+          N="$(echo "${HOSTS}" | jq 'length')"
+          if [ "${N}" -eq 0 ]; then
+            echo "::error::No hosts matched group ${GROUP}"
+            exit 1
+          fi
+          if [ "${N}" -gt "${MAX_HOSTS}" ]; then
+            echo "::error::${N} hosts > max_hosts=${MAX_HOSTS} for group ${GROUP} — refusing (label drift?)"
+            exit 1
+          fi
+
+          echo "hosts=${HOSTS}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### OS update — ${N} host(s) in \`${GROUP}\`, in this order"
+            echo ""
+            echo "${HOSTS}" | jq -r 'to_entries[] | "\(.key + 1). `\(.value)`"'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Read-only across the WHOLE group: pending packages, reboot decision, /boot
+  # headroom, peer health, and "is anyone already drained". Never gated — you
+  # approve `apply` after you have read the plan.
+  plan:
+    needs: enumerate
+    uses: ./.github/workflows/ansible-run.yml
+    secrets: inherit
+    with:
+      playbook: ${{ inputs.playbook }}
+      inventory: ${{ inputs.inventory }}
+      working_directory: ${{ inputs.working_directory }}
+      region: ${{ inputs.region }}
+      environment: ${{ inputs.environment }}
+      site: ${{ inputs.site }}
+      inventory_group_suffix: ${{ inputs.inventory_group_suffix }}
+      host_limit: ${{ inputs.host_limit }}
+      # NOT --check: command/shell/apt are skipped in check mode, which would leave
+      # every probe register undefined and make the plan a green no-op.
+      check_mode: false
+      use_mitogen: false
+      no_hosts_fail_on_apply: true
+      certificate_ttl: 30m
+      tbot_tunnels: |
+        app=${{ inputs.alertmanager_app }} listen=9093
+      extra_run_args: >-
+        -e os_update_mode=plan
+        -e os_update_am_url=http://127.0.0.1:9093
+        ${{ inputs.extra_run_args }}
+      artifact_name: os-update-plan-${{ inputs.region }}-${{ inputs.environment }}-${{ inputs.site }}${{ inputs.inventory_group_suffix }}-${{ github.run_number }}
+
+  apply:
+    needs: [enumerate, plan]
+    if: ${{ inputs.mode == 'apply' || inputs.mode == 'undrain-only' }}
+    strategy:
+      matrix:
+        host: ${{ fromJSON(needs.enumerate.outputs.hosts) }}
+      max-parallel: 1
+      fail-fast: true
+    uses: ./.github/workflows/ansible-run.yml
+    secrets: inherit
+    with:
+      playbook: ${{ inputs.playbook }}
+      inventory: ${{ inputs.inventory }}
+      working_directory: ${{ inputs.working_directory }}
+      region: ${{ inputs.region }}
+      environment: ${{ inputs.environment }}
+      site: ${{ inputs.site }}
+      inventory_group_suffix: ${{ inputs.inventory_group_suffix }}
+      host_limit: ${{ matrix.host }}
+      check_mode: false
+      use_mitogen: false
+      no_hosts_fail_on_apply: true
+      certificate_ttl: ${{ inputs.certificate_ttl }}
+      tbot_tunnels: |
+        app=${{ inputs.alertmanager_app }} listen=9093
+      extra_run_args: >-
+        -e os_update_mode=${{ inputs.mode }}
+        -e os_update_am_url=http://127.0.0.1:9093
+        -e os_update_silence_minutes=${{ inputs.silence_minutes }}
+        -e os_update_reboot_timeout=${{ inputs.reboot_timeout }}
+        -e os_update_post_reboot_delay=${{ inputs.post_reboot_delay }}
+        -e os_update_run_url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        ${{ inputs.extra_run_args }}
+      artifact_name: os-update-${{ matrix.host }}-${{ github.run_number }}
+      # The family rule (ansible-manual.yml): omega is gated by a GitHub Environment,
+      # omicron is not. Never invent an environment name for omicron — GitHub would
+      # silently create it WITHOUT protection rules, which reads like a gate and isn't one.
+      gh_environment: ${{ inputs.environment == 'omega' && format('{0}-{1}-{2}', inputs.region, inputs.environment, inputs.site) || '' }}

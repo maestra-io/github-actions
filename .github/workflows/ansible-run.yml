@@ -93,6 +93,17 @@ on:
         required: false
         type: string
         default: ""
+      tbot_tunnels:
+        description: >-
+          Generic Teleport app tunnels for the play, one `app=<teleport-app> listen=<port>`
+          per line. Starts a single tbot with N application-tunnel services and exports
+          TUNNEL_<APP_UPPER_SNAKE>=http://127.0.0.1:<port> into the Execute env.
+          Fails the job if a tunnel never opens — a play that silently loses its
+          Alertmanager tunnel would drain and reboot a load balancer with no silences up.
+          Independent of vault_mode (which keeps its own dedicated :8200 tunnel).
+        required: false
+        type: string
+        default: ""
       certificate_ttl:
         description: >-
           Teleport SSH certificate TTL. Must exceed the LONGEST expected play
@@ -284,6 +295,64 @@ jobs:
             sleep 1
           done
 
+      # --- Generic Teleport app tunnels (os-update: Alertmanager) --------
+      - name: Start Teleport app tunnels
+        id: app-tunnels
+        if: ${{ inputs.tbot_tunnels != '' }}
+        env:
+          TBOT_TUNNELS: ${{ inputs.tbot_tunnels }}
+        run: |
+          set -euo pipefail
+          {
+            echo "version: v2"
+            echo "proxy_server: ${{ inputs.teleport_fqdn }}"
+            echo "onboarding:"
+            echo "  join_method: github"
+            echo "  token: ${{ inputs.teleport_join_token }}"
+            # memory storage: /var/lib/teleport is not writable on hosted runners.
+            echo "storage:"
+            echo "  type: memory"
+            echo "services:"
+          } > /tmp/tbot-apps.yaml
+
+          PAIRS=""
+          while IFS= read -r line; do
+            [ -z "${line// /}" ] && continue
+            app="$(printf '%s' "$line" | sed -n 's/.*app=\([^ ]*\).*/\1/p')"
+            port="$(printf '%s' "$line" | sed -n 's/.*listen=\([0-9]*\).*/\1/p')"
+            if [ -z "$app" ] || [ -z "$port" ]; then
+              echo "::error::malformed tbot_tunnels line (want 'app=<name> listen=<port>'): $line"
+              exit 1
+            fi
+            {
+              echo "  - type: application-tunnel"
+              echo "    app_name: ${app}"
+              echo "    listen: tcp://127.0.0.1:${port}"
+            } >> /tmp/tbot-apps.yaml
+            PAIRS="${PAIRS} ${app}:${port}"
+          done <<< "${TBOT_TUNNELS}"
+
+          tbot start -c /tmp/tbot-apps.yaml &
+          echo "pid=$!" >> "$GITHUB_OUTPUT"
+
+          for pair in ${PAIRS}; do
+            app="${pair%%:*}"; port="${pair##*:}"
+            opened=0
+            for _ in $(seq 1 30); do
+              if (exec 3<>/dev/tcp/127.0.0.1/"${port}") 2>/dev/null; then opened=1; break; fi
+              sleep 1
+            done
+            # FAIL CLOSED. No tunnel -> no silences -> we would page Rootly for every
+            # host we reboot, and the "is anyone else drained" interlock would be blind.
+            if [ "${opened}" != 1 ]; then
+              echo "::error::tbot tunnel for app '${app}' never opened on 127.0.0.1:${port}"
+              exit 1
+            fi
+            slug="$(printf '%s' "${app}" | tr 'a-z-' 'A-Z_')"
+            echo "TUNNEL_${slug}=http://127.0.0.1:${port}" >> "$GITHUB_ENV"
+            echo "tunnel for ${app} is up on 127.0.0.1:${port}"
+          done
+
       # --- Vault: fetch secrets (public OR tunnel) -----------------------
       - name: Retrieve secrets from Vault
         if: ${{ inputs.vault_mode != 'none' && inputs.vault_secrets != '' }}
@@ -415,6 +484,10 @@ jobs:
       - name: Stop Vault tunnel
         if: ${{ always() && inputs.vault_mode == 'tunnel' && steps.vault-tunnel.outputs.tunnel_pid != '' }}
         run: kill "${{ steps.vault-tunnel.outputs.tunnel_pid }}" || true
+
+      - name: Stop Teleport app tunnels
+        if: ${{ always() && steps.app-tunnels.outputs.pid != '' }}
+        run: kill "${{ steps.app-tunnels.outputs.pid }}" || true
 
       # --- Proxmox token cleanup -----------------------------------------
       - name: Cleanup Proxmox API token

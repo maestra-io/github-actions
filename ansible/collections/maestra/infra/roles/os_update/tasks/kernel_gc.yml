@@ -1,0 +1,30 @@
+---
+# Old kernels are only garbage-collected when /boot is genuinely tight, and only
+# AFTER a successful reboot — never before. `autoremove --purge` has a wider blast
+# radius than "delete old kernels", and the kernel we might have to fall back to is
+# worth more than the megabytes it occupies.
+
+- name: Re-measure /boot after the upgrade
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      df -Pm /boot | awk 'NR==2 {print $4}'
+  register: os_update_boot_free_post
+  changed_when: false
+  check_mode: false
+
+- name: Purge superseded kernels
+  ansible.builtin.apt:
+    autoremove: true
+    purge: true
+  register: os_update_gc
+  when:
+    - os_update_rebooted | default(false)
+    - (os_update_boot_free_post.stdout | trim | int) < (os_update_boot_free_gc_threshold_mb | int)
+
+- name: /boot after GC
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}: /boot free {{ os_update_boot_free_post.stdout | trim }} MB
+      {{ '(GC ran)' if (os_update_gc.changed | default(false)) else '(GC not needed)' }}

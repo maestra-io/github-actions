@@ -1,0 +1,45 @@
+---
+# The payload. Runs only while the host is DRAINED.
+
+- name: Serialize against unattended-upgrades / apt-daily
+  # The apt-daily timers are masked on these boxes (harden-apt), but the
+  # unattended-upgrades unit itself is enabled and can still fire on boot.
+  # lock_timeout makes us wait for the dpkg lock instead of dying on it.
+  ansible.builtin.apt:
+    upgrade: dist
+    update_cache: true
+    lock_timeout: 300
+    autoremove: false
+    dpkg_options: force-confdef,force-confold
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+    # needrestart is not installed on these hosts, but if it ever lands, `a` keeps
+    # it from opening an interactive service-restart prompt and hanging the run.
+    NEEDRESTART_MODE: a
+  register: os_update_apt_result
+
+- name: Re-check whether the upgrade asked for a reboot
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+  register: os_update_reboot_flag_post
+  check_mode: false
+
+- name: Which packages asked for it
+  ansible.builtin.slurp:
+    src: /var/run/reboot-required.pkgs
+  register: os_update_reboot_pkgs
+  failed_when: false
+  check_mode: false
+
+- name: Recompute the reboot decision from the post-upgrade state
+  ansible.builtin.set_fact:
+    os_update_reboot_needed: >-
+      {{ os_update_reboot_needed
+         or os_update_reboot_flag_post.stat.exists }}
+
+- name: What the upgrade did
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}: apt changed={{ os_update_apt_result.changed }},
+      reboot_required={{ os_update_reboot_flag_post.stat.exists }},
+      reboot_pkgs={{ (os_update_reboot_pkgs.content | default('') | b64decode).split() | default([]) }}
