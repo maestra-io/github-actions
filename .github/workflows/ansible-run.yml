@@ -93,6 +93,16 @@ on:
         required: false
         type: string
         default: ""
+      certificate_ttl:
+        description: >-
+          Teleport SSH certificate TTL. Must exceed the LONGEST expected play
+          runtime: the cert is minted once at job start, and a run that
+          outlives it dies mid-play with 'ssh: cert has expired' on every
+          host at the same moment (bit mssql-maestra's fresh Windows installs
+          at exactly 1h). Capped by the bot role's max_session_ttl.
+        required: false
+        type: string
+        default: "1h"
       vault_role:
         description: "Vault JWT role name (auth method jwt-github)"
         required: false
@@ -238,7 +248,7 @@ jobs:
         with:
           proxy: ${{ inputs.teleport_fqdn }}
           token: ${{ inputs.teleport_join_token }}
-          certificate-ttl: 1h
+          certificate-ttl: ${{ inputs.certificate_ttl }}
 
       # --- Mitogen (Linux only) ------------------------------------------
       - name: Configure Mitogen strategy plugin
