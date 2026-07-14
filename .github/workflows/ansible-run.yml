@@ -93,6 +93,15 @@ on:
         required: false
         type: string
         default: ""
+      concurrency_suffix:
+        description: >-
+          Appended to the concurrency group. Lets a caller opt out of the farm-wide
+          mutating lane when its run is read-only in effect but does not use --check
+          (the os-update `plan` job — command/shell/apt are SKIPPED under check mode,
+          so its probes must run for real). Leave empty for anything that mutates.
+        required: false
+        type: string
+        default: ""
       tbot_tunnels:
         description: >-
           Generic Teleport app tunnels for the play, one `app=<teleport-app> listen=<port>`
@@ -195,7 +204,25 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.gh_environment }}
     concurrency:
-      group: ansible-${{ inputs.region }}-${{ inputs.environment }}-${{ inputs.site }}${{ inputs.inventory_group_suffix }}
+      # Two classes, deliberately NOT one group.
+      #
+      # MUTATING runs (deploys, os-update applies) share the farm group: they must
+      # never interleave. A config deploy landing mid-drain would happily unmask the
+      # keepalived/haproxy unit an os-update just masked to take the host out.
+      #
+      # READ-ONLY runs (--check: the PR plan matrix) get their own `-check` group.
+      # They used to share the farm group, which meant any PR check — including the
+      # three Renovate PRs that happen to be open on a Tuesday — would land in the
+      # group and CANCEL a pending os-update job, because GitHub keeps at most one
+      # pending job per group and evicts the older one. That is how run 29359006993
+      # died. A read-only check has no reason to be exclusive with anything.
+      #
+      # concurrency_suffix is the escape hatch for a caller that needs its own lane
+      # (the os-update `plan` job uses it: it runs with check_mode:false — command/
+      # shell/apt are skipped under --check — so it is read-only in effect but cannot
+      # be recognised as such from here).
+      group: >-
+        ansible-${{ inputs.region }}-${{ inputs.environment }}-${{ inputs.site }}${{ inputs.inventory_group_suffix }}${{ inputs.check_mode && '-check' || '' }}${{ inputs.concurrency_suffix }}
       cancel-in-progress: false
     env:
       ANSIBLE_FORCE_COLOR: "1"
