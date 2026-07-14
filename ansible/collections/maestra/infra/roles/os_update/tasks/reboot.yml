@@ -49,15 +49,39 @@
     var: os_update_failed_units.stdout_lines
   when: os_update_systemd_state.stdout == 'degraded'
 
-- name: Confirm we booted the kernel we installed
+- name: Re-gather facts (we are on a new kernel now)
   ansible.builtin.setup:
     gather_subset: [min]
 
+- name: Re-read the newest installed kernel
+  # MUST be recomputed here. os_update_newest_kernel was measured during the PLAN,
+  # i.e. BEFORE apt installed anything — so on any host where the upgrade itself
+  # brought in the new kernel, the planned value is already stale by the time we
+  # reboot. Asserting against it fails with the absurd message "booted 6.8.0-134 but
+  # the newest installed is 6.8.0-124" on a host that did exactly the right thing
+  # (that is us-omicron-lw-vpn-01, run 29362013711).
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      ls -1 /boot/vmlinuz-* 2>/dev/null | sed 's|.*/vmlinuz-||' | sort -V | tail -1
+  register: os_update_newest_kernel_post
+  changed_when: false
+  check_mode: false
+
 - name: Kernel after reboot
+  # The gate that matters: we must be RUNNING the newest kernel on disk. If GRUB
+  # booted an older entry, the CVEs we just patched are still live and the host must
+  # not go back into rotation.
   ansible.builtin.assert:
-    that: ansible_facts.kernel == os_update_newest_kernel
+    that: ansible_facts.kernel == (os_update_newest_kernel_post.stdout | trim)
     fail_msg: >-
       Booted {{ ansible_facts.kernel }} but the newest installed kernel is
-      {{ os_update_newest_kernel }} — GRUB booted an older entry. Investigate before
-      putting this host back into rotation.
-    success_msg: "Booted {{ ansible_facts.kernel }} (newest installed)."
+      {{ os_update_newest_kernel_post.stdout | trim }} — GRUB booted an older entry.
+      Investigate before putting this host back into rotation.
+    success_msg: "Booted {{ ansible_facts.kernel }} (the newest installed kernel)."
+
+- name: Remember what we ended up on
+  ansible.builtin.set_fact:
+    os_update_newest_kernel: "{{ os_update_newest_kernel_post.stdout | trim }}"
+    os_update_booted_kernel: "{{ ansible_facts.kernel }}"
