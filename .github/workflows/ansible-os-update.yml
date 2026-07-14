@@ -224,6 +224,14 @@ jobs:
       use_mitogen: false
       no_hosts_fail_on_apply: true
       certificate_ttl: 30m
+      # The plan is read-only, but it deliberately does NOT use --check (command /
+      # shell / apt are skipped there, which would leave every probe register
+      # undefined). So it cannot be recognised as read-only from inside ansible-run,
+      # and without its own lane it would sit in the farm's MUTATING concurrency
+      # group — where any Renovate PR check landing in the group evicts it, because
+      # GitHub keeps at most one pending job per group. That is how run 29359006993
+      # was cancelled before it ever reached a host.
+      concurrency_suffix: "-osupdate-plan"
       tbot_tunnels: |
         app=${{ inputs.alertmanager_app }} listen=9093
       extra_run_args: >-
