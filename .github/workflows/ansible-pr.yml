@@ -196,6 +196,20 @@ jobs:
             const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
             const count = (s, re) => { const m = s.match(re); return m ? m.length : 0; };
 
+            // The profile_tasks callback pollutes plan logs with a per-task
+            // timestamp banner line and a giant end-of-run timing summary
+            // (TASKS RECAP / PLAYBOOK RECAP). A blind tail() of the raw log
+            // showed ONLY that noise — the actual --diff output sits above it
+            // and got cut off. Strip the banners, chop everything from
+            // TASKS RECAP down (PLAY RECAP sits above it and survives), and
+            // only then take the tail.
+            const stripProfileNoise = (s) => s
+              .split('\n')
+              .filter(l => !/^\w+ \d{1,2} \w+ \d{4}\s+\d{2}:\d{2}:\d{2} [+-]\d{4}\s+\(\d+:\d{2}:\d{2}\.\d+\)\s+\d+:\d{2}:\d{2}\.\d+ \*+\s*$/.test(l))
+              .join('\n')
+              .replace(/\n+TASKS RECAP \*+[\s\S]*$/, '\n')
+              .replace(/\n{3,}/g, '\n\n');
+
             let files = [];
             try {
               files = fs.readdirSync(logsDir)
@@ -225,9 +239,10 @@ jobs:
               const hasChanges = changed > 0;
               const hasFailed = failed > 0 || unreach > 0;
               if (hasChanges || hasFailed) {
-                const body = raw.length > MAX_PER_ENV
-                  ? raw.slice(-MAX_PER_ENV) + '\n... (truncated)'
-                  : raw;
+                const clean = stripProfileNoise(raw);
+                const body = clean.length > MAX_PER_ENV
+                  ? '... (older output truncated)\n' + clean.slice(-MAX_PER_ENV)
+                  : clean;
                 sections.push(`<details><summary>${env} — ${status}</summary>\n\n\`\`\`\n${body}\n\`\`\`\n</details>`);
               }
             }
