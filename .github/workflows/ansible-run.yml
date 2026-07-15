@@ -140,6 +140,17 @@ on:
         type: boolean
         default: false
       # --- misc ----------------------------------------------------------
+      runs_on:
+        description: >-
+          Runner label for the job. Default is GitHub-hosted ubuntu-latest;
+          pass a self-hosted ARC scale-set name (e.g. us-omicron-lw-runners)
+          to run in-cluster. The ARC runner image is minimal but carries
+          everything this workflow needs (jq/curl/git/python3/docker); note
+          sudo is blocked there (no-new-privileges), so steps must not
+          install system packages.
+        required: false
+        type: string
+        default: "ubuntu-latest"
       extra_env:
         description: "Extra KEY=VALUE lines injected into the Execute step env (may reference secrets already exported to \\$GITHUB_ENV)."
         required: false
@@ -201,7 +212,7 @@ permissions:
 
 jobs:
   ansible:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     environment: ${{ inputs.gh_environment }}
     concurrency:
       # Two classes, deliberately NOT one group.
