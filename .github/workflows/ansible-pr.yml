@@ -78,6 +78,11 @@ on:
         required: false
         type: string
         default: ""
+      runs_on:
+        description: "Runner label for the check-matrix jobs (forwarded to ansible-run). Lint and the comment job stay on ubuntu-latest."
+        required: false
+        type: string
+        default: "ubuntu-latest"
       extra_run_args:
         description: "Extra ansible-playbook args (workflow-wide default; per-row extra_run_args in `envs` wins)"
         required: false
@@ -170,6 +175,7 @@ jobs:
       requirements_pip: ${{ inputs.requirements_pip }}
       requirements_galaxy: ${{ inputs.requirements_galaxy }}
       python_version: ${{ inputs.python_version }}
+      runs_on: ${{ inputs.runs_on }}
       artifact_name: ansible-check-${{ matrix.env.region }}-${{ matrix.env.environment }}-${{ matrix.env.site }}${{ matrix.env.inventory_group_suffix || '' }}
 
   comment:
