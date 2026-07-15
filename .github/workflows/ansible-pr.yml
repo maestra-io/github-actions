@@ -79,7 +79,7 @@ on:
         type: string
         default: ""
       runs_on:
-        description: "Runner label for the check-matrix jobs (forwarded to ansible-run). Lint and the comment job stay on ubuntu-latest."
+        description: "Default runner label for the check-matrix jobs; a per-row runs_on in `envs` wins. Rows target different environments whose runners must not cross (omicron rows -> us-omicron-lw-runners; omega rows -> omega's own set). Lint and the comment job stay on ubuntu-latest."
         required: false
         type: string
         default: "ubuntu-latest"
@@ -175,7 +175,7 @@ jobs:
       requirements_pip: ${{ inputs.requirements_pip }}
       requirements_galaxy: ${{ inputs.requirements_galaxy }}
       python_version: ${{ inputs.python_version }}
-      runs_on: ${{ inputs.runs_on }}
+      runs_on: ${{ matrix.env.runs_on || inputs.runs_on }}
       artifact_name: ansible-check-${{ matrix.env.region }}-${{ matrix.env.environment }}-${{ matrix.env.site }}${{ matrix.env.inventory_group_suffix || '' }}
 
   comment:
