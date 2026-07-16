@@ -159,18 +159,45 @@
               gh workflow run os-update.yml -f mode=undrain-only -f host_limit={{ inventory_hostname }}
 
     # Only when the undrain actually succeeded. If it did not, the marker MUST stay:
-    # it is the one signal that says "this host is still out of rotation".
+    # it is the one signal that says "this host is still out of rotation" — it is
+    # what makes OsUpdateHostStrandedDrain fire and mode=undrain-only meaningful.
     - name: Clear the drain marker
-      ansible.builtin.include_tasks: marker.yml
-      vars:
-        os_update_marker_action: clear
       when: not (os_update_undrain_failed | default(false))
+      block:
+        - name: Clear the marker
+          ansible.builtin.include_tasks: marker.yml
+          vars:
+            os_update_marker_action: clear
+      rescue:
+        - name: Marker clear failed — the rest of the cleanup must still run
+          ansible.builtin.set_fact:
+            os_update_failed: true
+
+        - name: Say so
+          ansible.builtin.debug:
+            msg: >-
+              WARNING: could not clear the drain marker on {{ inventory_hostname }} —
+              OsUpdateHostStrandedDrain may fire on a host that IS back in rotation.
+              Continuing so the silences are still dropped and the job fails.
 
     - name: SETTLE — traffic is actually flowing again and the pair is redundant
-      ansible.builtin.include_tasks: "{{ os_update_hooks_dir }}/settle.yml"
       when:
         - not (os_update_failed | default(false))
         - not (os_update_undrain_failed | default(false))
+      block:
+        - name: Settle
+          ansible.builtin.include_tasks: "{{ os_update_hooks_dir }}/settle.yml"
+      rescue:
+        - name: Settle failed — the host is back in rotation but UNPROVEN
+          ansible.builtin.set_fact:
+            os_update_failed: true
+
+        - name: Say so
+          ansible.builtin.debug:
+            msg: >-
+              WARNING: settle failed on {{ inventory_hostname }} — the host is back in
+              rotation but not proven to be serving. Continuing so the silences are
+              dropped (the alerts must be free to fire on it) and the job fails.
 
     # Always dropped, even on a failed undrain: the silences are time-boxed anyway,
     # and a stranded host is precisely the case where we want the alerts to fire.

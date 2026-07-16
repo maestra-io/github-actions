@@ -62,8 +62,9 @@ on:
         default: "plan"
       order:
         description: >-
-          Explicit host order, CSV. Empty = alphabetical. Every name must exist in the
-          target group (a typo fails the run rather than silently skipping a host).
+          Explicit host order, CSV. Empty = alphabetical. Must list EVERY host in the
+          target group exactly once (a typo, a duplicate or an omitted host fails the
+          run rather than silently skipping a host); use host_limit for a single host.
         required: false
         type: string
         default: ""
@@ -189,21 +190,39 @@ jobs:
           HOST_LIMIT: ${{ inputs.host_limit }}
           ORDER: ${{ inputs.order }}
           MAX_HOSTS: ${{ inputs.max_hosts }}
+          MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
+
+          # The reusable contract is open to any caller (the shims use type: choice,
+          # but nothing forces a caller to). An unknown mode would make the apply
+          # job's `if` false and the run would end GREEN as a plan — a typo'd
+          # `mode=aply` must fail loudly instead.
+          case "${MODE}" in
+            plan|apply|undrain-only) ;;
+            *) echo "::error::Unknown mode '${MODE}' — must be plan, apply or undrain-only"; exit 1;;
+          esac
+
           ansible-inventory -i "${{ inputs.inventory }}" --list > /tmp/inv.json
 
           if [ -n "${HOST_LIMIT}" ]; then
             HOSTS="$(jq -cn --arg h "${HOST_LIMIT}" '[$h]')"
           elif [ -n "${ORDER}" ]; then
-            # Explicit order. Every named host must be in the group — a typo must fail
-            # the run, not silently drop a host from the fleet sweep.
+            # Explicit order. The list must be exactly the group: a typo must fail the
+            # run, a duplicate must not produce two matrix legs for one host, and an
+            # OMITTED host must not be silently dropped from the fleet sweep.
             HOSTS="$(jq -c --arg g "${GROUP}" --arg o "${ORDER}" '
               ($o | split(",") | map(gsub("^\\s+|\\s+$";""))) as $want
               | (.[$g].hosts // []) as $have
               | ($want - $have) as $bogus
+              | ($want | group_by(.) | map(select(length > 1) | .[0])) as $dupes
+              | ($have - $want) as $missing
               | if ($bogus | length) > 0
                 then error("hosts not in group \($g): \($bogus | join(", "))")
+                elif ($dupes | length) > 0
+                then error("duplicate hosts in order: \($dupes | join(", "))")
+                elif ($missing | length) > 0
+                then error("order must list every host in group \($g) — missing: \($missing | join(", ")). Use host_limit for a single host.")
                 else $want end' /tmp/inv.json)"
           else
             HOSTS="$(jq -c --arg g "${GROUP}" '(.[$g].hosts // []) | sort' /tmp/inv.json)"
@@ -239,6 +258,12 @@ jobs:
   # 29360255290).
   plan:
     needs: enumerate
+    # NOT in undrain-only: the plan runs the role in os_update_mode=plan, which
+    # includes the consumer preflight — and on a host stranded mid-drain (haproxy
+    # soft-stopped + masked) that preflight FAILS, which would skip `apply` and
+    # brick the very escape hatch undrain-only exists to be. The hatch skips the
+    # plan on purpose, exactly like the role skips preflight on purpose.
+    if: ${{ inputs.mode != 'undrain-only' }}
     uses: ./.github/workflows/ansible-run.yml
     secrets: inherit
     with:
@@ -271,11 +296,20 @@ jobs:
         -e os_update_am_url=http://127.0.0.1:9093
         -e os_update_allow_multi=true
         ${{ inputs.extra_run_args }}
-      artifact_name: os-update-plan-${{ inputs.region }}-${{ inputs.environment }}-${{ inputs.site }}${{ inputs.inventory_group_suffix }}-${{ github.run_number }}
+      # run_attempt: upload-artifact v4 rejects a duplicate name within a run (409),
+      # and "Re-run failed jobs" — the documented resume button — reuses run_number.
+      artifact_name: os-update-plan-${{ inputs.region }}-${{ inputs.environment }}-${{ inputs.site }}${{ inputs.inventory_group_suffix }}-${{ github.run_number }}-${{ github.run_attempt }}
 
   apply:
     needs: [enumerate, plan]
-    if: ${{ inputs.mode == 'apply' || inputs.mode == 'undrain-only' }}
+    # `!cancelled()` because in undrain-only the plan job is SKIPPED (see above) and
+    # the default `success()` would skip this job too. plan success is still required
+    # for mode=apply; undrain-only needs only the host list.
+    if: >-
+      ${{ !cancelled()
+          && needs.enumerate.result == 'success'
+          && (needs.plan.result == 'success' || inputs.mode == 'undrain-only')
+          && (inputs.mode == 'apply' || inputs.mode == 'undrain-only') }}
     strategy:
       matrix:
         host: ${{ fromJSON(needs.enumerate.outputs.hosts) }}
@@ -306,7 +340,11 @@ jobs:
         -e os_update_post_reboot_delay=${{ inputs.post_reboot_delay }}
         -e os_update_run_url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         ${{ inputs.extra_run_args }}
-      artifact_name: os-update-${{ matrix.host }}-${{ github.run_number }}
+      # run_attempt: the failed attempt already uploaded os-update-<host>-<N> (the
+      # upload step is if: always()), and upload-artifact v4 409s on a duplicate
+      # name — without the attempt suffix, "Re-run failed jobs" red-loops on the
+      # artifact step after the playbook has already succeeded.
+      artifact_name: os-update-${{ matrix.host }}-${{ github.run_number }}-${{ github.run_attempt }}
       # The family rule (ansible-manual.yml): omega is gated by a GitHub Environment,
       # omicron is not. Never invent an environment name for omicron — GitHub would
       # silently create it WITHOUT protection rules, which reads like a gate and isn't one.
@@ -322,7 +360,11 @@ jobs:
   # this fleet on the SOC board in the first place are actually gone.
   soc-rescan:
     needs: [enumerate, apply]
-    if: ${{ inputs.mode == 'apply' && needs.apply.result == 'success' }}
+    # Also on apply FAILURE: a partial sweep (host k fails, fail-fast cancels the
+    # rest) has still patched hosts 1..k-1, and skipping the re-scan would leave
+    # exactly the stale-board scenario this job exists to prevent. The dispatched
+    # list is the full enumerate list — re-scanning an unpatched host is harmless.
+    if: ${{ inputs.mode == 'apply' && !cancelled() && contains(fromJSON('["success","failure"]'), needs.apply.result) }}
     runs-on: ubuntu-latest
     steps:
       # A dedicated GitHub App (org variable SOC_DISPATCH_APP_ID + org secret
@@ -350,6 +392,7 @@ jobs:
         env:
           HOSTS: ${{ needs.enumerate.outputs.hosts }}
           SOC_TOKEN: ${{ steps.soc-token.outputs.token }}
+          SOC_TOKEN_OUTCOME: ${{ steps.soc-token.outcome }}
         run: |
           set -euo pipefail
           LIST="$(printf '%s' "${HOSTS}" | jq -r 'join(",")')"
@@ -358,6 +401,26 @@ jobs:
             # Loud, never silently green. A skipped re-scan means SOC keeps showing the
             # PRE-PATCH findings, and the next person to look at the board concludes the
             # fleet is still vulnerable — or, worse, that the patch run did nothing.
+            # Two distinct causes, two distinct remediations: the App may be absent
+            # (outcome=skipped — the mint step never ran), or configured but BROKEN
+            # (outcome=failure — revoked installation, bad private key; the
+            # continue-on-error swallowed it).
+            if [ "${SOC_TOKEN_OUTCOME}" = "failure" ]; then
+              echo "::warning::SOC re-scan SKIPPED — the dispatch App IS configured (org var SOC_DISPATCH_APP_ID) but the token mint FAILED — check the App installation on maestra-io/soc and the SOC_DISPATCH_APP_PRIVATE_KEY secret. The hosts ARE patched, but the SOC board still shows pre-patch findings until someone runs: gh workflow run vuln-scan.yaml --repo maestra-io/soc -f hosts=${LIST}"
+              {
+                echo "### SOC re-scan SKIPPED — App configured but token mint FAILED"
+                echo ""
+                echo "The hosts **are** patched, but the SOC board still shows the pre-patch"
+                echo "findings until it is re-scanned. Run it by hand:"
+                echo ""
+                echo "    gh workflow run vuln-scan.yaml --repo maestra-io/soc -f hosts=${LIST}"
+                echo ""
+                echo "Then fix the dispatch App: check the App installation on \`maestra-io/soc\`"
+                echo "and that the org secret \`SOC_DISPATCH_APP_PRIVATE_KEY\` matches the App in"
+                echo "the org variable \`SOC_DISPATCH_APP_ID\` (see the failed mint step's log)."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
             echo "::warning::SOC re-scan SKIPPED — the SOC dispatch App is not configured (org var SOC_DISPATCH_APP_ID / secret SOC_DISPATCH_APP_PRIVATE_KEY). The hosts ARE patched, but the SOC board still shows pre-patch findings until someone runs: gh workflow run vuln-scan.yaml --repo maestra-io/soc -f hosts=${LIST}"
             {
               echo "### SOC re-scan SKIPPED — dispatch App not configured"

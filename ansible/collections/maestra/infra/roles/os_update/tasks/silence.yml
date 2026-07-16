@@ -14,6 +14,14 @@
     that: (os_update_silence_minutes | int) < 30
     fail_msg: "os_update_silence_minutes must stay below OsUpdateHostStrandedDrain's for: (30m)."
 
+# Timestamps: a FRESH epoch (never ansible_facts.date_time.epoch — that one is
+# frozen at fact-gathering, and guards+plan+preflight have been eating into the
+# dead-man window for minutes by the time we get here), formatted with utc=true
+# (strftime without it renders the CONTROLLER'S local timezone and the literal
+# `Z` turns it into a lie: west of UTC the silence is created `pending` and the
+# drain proceeds unsilenced; east of UTC the endsAt can land in the past).
+# `now().timestamp()` is the local wall clock, which Python converts to the
+# correct Unix epoch regardless of the controller's TZ.
 - name: Create the maintenance silences
   ansible.builtin.uri:
     url: "{{ os_update_am_url }}/api/v2/silences"
@@ -21,8 +29,8 @@
     body_format: json
     body:
       matchers: "{{ item }}"
-      startsAt: "{{ '%Y-%m-%dT%H:%M:%S.000Z' | strftime(ansible_facts.date_time.epoch | int) }}"
-      endsAt: "{{ '%Y-%m-%dT%H:%M:%S.000Z' | strftime((ansible_facts.date_time.epoch | int) + (os_update_silence_minutes | int) * 60) }}"
+      startsAt: "{{ '%Y-%m-%dT%H:%M:%S.000Z' | strftime(now().timestamp(), utc=true) }}"
+      endsAt: "{{ '%Y-%m-%dT%H:%M:%S.000Z' | strftime(now().timestamp() + (os_update_silence_minutes | int) * 60, utc=true) }}"
       createdBy: "gha-os-update"
       comment: "OS update issues-maestra#1104 host={{ inventory_hostname }} run={{ os_update_run_url }}"
     status_code: 200
@@ -35,3 +43,54 @@
 - name: Remember the silence IDs so `always` can drop them
   ansible.builtin.set_fact:
     os_update_silence_ids: "{{ os_update_silence_post.results | map(attribute='json.silenceID') | list }}"
+
+# The one-at-a-time guard ran at play start; minutes of plan+preflight have
+# passed since, and nothing serializes sweeps ACROSS the three consumer repos
+# sharing a contour (GH max-parallel:1 only serializes within one workflow).
+# Close the TOCTOU: now that OUR silence is up, re-fetch and assert we are the
+# ONLY holder — the loser of the race expires its own silences and aborts
+# BEFORE anything is drained.
+- name: Re-fetch the silences — did anyone else start draining since the guard ran
+  ansible.builtin.uri:
+    url: "{{ os_update_am_url }}/api/v2/silences"
+    return_content: true
+    status_code: 200
+  delegate_to: localhost
+  become: false
+  check_mode: false
+  register: os_update_silences_recheck
+
+- name: Which OTHER hosts hold an open os-update drain window now
+  # Same discriminator as guards.yml: plain string `host=<me> ` with the trailing
+  # space (the comment always continues with ` run=`).
+  ansible.builtin.set_fact:
+    os_update_silence_contenders: >-
+      {{ os_update_silences_recheck.json
+         | default([])
+         | selectattr('status.state', 'equalto', 'active')
+         | selectattr('createdBy', 'defined')
+         | selectattr('createdBy', 'search', '^gha-os-update')
+         | rejectattr('comment', 'search', 'host=' ~ inventory_hostname ~ ' ')
+         | map(attribute='comment')
+         | list }}
+
+- name: Lost the race — expire our just-created silences before aborting
+  ansible.builtin.uri:
+    url: "{{ os_update_am_url }}/api/v2/silence/{{ item }}"
+    method: DELETE
+    status_code: [200, 404, 500]
+  delegate_to: localhost
+  become: false
+  check_mode: false
+  loop: "{{ os_update_silence_ids }}"
+  failed_when: false
+  when: (os_update_silence_contenders | length) > 0
+
+- name: Guard — this host must be the ONLY holder of an os-update drain window
+  ansible.builtin.assert:
+    that: (os_update_silence_contenders | length) == 0
+    fail_msg: >-
+      Another os-update drain window went up between the guard and our silence:
+      {{ os_update_silence_contenders }}. Our own silences were expired and NOTHING
+      was drained on {{ inventory_hostname }}. Two hosts out of rotation at once is
+      how a redundant pair becomes an outage. STOP.

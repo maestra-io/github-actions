@@ -4,6 +4,39 @@
 # We expire the silences we created; if the runner is killed the endsAt dead-man
 # expires them anyway.
 
+# In undrain-only there are no IDs to loop: os_update_silence_ids is set only by
+# silence.yml, which never runs on that path — the silences we are cleaning up
+# after belong to the DEAD run. Recover them from Alertmanager by the same
+# discriminator guards.yml uses (createdBy gha-os-update + `host=<me> ` with the
+# trailing space), or the stranded silence blocks the next host's one-at-a-time
+# guard until its dead-man endsAt.
+- name: Undrain-only — recover the dead run's silence IDs from Alertmanager
+  when:
+    - os_update_mode == 'undrain-only'
+    - (os_update_silence_ids | default([]) | length) == 0
+  block:
+    - name: Fetch the silences
+      ansible.builtin.uri:
+        url: "{{ os_update_am_url }}/api/v2/silences"
+        return_content: true
+        status_code: 200
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      register: os_update_silences_orphaned
+
+    - name: Adopt the ones this host still owns
+      ansible.builtin.set_fact:
+        os_update_silence_ids: >-
+          {{ os_update_silences_orphaned.json
+             | default([])
+             | selectattr('status.state', 'equalto', 'active')
+             | selectattr('createdBy', 'defined')
+             | selectattr('createdBy', 'search', '^gha-os-update')
+             | selectattr('comment', 'search', 'host=' ~ inventory_hostname ~ ' ')
+             | map(attribute='id')
+             | list }}
+
 - name: Expire the maintenance silences
   ansible.builtin.uri:
     url: "{{ os_update_am_url }}/api/v2/silence/{{ item }}"

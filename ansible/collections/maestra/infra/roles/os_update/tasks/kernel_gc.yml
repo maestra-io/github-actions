@@ -23,8 +23,23 @@
     - os_update_rebooted | default(false)
     - (os_update_boot_free_post.stdout | trim | int) < (os_update_boot_free_gc_threshold_mb | int)
 
+# Re-probe when the GC actually ran — os_update_boot_free_post was measured
+# BEFORE the purge, and the one case this message matters is the one where the
+# number just changed.
+- name: Re-measure /boot after the GC
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      df -Pm /boot | awk 'NR==2 {print $4}'
+  register: os_update_boot_free_final
+  changed_when: false
+  check_mode: false
+  when: os_update_gc.changed | default(false)
+
 - name: /boot after GC
   ansible.builtin.debug:
     msg: >-
-      {{ inventory_hostname }}: /boot free {{ os_update_boot_free_post.stdout | trim }} MB
+      {{ inventory_hostname }}: /boot free
+      {{ (os_update_boot_free_final.stdout | default(os_update_boot_free_post.stdout)) | trim }} MB
       {{ '(GC ran)' if (os_update_gc.changed | default(false)) else '(GC not needed)' }}
