@@ -65,11 +65,34 @@
 - name: Restore the pre-existing hold set
   when: os_update_holds_action == 'restore'
   block:
+    # No `failed_when: false` here: it would make the hold-restore rescue in
+    # main.yml dead code — a swallowed unhold failure (dpkg lock right after apt
+    # activity, full disk) leaves teleport/frr/consul held FOREVER, and their own
+    # IaC-driven upgrades then fail silently on the next run.
     - name: Unhold only what WE held (someone else's pins stay put)
       ansible.builtin.command:
         argv: "{{ ['apt-mark', 'unhold'] + os_update_our_holds }}"
       register: os_update_unhold_cmd
       changed_when: "'canceled' in os_update_unhold_cmd.stdout"
       check_mode: false
-      failed_when: false
+      when: (os_update_our_holds | default([]) | length) > 0
+
+    - name: Re-read the holds (apt-mark can exit 0 without actually unholding)
+      ansible.builtin.command:
+        argv: [apt-mark, showhold]
+      register: os_update_showhold_after
+      changed_when: false
+      check_mode: false
+      when: (os_update_our_holds | default([]) | length) > 0
+
+    - name: Assert none of OUR holds survived the unhold
+      ansible.builtin.assert:
+        that:
+          - >-
+            (os_update_our_holds | intersect(os_update_showhold_after.stdout_lines | default([]))) | length == 0
+        fail_msg: >-
+          Holds we set are still in place after unhold:
+          {{ os_update_our_holds | intersect(os_update_showhold_after.stdout_lines | default([])) }}.
+          Left held, their IaC-driven upgrades (`apt-get install teleport=X`) fail
+          silently. Clean up with `apt-mark unhold` by hand.
       when: (os_update_our_holds | default([]) | length) > 0

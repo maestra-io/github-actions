@@ -21,8 +21,12 @@ CI auth is involved — same as the other public roles already in `requirements.
 collections:
   - name: https://github.com/maestra-io/github-actions.git#/ansible/collections/maestra/infra/
     type: git
-    version: v1.2.0
+    version: main
 ```
+
+`version: main` means the tip of this repo, re-installed by every job: a role change
+merged mid-sweep is picked up by the next host's job, so the hosts of one sweep can run
+different role code.
 
 ## Why GitHub Actions owns the host sequencing
 
@@ -62,7 +66,7 @@ cheerfully unmask the `keepalived`/`haproxy` unit we just masked.
 |---|---|---|---|
 | `vars.yml` | always | set `os_update_peers`, `os_update_farm`, `os_update_pinned_extra`, `os_update_silence_sets` | mutate anything |
 | `preflight.yml` | always, immediately before the drain | assert **every peer** healthy with a live probe (`delegate_to`), and this host safe to reboot | `ignore_errors`, `failed_when: false`, warn-and-continue |
-| `drain.yml` | apply | take the host out of rotation **persistently**, then **prove it from the consumer side** | prove it by "the command succeeded"; `sleep` instead of poll |
+| `drain.yml` | apply | write the drain marker **first** (include the role's `marker.yml` with `os_update_marker_action: write`, before any mutation), then take the host out of rotation **persistently**, then **prove it from the consumer side** | prove it by "the command succeeded"; `sleep` instead of poll |
 | `verify.yml` | apply, after reboot, **before** undrain | prove the host is healthy again, with `until`/`retries` | undrain; touch the peer |
 | `undrain.yml` | **`always`** | put it back, idempotently, safe on a host that was never drained | fail silently |
 | `settle.yml` | apply, after undrain | prove traffic is actually flowing and the pair is redundant again | be a `sleep` |
@@ -113,16 +117,30 @@ purpose — the peer gates there are exactly what fails in the scenario the hatc
 
 ## Running it
 
+Each consumer repo has its own `os-update.yml` shim; targeting is per-repo (the nat-gw
+shim is hard-wired to `_nat_gateway`, haproxy picks the farm via `farm`, vpn picks
+spokes/hubs via `target`):
+
 ```bash
 # read-only, whole farm: pending packages, reboot decision, peer health, /boot headroom
-gh workflow run os-update.yml -f environment=omicron -f role=nat_gateway -f mode=plan
+gh workflow run os-update.yml --repo maestra-io/maestra-nat-gateway \
+  -f environment=omicron -f mode=plan
 
 # one host, for real
-gh workflow run os-update.yml -f environment=omicron -f role=nat_gateway \
-  -f mode=apply -f host_limit=us-omicron-lw-nat-gw-02
+gh workflow run os-update.yml --repo maestra-io/maestra-nat-gateway \
+  -f environment=omicron -f mode=apply -f host_limit=us-omicron-lw-nat-gw-02
 
 # the whole farm, one host at a time, stopping at the first failure
-gh workflow run os-update.yml -f environment=omicron -f role=nat_gateway -f mode=apply
+gh workflow run os-update.yml --repo maestra-io/maestra-nat-gateway \
+  -f environment=omicron -f mode=apply
+
+# haproxy: same shape, plus the farm
+gh workflow run os-update.yml --repo maestra-io/haproxy-maestra \
+  -f environment=omicron -f farm=cdp -f mode=plan
+
+# vpn: same shape, plus spokes|hubs
+gh workflow run os-update.yml --repo maestra-io/vpn-maestra \
+  -f environment=omicron -f target=spokes -f mode=plan
 ```
 
 Idempotency is a derived property, not a state file: a host with an empty upgrade
