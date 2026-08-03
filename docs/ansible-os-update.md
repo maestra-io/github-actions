@@ -1,10 +1,15 @@
 # Rolling OS update — the shared workflow and the per-repo contract
 
-`issues-maestra#1104`. Patches the pet VMs (haproxy farms, NAT gateways, VPN hosts):
-`apt dist-upgrade` + kernel + reboot, **one host at a time**, each host **drained out
-of rotation first** and **proven healthy** before the next one is touched.
+`issues-maestra#1104`. Patches the pet VMs (haproxy farms, NAT gateways, VPN hosts)
+and the Deckhouse kube nodes: `apt dist-upgrade` + kernel + reboot, **one host at a
+time**, each host **drained out of rotation first** and **proven healthy** before the
+next one is touched.
 
-Kubernetes nodes are not in scope — Deckhouse patches those.
+Kube nodes joined the scope with `maestra-io/kubernetes-clusters` (its
+`ansible/tasks/os-update/` contract: cordon + `kubectl drain` delegated to another
+master, verify = kubelet/Ready/cilium + control-plane static pods on masters).
+Deckhouse manages the k8s components on those nodes but NOT the underlying OS —
+kernel and userspace patching is ours.
 
 ## Shape
 
