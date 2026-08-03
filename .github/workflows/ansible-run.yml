@@ -479,6 +479,12 @@ jobs:
           # input, so forwarding it through `extra_env` shipped an empty value
           # and `gh` ran unauthenticated (rc=4).
           GH_TOKEN: ${{ github.token }}
+          # Free-text dispatch inputs reach the shell via env, not ${{ }}
+          # interpolation: an interpolated value is pasted into the script
+          # BEFORE bash parses it, so `x; rm -rf /` in host_limit would run.
+          # An env var is data, never code.
+          HOST_LIMIT_INPUT: ${{ inputs.host_limit }}
+          TAGS_INPUT: ${{ inputs.tags }}
         run: |
           set -uo pipefail
 
@@ -500,17 +506,30 @@ jobs:
           fi
 
           # compute target group / --limit
-          LIMIT="${{ inputs.host_limit }}"
+          LIMIT="${HOST_LIMIT_INPUT}"
           if [ -z "$LIMIT" ]; then
             LIMIT="${{ inputs.region }}_${{ inputs.environment }}_${{ inputs.site }}${{ inputs.inventory_group_suffix }}"
           fi
+          # ansible --limit patterns are [a-zA-Z0-9_.,:*!&-] — anything else in a
+          # dispatch input is not a host pattern, it is an attempt at the shell.
+          case "$LIMIT" in
+            *[!a-zA-Z0-9_.,:*!\&-]*)
+              echo "::error::host_limit contains characters that are not a valid ansible limit pattern: ${LIMIT}"
+              exit 1 ;;
+          esac
 
           # verbosity
           VERB="${{ inputs.verbosity }}"
           [ "$VERB" = "normal" ] && VERB=""
 
           # tags / check
-          TAGS_ARG=""; [ -n "${{ inputs.tags }}" ] && TAGS_ARG="--tags ${{ inputs.tags }}"
+          # ansible tags are [a-zA-Z0-9_,-] — same rule as LIMIT above.
+          case "$TAGS_INPUT" in
+            *[!a-zA-Z0-9_,-]*)
+              echo "::error::tags contains characters that are not a valid ansible tag list: ${TAGS_INPUT}"
+              exit 1 ;;
+          esac
+          TAGS_ARG=""; [ -n "${TAGS_INPUT}" ] && TAGS_ARG="--tags ${TAGS_INPUT}"
           CHECK_ARG=""; [ "${{ inputs.check_mode }}" = "true" ] && CHECK_ARG="--check --diff"
 
           MODE="apply"; [ "${{ inputs.check_mode }}" = "true" ] && MODE="plan"
