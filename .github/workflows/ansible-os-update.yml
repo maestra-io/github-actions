@@ -438,8 +438,15 @@ jobs:
           fi
 
           echo "Dispatching the SOC vuln-scan (the same weekly workflow) for: ${LIST}"
+          # --ref is EXPLICIT on purpose: without it, gh resolves the default
+          # branch via GraphQL repository.defaultBranchRef, which the App's
+          # actions:write + metadata:read token is NOT allowed to query
+          # ("Resource not accessible by integration") — the dispatch died
+          # there on the first live run after the App secret was fixed
+          # (2026-08-04). The REST dispatch itself needs only actions:write.
           GH_TOKEN="${SOC_TOKEN}" gh workflow run vuln-scan.yaml \
             --repo maestra-io/soc \
+            --ref main \
             -f hosts="${LIST}" \
             -f dry_run=false
 
