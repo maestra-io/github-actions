@@ -39,7 +39,21 @@ os_update_pinned_extra: []
 # Kernel GC only when /boot is genuinely tight — autoremove --purge has a wider
 # blast radius than "delete old kernels", so we don't run it speculatively.
 os_update_boot_free_gc_threshold_mb: 500
-os_update_boot_free_min_mb: 400
+
+# How much room the /boot guard demands before it will let a host be drained.
+# NOT an absolute MB figure: what the upgrade needs is room to unpack ONE more
+# kernel, and a kernel costs what it costs on THIS host — ~98 MB on the omega
+# kube nodes, more on a host with a fatter initrd. plan.yml measures the largest
+# kernel already in /boot and multiplies by this, so the requirement scales with
+# the machine instead of with a number guessed on a different one.
+#
+# A constant cannot work across the fleet: the kube nodes have a 467 MB /boot,
+# so the old `os_update_boot_free_min_mb: 400` was unsatisfiable there even with
+# a single kernel installed — the guard could never pass, on hosts with 241 MB
+# free and room for two more kernels.
+os_update_boot_free_factor: 2
+# Floor for the pathological case where /boot holds no kernel to measure.
+os_update_boot_free_floor_mb: 150
 
 # Drain marker: survives a runner crash, so a re-run can tell "this host was
 # left drained by a previous run" from "this host is healthy and in rotation".

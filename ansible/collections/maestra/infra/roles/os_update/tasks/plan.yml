@@ -68,11 +68,38 @@
   changed_when: false
   check_mode: false
 
+- name: What one kernel actually costs in /boot on this host
+  # Every file /boot carries per release — vmlinuz + initrd + System.map + config
+  # — summed per release, largest wins. That is the size of the hole the next
+  # kernel has to fit into, measured here rather than assumed, because it varies
+  # by an order of magnitude across the fleet (a stock initrd is ~74 MB; one with
+  # extra firmware or a different compressor is far bigger).
+  # Prints 0 when /boot holds no kernel at all, which the floor then covers.
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      shopt -s nullglob
+      max=0
+      for k in /boot/vmlinuz-*; do
+        rel=${k#/boot/vmlinuz-}
+        sz=$(du -cm /boot/*-"$rel" 2>/dev/null | awk '$2 == "total" {print $1}')
+        [ -n "$sz" ] && [ "$sz" -gt "$max" ] && max=$sz
+      done
+      echo "$max"
+  register: os_update_kernel_cost_cmd
+  changed_when: false
+  check_mode: false
+
 - name: Derive the plan
   ansible.builtin.set_fact:
     os_update_holds_before: "{{ os_update_holds_cmd.stdout_lines | default([]) }}"
     os_update_newest_kernel: "{{ os_update_newest_kernel_cmd.stdout | trim }}"
     os_update_boot_free_mb: "{{ os_update_boot_free_cmd.stdout | trim | int }}"
+    # Room for one more kernel, sized off this host's own kernels.
+    os_update_boot_free_needed_mb: >-
+      {{ [((os_update_kernel_cost_cmd.stdout | trim | int) * (os_update_boot_free_factor | int)),
+          (os_update_boot_free_floor_mb | int)] | max }}
     # Pending MINUS pinned: the pinned packages are held before the real upgrade,
     # so a host whose ONLY pending updates are pinned ones (teleport releases
     # near-weekly, and teleport is pinned everywhere) is a guaranteed no-op —
@@ -94,8 +121,13 @@
 
 - name: Guard — /boot must have room to unpack a kernel (a full /boot fails AFTER the drain)
   ansible.builtin.assert:
-    that: (os_update_boot_free_mb | int) >= (os_update_boot_free_min_mb | int)
+    that: (os_update_boot_free_mb | int) >= (os_update_boot_free_needed_mb | int)
     fail_msg: >-
-      /boot has only {{ os_update_boot_free_mb }} MB free (need
-      {{ os_update_boot_free_min_mb }}). Reclaim it first — do not drain a host we
-      then cannot upgrade.
+      /boot has only {{ os_update_boot_free_mb }} MB free; this host's largest
+      kernel occupies {{ os_update_kernel_cost_cmd.stdout | trim }} MB, so the
+      guard wants {{ os_update_boot_free_needed_mb }}
+      (x{{ os_update_boot_free_factor }}, floor {{ os_update_boot_free_floor_mb }}).
+      Reclaim it first — do not drain a host we then cannot upgrade.
+    success_msg: >-
+      /boot free {{ os_update_boot_free_mb }} MB >= {{ os_update_boot_free_needed_mb }}
+      needed (largest kernel here is {{ os_update_kernel_cost_cmd.stdout | trim }} MB).
