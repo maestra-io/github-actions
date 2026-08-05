@@ -51,7 +51,7 @@ on:
         type: string
         default: ""
       host_limit:
-        description: "Single-host escape hatch. When set, the matrix is that one host."
+        description: "Subset escape hatch: one host, or a CSV batch. The matrix is exactly those hosts, in the order given."
         required: false
         type: string
         default: ""
@@ -206,7 +206,32 @@ jobs:
           ansible-inventory -i "${{ inputs.inventory }}" --list > /tmp/inv.json
 
           if [ -n "${HOST_LIMIT}" ]; then
-            HOSTS="$(jq -cn --arg h "${HOST_LIMIT}" '[$h]')"
+            # One host, or a CSV batch. A batch exists to amortise enumerate+plan,
+            # which are per-RUN and cost ~2.7 min: sweeping the 54-host us-omega
+            # worker tier one run per host pays that 54 times (~2.5 h) for ~12 min
+            # of actual work each (issues-maestra#1240). It is not a way to touch
+            # several hosts at once — the apply matrix stays max-parallel: 1, and
+            # the consumers' own cluster locks still allow exactly one drained
+            # node at a time.
+            #
+            # Validated against the group for the same reason `order` is: today a
+            # typo'd name becomes a one-host matrix that dies deep inside the
+            # apply job ("no hosts matched"), and in a batch it would silently
+            # cost the whole remainder of the run to fail-fast. Fail here instead,
+            # naming the bad host. `plan` needs no change — it passes host_limit
+            # to ansible's --limit, which takes a CSV natively.
+            HOSTS="$(jq -c --arg g "${GROUP}" --arg h "${HOST_LIMIT}" '
+              ($h | split(",") | map(gsub("^\\s+|\\s+$";"")) | map(select(length > 0))) as $want
+              | (.[$g].hosts // []) as $have
+              | ($want - $have) as $bogus
+              | ($want | group_by(.) | map(select(length > 1) | .[0])) as $dupes
+              | if ($want | length) == 0
+                then error("host_limit is only separators: \($h)")
+                elif ($bogus | length) > 0
+                then error("hosts not in group \($g): \($bogus | join(", "))")
+                elif ($dupes | length) > 0
+                then error("duplicate hosts in host_limit: \($dupes | join(", "))")
+                else $want end' /tmp/inv.json)"
           elif [ -n "${ORDER}" ]; then
             # Explicit order. The list must be exactly the group: a typo must fail the
             # run, a duplicate must not produce two matrix legs for one host, and an

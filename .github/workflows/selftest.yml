@@ -1,0 +1,47 @@
+---
+# This repo is reusable workflows: nothing here runs on its own PRs, so the shell
+# embedded in them has never had a test. The os-update host selector is the first
+# piece worth one — it decides which machines a sweep touches, and it is the kind
+# of jq that reads correct and is not.
+name: selftest
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/ansible-os-update.yml"
+      - ".github/workflows/selftest.yml"
+      - "ansible/tests/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/ansible-os-update.yml"
+      - ".github/workflows/selftest.yml"
+      - "ansible/tests/**"
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: host_limit selector
+        run: bash ansible/tests/test-host-limit-selector.sh
+
+      # The test carries its own copy of the selector; a change to the workflow
+      # that does not update the test would leave the test green and meaningless.
+      - name: the test's copy of the selector still matches the workflow
+        run: |
+          set -euo pipefail
+          for line in '| ($want - $have) as $bogus' \
+                      '| ($want | group_by(.) | map(select(length > 1) | .[0])) as $dupes' \
+                      'then error("hosts not in group \($g): \($bogus | join(", "))")'; do
+            grep -qF -- "$line" .github/workflows/ansible-os-update.yml \
+              || { echo "::error::workflow no longer contains: $line"; exit 1; }
+            grep -qF -- "$line" ansible/tests/test-host-limit-selector.sh \
+              || { echo "::error::test no longer contains: $line"; exit 1; }
+          done
