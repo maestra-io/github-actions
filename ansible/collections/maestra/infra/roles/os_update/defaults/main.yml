@@ -69,3 +69,11 @@ os_update_run_url: manual
 # GH-level fail-fast / approval / artifact trail).
 os_update_allow_multi: false
 os_update_allow_single_node: false
+
+# The contour a drain window belongs to: the region_environment_site triplet
+# of the farm/group name (us_omega_lw_kubernetes -> us_omega_lw). The
+# one-at-a-time guard is scoped to THIS: a us and an eu sweep touch disjoint
+# fleets and must not block each other, while anything sharing the triplet
+# still serializes. Consumers set os_update_farm in their vars.yml before
+# guards run; the default here evaluates lazily.
+os_update_contour: "{{ (os_update_farm.split('_'))[:3] | join('_') }}"

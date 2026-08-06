@@ -27,7 +27,11 @@
   register: os_update_silences
   when: (os_update_am_url | default('')) | length > 0
 
-- name: Which other hosts hold an open os-update drain window
+- name: Which other hosts hold an open os-update drain window (same contour only)
+  # Scoped to os_update_contour (region_environment_site): a us and an eu sweep
+  # touch disjoint fleets and run in parallel by design. A LEGACY silence whose
+  # comment carries no `contour=` token is treated as conflicting (fail safe)
+  # until it expires or its run finishes on new code.
   # The self-exclusion pattern is the PLAIN string `host=<me> ` with a trailing space —
   # not `host=<me>(\s|$)`. This is YAML: inside a folded scalar a backslash is literal,
   # so `(\\s|$)` reached the regex engine as an escaped backslash and never matched.
@@ -47,6 +51,7 @@
          | selectattr('createdBy', 'search', '^gha-os-update')
          | rejectattr('comment', 'search', 'host=' ~ inventory_hostname ~ ' ')
          | map(attribute='comment')
+         | select('search', 'contour=' ~ os_update_contour ~ ' |^(?!.*contour=)')
          | list }}
   when: (os_update_am_url | default('')) | length > 0
 
