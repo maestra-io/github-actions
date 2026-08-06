@@ -32,7 +32,7 @@
       startsAt: "{{ '%Y-%m-%dT%H:%M:%S.000Z' | strftime(now().timestamp(), utc=true) }}"
       endsAt: "{{ '%Y-%m-%dT%H:%M:%S.000Z' | strftime(now().timestamp() + (os_update_silence_minutes | int) * 60, utc=true) }}"
       createdBy: "gha-os-update"
-      comment: "OS update issues-maestra#1104 host={{ inventory_hostname }} run={{ os_update_run_url }}"
+      comment: "OS update issues-maestra#1104 contour={{ os_update_contour }} host={{ inventory_hostname }} run={{ os_update_run_url }}"
     status_code: 200
   delegate_to: localhost
   become: false
@@ -72,6 +72,7 @@
          | selectattr('createdBy', 'search', '^gha-os-update')
          | rejectattr('comment', 'search', 'host=' ~ inventory_hostname ~ ' ')
          | map(attribute='comment')
+         | select('search', 'contour=' ~ os_update_contour ~ ' |^(?!.*contour=)')
          | list }}
 
 - name: Lost the race — expire our just-created silences before aborting
