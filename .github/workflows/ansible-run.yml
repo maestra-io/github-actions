@@ -113,6 +113,20 @@ on:
         required: false
         type: string
         default: ""
+      aws_workload_identity:
+        description: >-
+          Mint a Teleport workload-identity JWT ON THE RUNNER and export
+          AWS_WEB_IDENTITY_TOKEN_FILE + AWS_ROLE_ARN into the Execute env, so a play
+          can call AWS as the CI principal instead of every target host needing its
+          own AWS identity. Format: `name=<workload-identity> role_arn=<arn>`.
+          Empty (default) skips the step entirely — inert for every existing caller.
+          Written for os-update's Route53 drain: that flips a haproxy host's weighted
+          record and used to run ON THE HOST with the host's tbot JWT, which only
+          exists where certbot's tbot output does. It does not on the eu-omega CDP
+          farm, so the drain could not run there at all.
+        required: false
+        type: string
+        default: ""
       certificate_ttl:
         description: >-
           Teleport SSH certificate TTL. Must exceed the LONGEST expected play
@@ -406,6 +420,63 @@ jobs:
             echo "TUNNEL_${slug}=http://127.0.0.1:${port}" >> "$GITHUB_ENV"
             echo "tunnel for ${app} is up on 127.0.0.1:${port}"
           done
+
+      # --- Teleport workload identity -> AWS (os-update: the Route53 drain) ---
+      # Same shape as the app-tunnels step above: write a tbot config, join with the
+      # repo's GitHub-OIDC token, run tbot. Here the service is workload-identity-jwt,
+      # which writes a SPIFFE JWT the AWS SDK exchanges for a role via
+      # sts:AssumeRoleWithWebIdentity — the identity lives with the JOB, not with
+      # every host it touches.
+      #
+      # `audiences` is a LIST and the key is plural; the singular `audience` is the
+      # CLI flag, not the config field. Taken from the AWS-OIDC-federation page of
+      # the Teleport docs rather than from memory.
+      - name: Mint a workload-identity JWT for AWS
+        id: aws-wi
+        if: ${{ inputs.aws_workload_identity != '' }}
+        env:
+          AWS_WI: ${{ inputs.aws_workload_identity }}
+        run: |
+          set -euo pipefail
+          name="$(printf '%s' "$AWS_WI" | sed -n 's/.*name=\([^ ]*\).*/\1/p')"
+          role="$(printf '%s' "$AWS_WI" | sed -n 's/.*role_arn=\([^ ]*\).*/\1/p')"
+          if [ -z "$name" ] || [ -z "$role" ]; then
+            echo "::error::malformed aws_workload_identity (want 'name=<wi> role_arn=<arn>'): ${AWS_WI}"
+            exit 1
+          fi
+
+          mkdir -p /tmp/tbot-wi
+          {
+            echo "version: v2"
+            echo "proxy_server: ${{ inputs.teleport_fqdn }}"
+            echo "onboarding:"
+            echo "  join_method: github"
+            echo "  token: ${{ inputs.teleport_join_token }}"
+            echo "storage:"
+            echo "  type: memory"
+            echo "services:"
+            echo "  - type: workload-identity-jwt"
+            echo "    selector:"
+            echo "      name: ${name}"
+            echo "    audiences: ['sts.amazonaws.com']"
+            echo "    destination:"
+            echo "      type: directory"
+            echo "      path: /tmp/tbot-wi"
+          } > /tmp/tbot-wi.yaml
+
+          tbot start -c /tmp/tbot-wi.yaml --oneshot
+
+          # FAIL CLOSED, like the tunnel step: a play that believes it has AWS creds
+          # and does not would drain a host and then fail to withdraw it from DNS.
+          if [ ! -s /tmp/tbot-wi/jwt_svid ]; then
+            echo "::error::tbot produced no JWT SVID at /tmp/tbot-wi/jwt_svid for workload identity '${name}'"
+            ls -la /tmp/tbot-wi || true
+            exit 1
+          fi
+
+          echo "AWS_WEB_IDENTITY_TOKEN_FILE=/tmp/tbot-wi/jwt_svid" >> "$GITHUB_ENV"
+          echo "AWS_ROLE_ARN=${role}" >> "$GITHUB_ENV"
+          echo "workload identity '${name}' minted; AWS role ${role}"
 
       # --- Vault: fetch secrets (public OR tunnel) -----------------------
       - name: Retrieve secrets from Vault
