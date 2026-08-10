@@ -289,8 +289,13 @@ jobs:
 
       - name: Get Teleport version from proxy
         id: tp-version
+        # inputs go through env, never straight into the shell source: GitHub
+        # substitutes ${{ }} BEFORE bash parses, so a quote in a caller-supplied
+        # value would execute in this credentialed job.
+        env:
+          TELEPORT_FQDN: ${{ inputs.teleport_fqdn }}
         run: |
-          VER="$(/usr/bin/curl -sf "https://${{ inputs.teleport_fqdn }}/webapi/find" \
+          VER="$(/usr/bin/curl -sf "https://${TELEPORT_FQDN}/webapi/find" \
             | jq -r '.auto_update.tools_version // .server_version')"
           echo "version=${VER}" >> "$GITHUB_OUTPUT"
 
@@ -340,13 +345,17 @@ jobs:
       - name: Start Vault tunnel via Teleport
         id: vault-tunnel
         if: ${{ inputs.vault_mode == 'tunnel' && inputs.teleport_app != '' }}
+        # See the tp-version step: inputs reach the shell through env only.
+        env:
+          TELEPORT_FQDN: ${{ inputs.teleport_fqdn }}
+          TELEPORT_JOIN_TOKEN: ${{ inputs.teleport_join_token }}
         run: |
           cat > /tmp/tbot-vault-config.yaml <<EOF
           version: v2
           onboarding:
             join_method: github
-            token: ${{ inputs.teleport_join_token }}
-          proxy_server: ${{ inputs.teleport_fqdn }}
+            token: ${TELEPORT_JOIN_TOKEN}
+          proxy_server: ${TELEPORT_FQDN}
           # memory storage: default /var/lib/teleport is not writable on hosted
           # runners (mkdir: permission denied -> tunnel never opens).
           storage:
@@ -369,14 +378,16 @@ jobs:
         if: ${{ inputs.tbot_tunnels != '' }}
         env:
           TBOT_TUNNELS: ${{ inputs.tbot_tunnels }}
+          TELEPORT_FQDN: ${{ inputs.teleport_fqdn }}
+          TELEPORT_JOIN_TOKEN: ${{ inputs.teleport_join_token }}
         run: |
           set -euo pipefail
           {
             echo "version: v2"
-            echo "proxy_server: ${{ inputs.teleport_fqdn }}"
+            echo "proxy_server: ${TELEPORT_FQDN}"
             echo "onboarding:"
             echo "  join_method: github"
-            echo "  token: ${{ inputs.teleport_join_token }}"
+            echo "  token: ${TELEPORT_JOIN_TOKEN}"
             # memory storage: /var/lib/teleport is not writable on hosted runners.
             echo "storage:"
             echo "  type: memory"
@@ -436,6 +447,8 @@ jobs:
         if: ${{ inputs.aws_workload_identity != '' }}
         env:
           AWS_WI: ${{ inputs.aws_workload_identity }}
+          TELEPORT_FQDN: ${{ inputs.teleport_fqdn }}
+          TELEPORT_JOIN_TOKEN: ${{ inputs.teleport_join_token }}
         run: |
           set -euo pipefail
           name="$(printf '%s' "$AWS_WI" | sed -n 's/.*name=\([^ ]*\).*/\1/p')"
@@ -448,10 +461,10 @@ jobs:
           mkdir -p /tmp/tbot-wi
           {
             echo "version: v2"
-            echo "proxy_server: ${{ inputs.teleport_fqdn }}"
+            echo "proxy_server: ${TELEPORT_FQDN}"
             echo "onboarding:"
             echo "  join_method: github"
-            echo "  token: ${{ inputs.teleport_join_token }}"
+            echo "  token: ${TELEPORT_JOIN_TOKEN}"
             echo "storage:"
             echo "  type: memory"
             echo "services:"
