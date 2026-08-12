@@ -565,18 +565,27 @@ jobs:
           TELEPORT_PROXY: ${{ inputs.teleport_fqdn }}
         run: |
           set -euo pipefail
-          # Pick a candidate proxmox node in this region/env/site and mint a github-ci token.
+          # The token name is per-RUN. It used to be the fixed `github-ci`, which
+          # every job in the repo minted with `token remove` + `token add` and
+          # deleted again on the way out — so any two overlapping runs shared one
+          # credential and the second one silently invalidated the first. Seen on
+          # maestra-io/proxmox run 31637270407: a deploy on `serial: 1` was on its
+          # third hypervisor when a PR-check run tore the token down, and that
+          # host alone failed with `no such token 'github-ci' for user
+          # 'ansible-ci@pve'`. A unique name per run removes the collision
+          # entirely; the id is exported so the play can address it.
+          TOKEN_NAME="github-ci-${{ github.run_id }}"
           NODES="$(tsh ls --format=names \
             "role=proxmox,region=${{ inputs.region }},environment=${{ inputs.environment }},site=${{ inputs.site }}" || true)"
           TOKEN_VALUE=""
           TOKEN_NODE=""
           for NODE in $(echo "$NODES" | shuf); do
-            OUT="$(timeout 30 tsh ssh --login=teleport-production "$NODE" '
+            OUT="$(timeout 30 tsh ssh --login=teleport-production "$NODE" "
               sudo pveum user add ansible-ci@pve 2>/dev/null || true
               sudo pveum acl modify / -user ansible-ci@pve -role Administrator
-              sudo pveum user token remove ansible-ci@pve github-ci 2>/dev/null || true
-              sudo pveum user token add ansible-ci@pve github-ci --privsep=0 --output-format=json
-            ' 2>/dev/null || true)"
+              sudo pveum user token remove ansible-ci@pve ${TOKEN_NAME} 2>/dev/null || true
+              sudo pveum user token add ansible-ci@pve ${TOKEN_NAME} --privsep=0 --output-format=json
+            " 2>/dev/null || true)"
             TOKEN="$(echo "$OUT" | jq -r '.value // empty' 2>/dev/null || true)"
             if [ -n "$TOKEN" ]; then
               TOKEN_VALUE="$TOKEN"
@@ -590,7 +599,9 @@ jobs:
           fi
           echo "::add-mask::$TOKEN_VALUE"
           echo "PROXMOX_API_TOKEN_SECRET=$TOKEN_VALUE" >> "$GITHUB_ENV"
+          echo "PROXMOX_API_TOKEN_NAME=$TOKEN_NAME" >> "$GITHUB_ENV"
           echo "node=$TOKEN_NODE" >> "$GITHUB_OUTPUT"
+          echo "token_name=$TOKEN_NAME" >> "$GITHUB_OUTPUT"
 
       # --- Execute -------------------------------------------------------
       - name: Execute Ansible
@@ -702,8 +713,9 @@ jobs:
       - name: Cleanup Proxmox API token
         if: ${{ always() && inputs.mint_proxmox_token && steps.mint-proxmox.outputs.node != '' }}
         run: |
+          # Removes only THIS run's token, so a concurrent job keeps its own.
           timeout 30 tsh ssh --login=teleport-production "${{ steps.mint-proxmox.outputs.node }}" \
-            'sudo pveum user token remove ansible-ci@pve github-ci' || true
+            "sudo pveum user token remove ansible-ci@pve ${{ steps.mint-proxmox.outputs.token_name }}" || true
 
       - name: Generate summary
         if: ${{ always() }}
