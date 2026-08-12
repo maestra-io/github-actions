@@ -152,6 +152,22 @@ on:
         required: false
         type: string
         default: ""
+      breakglass_minter_role:
+        description: >-
+          Vault jwt-github role used ONLY to mint response-wrapped AppRole
+          SecretIDs for break-glass console enrolment (issues-maestra#939), e.g.
+          `breakglass-secretid-minter-proxmox`. Sets BREAKGLASS_MINT_TOKEN in the
+          Execute env; empty (default) skips the step entirely, so every existing
+          caller is unaffected.
+          This is a SEPARATE identity from vault_role on purpose. Its policy can
+          create wrapped SecretIDs and nothing else — no read capability exists
+          anywhere in that plane, so neither this token nor the host token it
+          leads to can retrieve any host's console credential. Keep it that way:
+          granting the ordinary <repo>-github-ci role this power, or adding a
+          read path, is what the design exists to prevent.
+        required: false
+        type: string
+        default: ""
       # --- proxmox-only optional pre-step (divergence class 1) -----------
       mint_proxmox_token:
         description: "Mint a per-run Proxmox pveum API token via tsh ssh (proxmox repo only)."
@@ -511,6 +527,34 @@ jobs:
           jwtGithubAudience: https://github.com/maestra-io
           exportEnv: true
           secrets: ${{ inputs.vault_secrets }}
+
+      # --- Vault: break-glass SecretID minter token (input-gated) --------
+      # Logs in as a dedicated jwt-github role and exports BREAKGLASS_MINT_TOKEN.
+      # Done by hand rather than through hashicorp/vault-action because that
+      # action's exportToken writes the credential to the well-known VAULT_TOKEN
+      # name for every later step; this token belongs to one narrow purpose and
+      # gets its own name. No jq: the ARC runner image is minimal, python3 is
+      # already set up above.
+      - name: Mint the break-glass minter token
+        if: ${{ inputs.breakglass_minter_role != '' }}
+        env:
+          BG_VAULT_ADDR: ${{ inputs.vault_addr }}
+          BG_ROLE: ${{ inputs.breakglass_minter_role }}
+        run: |
+          set -euo pipefail
+          BG_JWT=$(curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+                     "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://github.com/maestra-io" \
+                   | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
+          export BG_JWT
+          # The JWT and the role go to python through the ENVIRONMENT, never
+          # interpolated into a command line, so neither lands in a rendered
+          # argv or in the log.
+          token=$(python3 -c 'import json,os; print(json.dumps({"role": os.environ["BG_ROLE"], "jwt": os.environ["BG_JWT"]}))' \
+                  | curl -sSf -X POST --data @- "${BG_VAULT_ADDR}/v1/auth/jwt-github/login" \
+                  | python3 -c 'import json,sys; print(json.load(sys.stdin)["auth"]["client_token"])')
+          echo "::add-mask::${token}"
+          echo "BREAKGLASS_MINT_TOKEN=${token}" >> "$GITHUB_ENV"
+          echo "break-glass minter token acquired as role ${BG_ROLE}"
 
       # --- Proxmox pveum token (divergence class 1, input-gated) ---------
       - name: Mint Proxmox API token
