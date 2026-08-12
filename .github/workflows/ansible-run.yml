@@ -563,6 +563,14 @@ jobs:
         env:
           TELEPORT_IDENTITY_FILE: ${{ steps.teleport-auth.outputs.identity-file || steps.teleport-auth-retry.outputs.identity-file }}
           TELEPORT_PROXY: ${{ inputs.teleport_fqdn }}
+          # Through the environment, not interpolated into the script: an
+          # interpolated value is pasted in before bash parses the line, so a
+          # quote in it would be code rather than data. Same reasoning the
+          # Execute step already documents for its free-text dispatch inputs.
+          TF_REGION: ${{ inputs.region }}
+          TF_ENVIRONMENT: ${{ inputs.environment }}
+          TF_SITE: ${{ inputs.site }}
+          GH_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           # The token name is per-RUN. It used to be the fixed `github-ci`, which
@@ -574,9 +582,14 @@ jobs:
           # host alone failed with `no such token 'github-ci' for user
           # 'ansible-ci@pve'`. A unique name per run removes the collision
           # entirely; the id is exported so the play can address it.
-          TOKEN_NAME="github-ci-${{ github.run_id }}"
+          TOKEN_NAME="github-ci-${GH_RUN_ID}"
+          # Server-side expiry, so a cleanup that never runs — cancelled job,
+          # runner death — cannot leave an Administrator token alive forever.
+          # Two hours covers any run this workflow performs; the cleanup step
+          # still removes it immediately on the normal path.
+          TOKEN_EXPIRE="$(( $(date +%s) + 7200 ))"
           NODES="$(tsh ls --format=names \
-            "role=proxmox,region=${{ inputs.region }},environment=${{ inputs.environment }},site=${{ inputs.site }}" || true)"
+            "role=proxmox,region=${TF_REGION},environment=${TF_ENVIRONMENT},site=${TF_SITE}" || true)"
           TOKEN_VALUE=""
           TOKEN_NODE=""
           for NODE in $(echo "$NODES" | shuf); do
@@ -584,7 +597,7 @@ jobs:
               sudo pveum user add ansible-ci@pve 2>/dev/null || true
               sudo pveum acl modify / -user ansible-ci@pve -role Administrator
               sudo pveum user token remove ansible-ci@pve ${TOKEN_NAME} 2>/dev/null || true
-              sudo pveum user token add ansible-ci@pve ${TOKEN_NAME} --privsep=0 --output-format=json
+              sudo pveum user token add ansible-ci@pve ${TOKEN_NAME} --privsep=0 --expire ${TOKEN_EXPIRE} --output-format=json
             " 2>/dev/null || true)"
             TOKEN="$(echo "$OUT" | jq -r '.value // empty' 2>/dev/null || true)"
             if [ -n "$TOKEN" ]; then
@@ -712,10 +725,15 @@ jobs:
       # --- Proxmox token cleanup -----------------------------------------
       - name: Cleanup Proxmox API token
         if: ${{ always() && inputs.mint_proxmox_token && steps.mint-proxmox.outputs.node != '' }}
+        env:
+          PVE_NODE: ${{ steps.mint-proxmox.outputs.node }}
+          PVE_TOKEN_NAME: ${{ steps.mint-proxmox.outputs.token_name }}
         run: |
           # Removes only THIS run's token, so a concurrent job keeps its own.
-          timeout 30 tsh ssh --login=teleport-production "${{ steps.mint-proxmox.outputs.node }}" \
-            "sudo pveum user token remove ansible-ci@pve ${{ steps.mint-proxmox.outputs.token_name }}" || true
+          # Both values arrive through the environment rather than being pasted
+          # into the script text (see the mint step).
+          timeout 30 tsh ssh --login=teleport-production "$PVE_NODE" \
+            "sudo pveum user token remove ansible-ci@pve $PVE_TOKEN_NAME" || true
 
       - name: Generate summary
         if: ${{ always() }}
