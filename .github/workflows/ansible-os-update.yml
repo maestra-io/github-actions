@@ -92,6 +92,17 @@ on:
         required: false
         type: string
         default: "1h"
+      aws_workload_identity:
+        description: >-
+          Forwarded to ansible-run on the APPLY job: `name=<workload-identity>
+          role_arn=<arn>` mints a Teleport workload-identity JWT on the RUNNER so the
+          play can call AWS as the CI principal. Empty (default) changes nothing.
+          haproxy's drain flips a weighted Route53 record and used to do that ON THE
+          HOST with the host's own tbot JWT — which exists only where certbot's does,
+          so a farm without certbot could not be drained at all.
+        required: false
+        type: string
+        default: ""
       max_hosts:
         description: "Refuse to run if the group is bigger than this (typo/label-drift guard)."
         required: false
@@ -355,6 +366,9 @@ jobs:
       use_mitogen: false
       no_hosts_fail_on_apply: true
       certificate_ttl: ${{ inputs.certificate_ttl }}
+      # apply only — the plan job runs preflight and never touches Route53.
+      # undrain-only routes through THIS job too, so the restore is covered.
+      aws_workload_identity: ${{ inputs.aws_workload_identity }}
       tbot_tunnels: |
         app=${{ inputs.alertmanager_app }} listen=9093
       extra_run_args: >-
