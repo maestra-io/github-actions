@@ -118,7 +118,12 @@ on:
           Mint a Teleport workload-identity JWT ON THE RUNNER and export
           AWS_WEB_IDENTITY_TOKEN_FILE + AWS_ROLE_ARN into the Execute env, so a play
           can call AWS as the CI principal instead of every target host needing its
-          own AWS identity. Format: `name=<workload-identity> role_arn=<arn>`.
+          own AWS identity. Format:
+          `name=<workload-identity> role_arn=<arn> [token=<provision-token>]`.
+          `token=` defaults to teleport_join_token — but a workload identity is normally
+          granted to a DEDICATED bot (so Route53 write does not follow from "can run
+          ansible"), and that bot has its OWN provision token. Joining with the wrong
+          one fails on permissions, not on syntax.
           Empty (default) skips the step entirely — inert for every existing caller.
           Written for os-update's Route53 drain: that flips a haproxy host's weighted
           record and used to run ON THE HOST with the host's tbot JWT, which only
@@ -453,6 +458,9 @@ jobs:
           set -euo pipefail
           name="$(printf '%s' "$AWS_WI" | sed -n 's/.*name=\([^ ]*\).*/\1/p')"
           role="$(printf '%s' "$AWS_WI" | sed -n 's/.*role_arn=\([^ ]*\).*/\1/p')"
+          # The identity's own bot, when it has one; else the SSH join token.
+          wi_token="$(printf '%s' "$AWS_WI" | sed -n 's/.*token=\([^ ]*\).*/\1/p')"
+          [ -n "$wi_token" ] || wi_token="${TELEPORT_JOIN_TOKEN}"
           if [ -z "$name" ] || [ -z "$role" ]; then
             echo "::error::malformed aws_workload_identity (want 'name=<wi> role_arn=<arn>'): ${AWS_WI}"
             exit 1
@@ -464,7 +472,7 @@ jobs:
             echo "proxy_server: ${TELEPORT_FQDN}"
             echo "onboarding:"
             echo "  join_method: github"
-            echo "  token: ${TELEPORT_JOIN_TOKEN}"
+            echo "  token: ${wi_token}"
             echo "storage:"
             echo "  type: memory"
             echo "services:"
@@ -489,7 +497,7 @@ jobs:
 
           echo "AWS_WEB_IDENTITY_TOKEN_FILE=/tmp/tbot-wi/jwt_svid" >> "$GITHUB_ENV"
           echo "AWS_ROLE_ARN=${role}" >> "$GITHUB_ENV"
-          echo "workload identity '${name}' minted; AWS role ${role}"
+          echo "workload identity '${name}' minted via token '${wi_token}'; AWS role ${role}"
 
       # --- Vault: fetch secrets (public OR tunnel) -----------------------
       - name: Retrieve secrets from Vault
