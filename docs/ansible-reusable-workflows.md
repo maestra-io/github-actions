@@ -48,6 +48,7 @@ Never prefix them with `ansible/`. Only `requirements_pip` / `requirements_galax
 | `vault_secrets` | string (multiline) | no | `""` | passed **verbatim** to `hashicorp/vault-action` `secrets:` — the whole per-repo secret map |
 | `mint_proxmox_token` | boolean | no | `false` | proxmox-only pveum token mint + cleanup (input-gated) |
 | `extra_env` | string (multiline) | no | `""` | extra `KEY=VALUE` lines injected into the Execute env |
+| `aws_workload_identity` | string | no | `""` | `name=<workload-identity> role_arn=<arn>` — mints a Teleport workload-identity JWT **on the runner** and exports `AWS_WEB_IDENTITY_TOKEN_FILE` / `AWS_ROLE_ARN` into the Execute env, so a play calls AWS as the CI principal instead of every target host needing its own AWS identity. Empty skips the step. Fails the job if no JWT is produced. |
 | `extra_run_args` | string | no | `""` | extra `ansible-playbook` args (e.g. `-e vault_consul_template_token=…`) |
 | `gh_environment` | string | no | `""` | GitHub Environment approval gate; empty → ungated |
 | `artifact_name` | string | no | derived | plan/apply log artifact name (`ansible-check-<r>-<e>-<s><suffix>`) |
