@@ -169,6 +169,20 @@ on:
         type: string
         default: ""
       # --- proxmox-only optional pre-step (divergence class 1) -----------
+      breakglass_vault_addr:
+        description: >-
+          Vault to mint the break-glass SecretID against. Defaults to vault_addr,
+          which is right whenever a repo's application secrets and its break-glass
+          plane live in the same Vault. They do not always: mssql-maestra reads its
+          MSSQL passwords from the in-cluster omicron Vault, while breakglass-root
+          lives on vault.maestra.io for the WHOLE fleet, deliberately, so an
+          operator in an incident need not work out which Vault a given host parked
+          its password in. Minting against vault_addr there returns 400 because the
+          minter role does not exist in that Vault. Measured on
+          maestra-io/mssql-maestra run 32844449954, 2026-08-25.
+        required: false
+        type: string
+        default: ''
       mint_proxmox_token:
         description: "Mint a per-run Proxmox pveum API token via tsh ssh (proxmox repo only)."
         required: false
@@ -538,7 +552,8 @@ jobs:
       - name: Mint the break-glass minter token
         if: ${{ inputs.breakglass_minter_role != '' }}
         env:
-          BG_VAULT_ADDR: ${{ inputs.vault_addr }}
+          # Falls back to vault_addr, so every existing caller is unaffected.
+          BG_VAULT_ADDR: ${{ inputs.breakglass_vault_addr != '' && inputs.breakglass_vault_addr || inputs.vault_addr }}
           BG_ROLE: ${{ inputs.breakglass_minter_role }}
         run: |
           set -euo pipefail
