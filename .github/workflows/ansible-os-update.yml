@@ -294,12 +294,29 @@ jobs:
   # 29360255290).
   plan:
     needs: enumerate
-    # NOT in undrain-only: the plan runs the role in os_update_mode=plan, which
-    # includes the consumer preflight — and on a host stranded mid-drain (haproxy
-    # soft-stopped + masked) that preflight FAILS, which would skip `apply` and
-    # brick the very escape hatch undrain-only exists to be. The hatch skips the
-    # plan on purpose, exactly like the role skips preflight on purpose.
-    if: ${{ inputs.mode != 'undrain-only' }}
+    # NOT in undrain-only, and NOT in stage — the same reason twice.
+    #
+    # The plan job always runs the role with os_update_mode=plan, whatever the
+    # operator asked for, and that mode runs the consumer preflight in full. Every
+    # gate in there decides whether a host may be taken OUT of rotation: peer
+    # health, "every node Ready", "nobody else cordoned", capacity for the evicted
+    # pods. A mode that takes nothing out of rotation must not be gated by them.
+    #
+    #   undrain-only — on a host stranded mid-drain (haproxy soft-stopped +
+    #     masked) preflight FAILS, which would skip `apply` and brick the very
+    #     escape hatch the mode exists to be.
+    #   stage — it installs packages and reboots nothing. Its whole purpose is to
+    #     run WHILE a Deckhouse node-update wave is rolling, so the platform's own
+    #     reboots activate the staged kernel instead of being wasted. But a wave
+    #     means, by definition, that some node is cordoned or NotReady — so
+    #     "every node Ready" refuses, and a failed plan job skips the apply job.
+    #     Measured 2026-08-27: run 33086587730 died on the contending-wave gate,
+    #     which was then made apply-only (kubernetes-clusters#78); run 33088788156
+    #     died on "Every node is Ready" instead, with the message "refusing to
+    #     DRAIN" on a run that drains nothing. Patching gate by gate was the wrong
+    #     shape — the next drain gate would do it again. A non-draining mode must
+    #     not be gated by drain preflights at all.
+    if: ${{ inputs.mode != 'undrain-only' && inputs.mode != 'stage' }}
     uses: ./.github/workflows/ansible-run.yml
     secrets: inherit
     with:
@@ -338,13 +355,16 @@ jobs:
 
   apply:
     needs: [enumerate, plan]
-    # `!cancelled()` because in undrain-only the plan job is SKIPPED (see above) and
-    # the default `success()` would skip this job too. plan success is still required
-    # for mode=apply; undrain-only needs only the host list.
+    # `!cancelled()` because in undrain-only and stage the plan job is SKIPPED (see
+    # above) and the default `success()` would skip this job too. plan success is
+    # still required for mode=apply — the one mode that drains; the other two need
+    # only the host list.
     if: >-
       ${{ !cancelled()
           && needs.enumerate.result == 'success'
-          && (needs.plan.result == 'success' || inputs.mode == 'undrain-only')
+          && (needs.plan.result == 'success'
+              || inputs.mode == 'undrain-only'
+              || inputs.mode == 'stage')
           && (inputs.mode == 'apply' || inputs.mode == 'stage' || inputs.mode == 'undrain-only') }}
     strategy:
       matrix:
