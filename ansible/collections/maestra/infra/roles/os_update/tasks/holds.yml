@@ -50,8 +50,7 @@
         argv: >-
           {{ ['apt-mark', '-o', 'DPkg::Lock::Timeout=' ~ (os_update_dpkg_lock_timeout | int),
               'hold'] + os_update_our_holds }}
-      register: os_update_hold_lock_try
-      until: os_update_hold_lock_try.rc == 0
+      until: os_update_hold_cmd.rc == 0
       retries: 5
       delay: 20
       register: os_update_hold_cmd
@@ -99,8 +98,7 @@
         argv: >-
           {{ ['apt-mark', '-o', 'DPkg::Lock::Timeout=' ~ (os_update_dpkg_lock_timeout | int),
               'unhold'] + os_update_our_holds }}
-      register: os_update_unhold_lock_try
-      until: os_update_unhold_lock_try.rc == 0
+      until: os_update_unhold_cmd.rc == 0
       retries: 5
       delay: 20
       register: os_update_unhold_cmd

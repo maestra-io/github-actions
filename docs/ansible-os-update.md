@@ -124,9 +124,13 @@ oathtool` (our break-glass NGC step) and `apt-get remove -y
 --allow-change-held-packages linux-headers-6.8.0-138-generic` while a stage run
 was finishing, and took the dpkg frontend lock with it. The stage itself was
 already done; what died was the hold RESTORE, leaving `teleport` pinned on that
-node. Every apt-touching call in the role therefore waits for the lock
-(`os_update_dpkg_lock_timeout`, default 300s) and retries — `apt.yml` always did,
-`holds.yml` did not until it cost a run.
+node. Both apt-touching paths in the role now wait on the lock through the same knob,
+`os_update_dpkg_lock_timeout` (default 300s), and they differ on purpose:
+`apt.yml` WAITS (the apt module's `lock_timeout`) because a dist-upgrade that
+cannot get the lock inside that window is a real problem rather than a transient;
+`holds.yml` waits **and retries** 5 x 20s, because its failure lands in the
+always-block, where losing the race leaves a pin behind instead of merely
+stopping.
 
 What makes it safe is what it does **not** do, so those are the properties the
 selftest asserts structurally (`ansible/tests/test-stage-mode-wiring.sh`):
