@@ -92,6 +92,22 @@ have "$WF" "inputs.mode == 'stage'" \
   && ok "the apply job runs for stage" \
   || bad "the apply job's if does not include stage"
 
+echo "== stage must not be gated by the plan job"
+# The plan job always runs the role with os_update_mode=plan, which runs the
+# consumer preflight in full — gates that all decide whether a host may leave
+# rotation. stage takes nothing out of rotation, and its whole purpose is to run
+# WHILE a node-update wave is rolling; a wave means some node is cordoned or
+# NotReady, so those gates refuse and a failed plan job skips the apply job.
+# Two production runs died this way before the structural fix.
+# -A30, not -A14: the job carries a long note between its name and its `if:`,
+# and a window too short reports a correct file as broken (it did, first run).
+grep -A30 "^  plan:" "$WF" | grep -q "inputs.mode != 'stage'" \
+  && ok "the plan job is skipped for stage" \
+  || bad "the plan job still runs for stage — its preflight will refuse under a wave"
+grep -A12 "needs: \[enumerate, plan\]" "$WF" | grep -q "inputs.mode == 'stage'" \
+  && ok "the apply job does not require plan success for stage" \
+  || bad "the apply job still requires plan success for stage"
+
 echo "== kernel GC phases"
 GC="$ROLE/tasks/kernel_gc.yml"
 have "$GC" "os_update_gc_phase" \
