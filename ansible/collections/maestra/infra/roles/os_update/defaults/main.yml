@@ -91,3 +91,8 @@ os_update_contour: "{{ (os_update_farm.split('_'))[:3] | join('_') }}"
 # Let `mode: stage` reclaim /boot when the plan guard cannot be met. Turning this
 # off makes a tight /boot a hard refusal instead — safe, just less useful.
 os_update_stage_gc_enabled: true
+
+# How long apt-mark waits for the dpkg frontend lock before giving up, mirroring
+# what apt.yml has always passed to apt-get. On a Deckhouse node bashible runs
+# apt transactions of its own, so the lock is genuinely contended.
+os_update_dpkg_lock_timeout: 300

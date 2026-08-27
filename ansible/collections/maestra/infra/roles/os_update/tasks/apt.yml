@@ -8,7 +8,12 @@
   ansible.builtin.apt:
     upgrade: dist
     update_cache: true
-    lock_timeout: 300
+    # Same knob holds.yml uses — one source of truth for the dpkg lock wait.
+    # The apt module WAITS here; it does not retry, and it does not need to:
+    # a single dist-upgrade that cannot get the lock in this window is a real
+    # problem, not a transient. apt-mark is the one that retries, because its
+    # failure lands in the always-block where a lost race leaves a pin behind.
+    lock_timeout: "{{ os_update_dpkg_lock_timeout | int }}"
     autoremove: false
     dpkg_options: force-confdef,force-confold
   environment:

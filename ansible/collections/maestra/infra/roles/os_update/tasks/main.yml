@@ -98,8 +98,13 @@
   # unattended-upgrades on an ordinary server. On a Deckhouse node it is safe for
   # a specific, checked reason: the kubernetes bits are NOT apt packages here —
   # kubelet, containerd and the CNI are managed by bashible, and Deckhouse removes
-  # unattended-upgrades outright (003_disable_unattended_upgrades.sh), so this apt
-  # transaction has no counterpart to race.
+  # unattended-upgrades outright (003_disable_unattended_upgrades.sh).
+  #
+  # It does still run apt of its own, though, so the dpkg lock IS contended — the
+  # earlier wording here claimed otherwise and was wrong. Measured on us-omega
+  # worker21: bashible installed `oathtool` and removed
+  # `linux-headers-6.8.0-138-generic` while a stage run was finishing, and the
+  # hold restore lost the lock. Every apt-touching call waits for it now.
   when:
     - os_update_mode == 'stage'
     - os_update_needed
