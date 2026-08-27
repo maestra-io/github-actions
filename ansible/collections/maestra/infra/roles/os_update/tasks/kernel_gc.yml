@@ -1,10 +1,24 @@
 ---
-# Old kernels are only garbage-collected when /boot is genuinely tight, and only
-# AFTER a successful reboot — never before. `autoremove --purge` has a wider blast
-# radius than "delete old kernels", and the kernel we might have to fall back to is
-# worth more than the megabytes it occupies.
+# Old kernels are only garbage-collected when /boot is genuinely tight.
+# `autoremove --purge` has a wider blast radius than "delete old kernels", and the
+# kernel we might have to fall back to is worth more than the megabytes it occupies.
+#
+# Two phases, selected by `os_update_gc_phase`:
+#
+#   post-reboot (default) — the original behaviour, unchanged: only after a
+#     successful reboot, gated on os_update_rebooted. The kernel we just left is
+#     the fallback, so it must not be purged until the new one has actually
+#     booted.
+#
+#   pre-stage — for `mode: stage`, which installs a kernel and never reboots. Here
+#     the running kernel IS the fallback and stays: `apt autoremove --purge` by
+#     construction never removes the running kernel nor the newest installed one,
+#     so what it can reclaim is exactly the "one before last" set. Without this
+#     the stage mode is unusable on the kube tier — /boot there is 467 MB with
+#     241 free against a 196 MB guard (measured us-omega worker23, 2026-08-27),
+#     i.e. one bad week of kernels away from refusing every stage run.
 
-- name: Re-measure /boot after the upgrade
+- name: Re-measure /boot
   ansible.builtin.shell:
     executable: /bin/bash
     cmd: |
@@ -20,8 +34,16 @@
     purge: true
   register: os_update_gc
   when:
-    - os_update_rebooted | default(false)
-    - (os_update_boot_free_post.stdout | trim | int) < (os_update_boot_free_gc_threshold_mb | int)
+    # post-reboot: unchanged gate. pre-stage: the reboot has not happened and
+    # never will in this mode, so the gate is "the plan guard could not be met".
+    - >-
+      (os_update_gc_phase | default('post-reboot')) == 'pre-stage'
+      or (os_update_rebooted | default(false))
+    - >-
+      (os_update_boot_free_post.stdout | trim | int)
+      < ((os_update_boot_free_needed_mb | int)
+         if (os_update_gc_phase | default('post-reboot')) == 'pre-stage'
+         else (os_update_boot_free_gc_threshold_mb | int))
 
 # Re-probe when the GC actually ran — os_update_boot_free_post was measured
 # BEFORE the purge, and the one case this message matters is the one where the
