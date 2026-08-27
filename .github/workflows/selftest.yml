@@ -32,6 +32,12 @@ jobs:
       - name: host_limit selector
         run: bash ansible/tests/test-host-limit-selector.sh
 
+      # `mode: stage` is only safe BECAUSE it disrupts nothing — that is why it is
+      # allowed to skip preflight. This checks the property structurally, so the
+      # mode cannot quietly grow a drain.
+      - name: stage-mode wiring and the overridable reboot
+        run: bash ansible/tests/test-stage-mode-wiring.sh
+
       # The test carries its own copy of the selector; a change to the workflow
       # that does not update the test would leave the test green and meaningless.
       - name: the test's copy of the selector still matches the workflow

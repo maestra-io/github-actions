@@ -102,6 +102,62 @@ fails to boot once waits **forever** in the GRUB menu (`GRUB_TIMEOUT=0` +
 `GRUB_TIMEOUT_STYLE=hidden` and no recordfail timeout is the current state of these boxes),
 turning a recoverable failed reboot into a Proxmox-console rescue.
 
+## `mode: stage` — install now, activate at somebody else's reboot
+
+`stage` runs the upgrade (kernel included) and stops: **no cordon, no drain, no
+reboot, no verify**. The host keeps serving on its old kernel until something
+reboots it. It exists for one situation, and it is worth stating plainly because
+the mode looks unsafe until you see it:
+
+On a Deckhouse cluster the platform reboots every node itself during a node-update
+wave — drained, one at a time, uncordoned afterwards. Those reboots do nothing for
+the kernel, because Deckhouse does not manage kernels (there is no kernel step in
+any bashible bundle, and it deletes `unattended-upgrades` outright). So while a
+wave is rolling, every one of its reboots is an activation we are throwing away.
+`stage` loads the kernel under the wave and the wave activates it — one reboot for
+the fleet instead of two, and the wave stops being a blocker.
+
+What makes it safe is what it does **not** do, so those are the properties the
+selftest asserts structurally (`ansible/tests/test-stage-mode-wiring.sh`):
+
+* it never includes `drain.yml` / `reboot.yml` / `verify.yml` / `settle.yml`;
+* it **skips preflight** — deliberately. Every preflight gate decides whether a
+  host may be taken OUT of rotation, and stage takes nothing out. Running it would
+  also make stage refuse exactly when it is most useful: the kube preflight fails
+  while any node is cordoned, which is permanently true under a wave;
+* it still applies and restores the dpkg holds, so a staged run cannot move
+  `teleport` / `frr` / `consul` out from under a node nobody drained;
+* it refuses a host that still carries a drain marker — staging is invisible, and
+  burying a half-finished apply behind a green run is the one way this mode could
+  mislead;
+* the `/boot` guard still has to pass before a single package is unpacked. It is
+  *deferred* rather than skipped: `stage` may first run the kernel GC in its
+  `pre-stage` phase (autoremove never removes the running or the newest kernel,
+  so the fallback survives) and then re-assert the same condition.
+
+**What a green stage run does and does not claim.** It claims: the packages
+installed, the holds held, and a newer kernel is on disk. It does **not** claim
+the CVEs are closed — only the SOC rescan after an actual reboot claims that, the
+same as today. Track the gap with `count by (kernel_version) (kube_node_info)`.
+
+```bash
+gh workflow run os-update.yml --repo maestra-io/kubernetes-clusters \
+  -f environment=omicron -f target=worker -f mode=stage
+```
+
+## The reboot step is overridable by the consumer
+
+If a consumer repo has `tasks/os-update/reboot.yml`, the role calls it **instead**
+of rebooting over SSH. That is how a Kubernetes consumer hands the reboot to its
+platform: annotate the node and let Deckhouse drain-reboot-uncordon it on its own
+machinery, one node at a time, instead of us power-cycling it behind the
+platform's back.
+
+Opting in is having the file; opting out is not having it. The pet-VM consumers
+(`maestra-nat-gateway`, `vpn-maestra`, `haproxy-maestra`) have no `reboot.yml`,
+so their behaviour is byte-identical to before — and reverting a handoff is
+deleting one file.
+
 ## When a run dies mid-drain
 
 A cancelled runner never executes `always`. Three layers, of which only the first is a gate:

@@ -51,7 +51,15 @@
   ansible.builtin.include_tasks: plan.yml
 
 - name: PREFLIGHT — is the peer healthy, and is this host safe to reboot
+  # Skipped in `stage`, and that is the point rather than an oversight: every gate
+  # in preflight exists to decide whether this host may be TAKEN OUT of rotation
+  # (peer health, capacity for the evicted pods, "is anyone else drained"). Stage
+  # takes nothing out of rotation. Worse, running it would make stage refuse
+  # exactly when it is most useful — the kube preflight fails while any node in
+  # the cluster is cordoned, which is permanently true while a Deckhouse wave is
+  # rolling, and staging under that wave is the whole reason this mode exists.
   ansible.builtin.include_tasks: "{{ os_update_hooks_dir }}/preflight.yml"
+  when: os_update_mode != 'stage'
 
 - name: Plan report
   ansible.builtin.debug:
@@ -71,6 +79,113 @@
   when:
     - os_update_mode == 'apply'
     - not (os_update_needed or os_update_reboot_needed or os_update_resuming)
+
+- name: Nothing to stage — host already carries the newest packages
+  ansible.builtin.debug:
+    msg: "{{ inventory_hostname }}: nothing pending — untouched."
+  when:
+    - os_update_mode == 'stage'
+    - not os_update_needed
+
+- name: STAGE — install the upgrade, activate nothing
+  # Deliberately NOT a drain-less copy of APPLY. The whole block is one apt
+  # transaction plus the hold discipline around it, because that is the entire
+  # mutation: no cordon, no eviction, no reboot, no verify, no settle. Nothing is
+  # taken out of rotation, so there is nothing to put back and nothing to prove
+  # afterwards beyond "the package landed".
+  #
+  # This is the same class of mutation Ubuntu performs by itself via
+  # unattended-upgrades on an ordinary server. On a Deckhouse node it is safe for
+  # a specific, checked reason: the kubernetes bits are NOT apt packages here —
+  # kubelet, containerd and the CNI are managed by bashible, and Deckhouse removes
+  # unattended-upgrades outright (003_disable_unattended_upgrades.sh), so this apt
+  # transaction has no counterpart to race.
+  when:
+    - os_update_mode == 'stage'
+    - os_update_needed
+  block:
+    - name: Refuse to stage onto a host somebody left drained
+      # A staged install is invisible: it changes nothing observable until a
+      # reboot. Doing that to a host that is already out of rotation hides a
+      # half-finished apply behind a green run. Finish that run first.
+      ansible.builtin.assert:
+        that: not os_update_resuming
+        fail_msg: >-
+          {{ inventory_hostname }} still carries an os-update drain marker — it was
+          left drained by an earlier run. Finish or unwind that run first
+          (mode=apply to complete it, or mode=undrain-only to put the host back);
+          staging on top would bury it.
+
+    - name: Reclaim /boot before staging, if the guard cannot be met
+      # Ordering matters: the plan's /boot guard is deferred in stage precisely so
+      # this can run first. autoremove never touches the running kernel or the
+      # newest installed one, so the fallback we would boot from survives.
+      ansible.builtin.include_tasks: kernel_gc.yml
+      vars:
+        os_update_gc_phase: pre-stage
+      when: os_update_stage_gc_enabled | bool
+
+    - name: Guard — /boot must have room to unpack a kernel
+      # The same assertion plan.yml makes for apply, re-evaluated after the GC.
+      # Re-measured rather than reused: os_update_boot_free_mb was read before the
+      # purge, and this is the one case where that number just changed.
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -o pipefail
+          df -Pm /boot | awk 'NR==2 {print $4}'
+      register: os_update_stage_boot_free
+      changed_when: false
+      check_mode: false
+
+    - name: The /boot guard must pass before any package is unpacked
+      ansible.builtin.assert:
+        that: >-
+          (os_update_stage_boot_free.stdout | trim | int)
+          >= (os_update_boot_free_needed_mb | int)
+        fail_msg: >-
+          /boot has {{ os_update_stage_boot_free.stdout | trim }} MB free after the
+          pre-stage GC; the guard wants {{ os_update_boot_free_needed_mb }} MB.
+          Nothing has been installed. Reclaim space by hand.
+        success_msg: >-
+          /boot free {{ os_update_stage_boot_free.stdout | trim }} MB >=
+          {{ os_update_boot_free_needed_mb }} needed.
+
+    - name: Pin the packages we must not let apt move
+      ansible.builtin.include_tasks: holds.yml
+      vars:
+        os_update_holds_action: apply
+
+    - name: Upgrade
+      ansible.builtin.include_tasks: apt.yml
+
+    - name: Prove a newer kernel is installed and waiting for a reboot
+      # The success criterion for a mode that never reboots. `os_update_reboot_needed`
+      # is recomputed inside apt.yml from the post-upgrade state, so this reads the
+      # fresh value, not the plan's.
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -o pipefail
+          ls -1 /boot/vmlinuz-* 2>/dev/null | sed 's|.*/vmlinuz-||' | sort -V | tail -1
+      register: os_update_stage_newest
+      changed_when: false
+      check_mode: false
+
+    - name: Staged
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: staged. running={{ ansible_facts.kernel }}
+          newest_installed={{ os_update_stage_newest.stdout | trim }}
+          reboot_pending={{ os_update_reboot_needed }}.
+          NOT activated — this host runs the old kernel until something reboots it.
+          CVE closure is claimed by the SOC rescan after that reboot, never here.
+
+  always:
+    - name: Restore the hold set we found
+      ansible.builtin.include_tasks: holds.yml
+      vars:
+        os_update_holds_action: restore
 
 - name: APPLY
   when:
@@ -98,7 +213,20 @@
       when: os_update_needed
 
     - name: Reboot
-      ansible.builtin.include_tasks: reboot.yml
+      # The consumer may own the reboot. A kube node is not rebooted over SSH by
+      # us when its platform already has a node-update machine that drains,
+      # reboots and uncordons it — handing the reboot over means one reboot
+      # instead of two. A consumer opts in simply by having the file; the pet-VM
+      # repos have no reboot.yml, so they keep the SSH reboot with no change at
+      # all.
+      ansible.builtin.include_tasks: "{{ lookup('ansible.builtin.first_found', params) }}"
+      vars:
+        params:
+          files:
+            - "{{ os_update_hooks_dir }}/reboot.yml"
+            - reboot.yml
+          paths:
+            - "{{ role_path }}/tasks"
       when: os_update_reboot_needed
 
     - name: Reclaim /boot if it is tight

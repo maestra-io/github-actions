@@ -5,6 +5,16 @@
 # (contract: docs/ansible-os-update.md).
 
 # plan | apply | undrain-only
+# plan | stage | apply | undrain-only.
+#   plan        mutates nothing.
+#   stage       installs the upgrade (kernel included) and stops there: no cordon,
+#               no drain, no reboot. The new kernel becomes active at the node's
+#               NEXT reboot, whoever performs it. On Deckhouse kube nodes that is
+#               normally the platform's own node-update wave, which reboots every
+#               node anyway — staging under a running wave turns those reboots
+#               from wasted into the activation step, and removes the second
+#               fleet-wide reboot entirely.
+#   apply       the full drain -> upgrade -> reboot -> verify contract.
 os_update_mode: plan
 
 # Where the consumer repo's hook task-files live (playbook_dir = <repo>/ansible/playbooks).
@@ -77,3 +87,7 @@ os_update_allow_single_node: false
 # still serializes. Consumers set os_update_farm in their vars.yml before
 # guards run; the default here evaluates lazily.
 os_update_contour: "{{ (os_update_farm.split('_'))[:3] | join('_') }}"
+
+# Let `mode: stage` reclaim /boot when the plan guard cannot be met. Turning this
+# off makes a tight /boot a hard refusal instead — safe, just less useful.
+os_update_stage_gc_enabled: true
