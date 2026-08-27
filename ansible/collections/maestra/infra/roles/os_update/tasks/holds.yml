@@ -29,8 +29,31 @@
              | list }}
 
     - name: Hold them
+      # -o DPkg::Lock::Timeout, and retries on top. `apt.yml` has always passed
+      # this; these two apt-mark calls did not, and that asymmetry cost a run.
+      #
+      # On a Deckhouse node the lock has a real competitor: bashible runs apt of
+      # its own. Measured on us-omega worker21 (run 33089541251): the node staged
+      # fine, then the hold RESTORE died with "dpkg frontend lock was locked by
+      # another process with pid 1402631", rc=100, leaving `teleport` held. The
+      # node's apt history for that minute shows who: `apt-get install -y -qq
+      # --no-install-recommends oathtool` (our own break-glass NGC step) and
+      # `apt-get remove -y --allow-change-held-packages
+      # linux-headers-6.8.0-138-generic`. So the claim that Deckhouse has no apt
+      # transaction to race is wrong — it does not manage the kernel IMAGE, which
+      # is a different statement.
+      #
+      # A failed restore is the worst of the failure modes here: the mutation has
+      # already happened and a pin we introduced outlives the run, silently
+      # freezing that package for every future upgrade.
       ansible.builtin.command:
-        argv: "{{ ['apt-mark', 'hold'] + os_update_our_holds }}"
+        argv: >-
+          {{ ['apt-mark', '-o', 'DPkg::Lock::Timeout=' ~ (os_update_dpkg_lock_timeout | int),
+              'hold'] + os_update_our_holds }}
+      register: os_update_hold_lock_try
+      until: os_update_hold_lock_try.rc == 0
+      retries: 5
+      delay: 20
       register: os_update_hold_cmd
       changed_when: "'set on hold' in os_update_hold_cmd.stdout"
       check_mode: false
@@ -70,8 +93,16 @@
     # activity, full disk) leaves teleport/frr/consul held FOREVER, and their own
     # IaC-driven upgrades then fail silently on the next run.
     - name: Unhold only what WE held (someone else's pins stay put)
+      # Same lock discipline as the hold above — see the note there. This is the
+      # call that actually failed in production.
       ansible.builtin.command:
-        argv: "{{ ['apt-mark', 'unhold'] + os_update_our_holds }}"
+        argv: >-
+          {{ ['apt-mark', '-o', 'DPkg::Lock::Timeout=' ~ (os_update_dpkg_lock_timeout | int),
+              'unhold'] + os_update_our_holds }}
+      register: os_update_unhold_lock_try
+      until: os_update_unhold_lock_try.rc == 0
+      retries: 5
+      delay: 20
       register: os_update_unhold_cmd
       changed_when: "'canceled' in os_update_unhold_cmd.stdout"
       check_mode: false
