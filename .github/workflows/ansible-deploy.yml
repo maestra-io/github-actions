@@ -67,6 +67,21 @@ on:
         required: false
         type: string
         default: ""
+      vault2_addr:
+        description: "Second Vault address for vault2_secrets. Falls back to vault_addr."
+        required: false
+        type: string
+        default: ""
+      vault2_role:
+        description: "Vault JWT role for the second source. Falls back to vault_role."
+        required: false
+        type: string
+        default: ""
+      vault2_secrets:
+        description: "Second secret map, same syntax as vault_secrets. Empty disables it."
+        required: false
+        type: string
+        default: ""
       mint_proxmox_token:
         required: false
         type: boolean
@@ -146,6 +161,9 @@ jobs:
       teleport_app: ${{ inputs.teleport_app }}
       vault_role: ${{ inputs.vault_role }}
       vault_secrets: ${{ inputs.vault_secrets }}
+      vault2_addr: ${{ inputs.vault2_addr }}
+      vault2_role: ${{ inputs.vault2_role }}
+      vault2_secrets: ${{ inputs.vault2_secrets }}
       mint_proxmox_token: ${{ inputs.mint_proxmox_token }}
       extra_env: ${{ inputs.extra_env }}
       extra_run_args: ${{ inputs.extra_run_args }}
