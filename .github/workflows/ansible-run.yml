@@ -152,6 +152,33 @@ on:
         required: false
         type: string
         default: ""
+      # --- optional SECOND Vault source -----------------------------------
+      # One connection cannot serve a secret that is deliberately fleet-wide when
+      # every other secret in the run is per-contour. The break-glass domain
+      # Administrator password is exactly that: its rotation runs from a domain
+      # controller, which can reach https://vault.maestra.io and NOTHING else --
+      # the in-cluster Vaults publish only /sys/health through their Teleport app
+      # and answer 302 to every real call (measured 2026-08-28) -- so the value
+      # lives on the public Vault under a per-domain field while the run's other
+      # secrets keep coming from the contour's own Vault.
+      #
+      # Empty by default and gated on vault2_secrets, so no existing caller
+      # changes behaviour. Same discipline as breakglass_vault_addr above.
+      vault2_addr:
+        description: "Second Vault address for vault2_secrets (e.g. https://vault.maestra.io). Falls back to vault_addr when empty."
+        required: false
+        type: string
+        default: ""
+      vault2_role:
+        description: "Vault JWT role for the second source (auth method jwt-github). Falls back to vault_role when empty."
+        required: false
+        type: string
+        default: ""
+      vault2_secrets:
+        description: "Second secret map, same syntax as vault_secrets. Empty disables the second fetch entirely."
+        required: false
+        type: string
+        default: ""
       breakglass_minter_role:
         description: >-
           Vault jwt-github role used ONLY to mint response-wrapped AppRole
@@ -541,6 +568,24 @@ jobs:
           jwtGithubAudience: https://github.com/maestra-io
           exportEnv: true
           secrets: ${{ inputs.vault_secrets }}
+
+      # --- Vault: second source (optional, additive) ---------------------
+      # Gated ONLY on vault2_secrets being non-empty -- deliberately not on
+      # vault_mode, exactly like the break-glass minter step below, so a caller
+      # can use this while its primary source is `none`. Both fetches use
+      # exportEnv, and the env names must not collide: the second one would win,
+      # silently. Give it its own ENV_NAME.
+      - name: Retrieve secrets from the second Vault
+        if: ${{ inputs.vault2_secrets != '' }}
+        uses: hashicorp/vault-action@v4 # TODO: SHA-pin via Renovate on landing
+        with:
+          url: ${{ inputs.vault2_addr != '' && inputs.vault2_addr || inputs.vault_addr }}
+          method: jwt
+          path: jwt-github
+          role: ${{ inputs.vault2_role != '' && inputs.vault2_role || inputs.vault_role }}
+          jwtGithubAudience: https://github.com/maestra-io
+          exportEnv: true
+          secrets: ${{ inputs.vault2_secrets }}
 
       # --- Vault: break-glass SecretID minter token (input-gated) --------
       # Logs in as a dedicated jwt-github role and exports BREAKGLASS_MINT_TOKEN.

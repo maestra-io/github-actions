@@ -46,6 +46,7 @@ Never prefix them with `ansible/`. Only `requirements_pip` / `requirements_galax
 | `teleport_app` | string | no | `""` | tbot app-tunnel name (tunnel mode, e.g. `vault-omicron`); empty → no tunnel |
 | `vault_role` | string | no | `""` | Vault JWT role (`jwt-github`) |
 | `vault_secrets` | string (multiline) | no | `""` | passed **verbatim** to `hashicorp/vault-action` `secrets:` — the whole per-repo secret map |
+| `vault2_addr` / `vault2_role` / `vault2_secrets` | string | no | `""` | **Optional second Vault source.** One connection cannot serve a secret that is deliberately fleet-wide while the run's other secrets are per-contour. Gated only on `vault2_secrets` being non-empty, so no existing caller is affected; `vault2_addr`/`vault2_role` fall back to the primary ones. Both fetches use `exportEnv`, so the two maps must not share an `ENV_NAME` — the second would silently win. |
 | `mint_proxmox_token` | boolean | no | `false` | proxmox-only pveum token mint + cleanup (input-gated) |
 | `extra_env` | string (multiline) | no | `""` | extra `KEY=VALUE` lines injected into the Execute env |
 | `aws_workload_identity` | string | no | `""` | `name=<workload-identity> role_arn=<arn>` — mints a Teleport workload-identity JWT **on the runner** and exports `AWS_WEB_IDENTITY_TOKEN_FILE` / `AWS_ROLE_ARN` into the Execute env, so a play calls AWS as the CI principal instead of every target host needing its own AWS identity. Empty skips the step. Fails the job if no JWT is produced. |

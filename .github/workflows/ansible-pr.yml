@@ -5,6 +5,7 @@
 # The caller passes:
 #   - `envs`: a JSON array of {region,environment,site,inventory_group_suffix?,tags?,
 #             vault_mode?,vault_addr?,teleport_app?,vault_role?,vault_secrets?,
+#             vault2_addr?,vault2_role?,vault2_secrets?,
 #             mint_proxmox_token?,extra_run_args?,extra_env?} objects -> becomes the check matrix.
 #   - `playbook`, `use_mitogen`, `windows_mode`, etc. as shared defaults.
 #
@@ -166,6 +167,12 @@ jobs:
       teleport_app: ${{ matrix.env.teleport_app || '' }}
       vault_role: ${{ matrix.env.vault_role || '' }}
       vault_secrets: ${{ matrix.env.vault_secrets || '' }}
+      # Per-row like the rest of the vault block: a matrix row that needs a
+      # fleet-wide secret alongside its per-contour ones carries its own second
+      # source. Absent from a row means empty means the second fetch is skipped.
+      vault2_addr: ${{ matrix.env.vault2_addr || '' }}
+      vault2_role: ${{ matrix.env.vault2_role || '' }}
+      vault2_secrets: ${{ matrix.env.vault2_secrets || '' }}
       mint_proxmox_token: ${{ matrix.env.mint_proxmox_token || false }}
       extra_env: ${{ matrix.env.extra_env || inputs.extra_env }}
       extra_run_args: ${{ matrix.env.extra_run_args || inputs.extra_run_args }}
