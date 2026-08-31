@@ -5,14 +5,21 @@
 #   - `envs`: a JSON array of {region,environment,site,env_dir?,proxmox_host?,
 #             proxmox_token_prefix?,vault_mode?,vault_addr?,teleport_app?,
 #             vault_role?,vault_secrets?,parallelism?,mask_sensitive_jq_path?,
-#             extra_env?,extra_workload_identities?,replace_targets?} objects
-#             -> becomes the plan matrix. Per-row values win over the
+#             extra_env?,extra_workload_identities?,replace_targets?,runs_on?}
+#             objects -> becomes the plan matrix. Per-row values win over the
 #             workflow-wide defaults below.
 #   - workflow-wide defaults for everything else.
 #
-# Booleans (node_ssh_tunnels / api_tunnel) are workflow-wide only: `x || y`
-# expression fallback can't distinguish per-row `false` from absent, so rows
-# don't override booleans (same convention as ansible-pr's mint_proxmox_token).
+# Booleans (node_ssh_tunnels / api_tunnel / node_ssh_direct) are workflow-wide
+# only: `x || y` expression fallback can't distinguish per-row `false` from
+# absent, so rows don't override booleans (same convention as ansible-pr's
+# mint_proxmox_token).
+#
+# `runs_on` IS per-row, and must be: rows target different environments whose
+# runners must not cross (omicron rows -> us-omicron-lw-runners, omega rows ->
+# us-omega-lw-runners), and rows whose environment has no ARC scale set (eu)
+# stay GitHub-hosted. Same shape as ansible-pr.yml. fmt and the commenter stay
+# on ubuntu-latest — neither touches infrastructure.
 #
 # Commenter: FLAT plan-*.txt artifacts + merge-multiple:true, single sticky
 # comment, marker <!-- terraform-plan-diff -->. Row labels are filename-derived
@@ -46,6 +53,16 @@ on:
         required: false
         type: boolean
         default: true
+      node_ssh_direct:
+        description: "Forward node/API ports with plain `ssh -L` to nodes.json `address` instead of `tsh ssh -L` (see terraform-run.yml). Needs an in-network runs_on on EVERY row. Workflow-wide."
+        required: false
+        type: boolean
+        default: false
+      runs_on:
+        description: "Default runner label for the plan-matrix jobs; a per-row runs_on in `envs` wins. fmt and the comment job stay on ubuntu-latest."
+        required: false
+        type: string
+        default: "ubuntu-latest"
       mask_sensitive_jq_path:
         description: "Workflow-wide default; per-row override wins"
         required: false
@@ -130,6 +147,8 @@ jobs:
       proxmox_host: ${{ matrix.env.proxmox_host || '' }}
       api_tunnel: ${{ inputs.api_tunnel }}
       node_ssh_tunnels: ${{ inputs.node_ssh_tunnels }}
+      node_ssh_direct: ${{ inputs.node_ssh_direct }}
+      runs_on: ${{ matrix.env.runs_on || inputs.runs_on }}
       mask_sensitive_jq_path: ${{ matrix.env.mask_sensitive_jq_path || inputs.mask_sensitive_jq_path }}
       extra_workload_identities: ${{ matrix.env.extra_workload_identities || inputs.extra_workload_identities }}
       extra_env: ${{ matrix.env.extra_env || inputs.extra_env }}
