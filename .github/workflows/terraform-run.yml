@@ -374,6 +374,14 @@ jobs:
       # --- Proxmox pveum token (ALWAYS per-run name — race-safe) -----------
       - name: Create Proxmox API token
         id: api-token
+        # nodes.json is CALLER-repo content (a reusable workflow checks out the
+        # caller, so on a PR it is the PR branch). Splicing a step output into
+        # the script body with ${{ }} would let a `$(...)` in any field execute
+        # here. Every nodes.json-derived value therefore travels through env and
+        # is read as a quoted shell variable — never as shell SOURCE.
+        env:
+          TELEPORT_HOSTS: ${{ steps.nodes.outputs.teleport_hosts }}
+          PROXMOX_HOST_IN: ${{ inputs.proxmox_host }}
         run: |
           set -euo pipefail
 
@@ -382,9 +390,9 @@ jobs:
           TOKEN_NAME="${{ inputs.proxmox_token_prefix }}-${{ github.run_id }}-${{ github.run_attempt }}"
           echo "token_name=$TOKEN_NAME" >> "$GITHUB_OUTPUT"
 
-          PROXMOX_HOST="${{ inputs.proxmox_host }}"
+          PROXMOX_HOST="$PROXMOX_HOST_IN"
           if [ -z "$PROXMOX_HOST" ]; then
-            HOSTS=(${{ steps.nodes.outputs.teleport_hosts }})
+            read -r -a HOSTS <<< "$TELEPORT_HOSTS"
             if [ "${#HOSTS[@]}" -eq 0 ]; then
               echo "::error::No proxmox_host input and no nodes.json to derive one from"
               exit 1
@@ -512,10 +520,13 @@ jobs:
       - name: Start per-node SSH tunnels to Proxmox
         id: ssh-tunnel
         if: ${{ inputs.node_ssh_tunnels && !inputs.node_ssh_direct && steps.nodes.outputs.has_nodes_json == 'true' }}
+        env:
+          TELEPORT_HOSTS: ${{ steps.nodes.outputs.teleport_hosts }}
+          SSH_PORTS: ${{ steps.nodes.outputs.ssh_ports }}
         run: |
           set -euo pipefail
-          HOSTS=(${{ steps.nodes.outputs.teleport_hosts }})
-          PORTS=(${{ steps.nodes.outputs.ssh_ports }})
+          read -r -a HOSTS <<< "$TELEPORT_HOSTS"
+          read -r -a PORTS <<< "$SSH_PORTS"
           TUNNEL_PIDS=""
 
           for i in "${!HOSTS[@]}"; do
@@ -541,9 +552,11 @@ jobs:
 
       - name: Setup temporary SSH key for Proxmox provider
         if: ${{ inputs.node_ssh_tunnels && steps.nodes.outputs.has_nodes_json == 'true' }}
+        env:
+          TELEPORT_HOSTS: ${{ steps.nodes.outputs.teleport_hosts }}
         run: |
           set -euo pipefail
-          HOSTS=(${{ steps.nodes.outputs.teleport_hosts }})
+          read -r -a HOSTS <<< "$TELEPORT_HOSTS"
 
           ssh-keygen -t ed25519 -f /tmp/proxmox-key -N "" -q
 
@@ -573,11 +586,15 @@ jobs:
       - name: Start per-node direct SSH forwarders
         id: ssh-direct
         if: ${{ inputs.node_ssh_tunnels && inputs.node_ssh_direct && steps.nodes.outputs.has_nodes_json == 'true' }}
+        env:
+          NODE_NAMES: ${{ steps.nodes.outputs.node_names }}
+          NODE_ADDRESSES: ${{ steps.nodes.outputs.node_addresses }}
+          SSH_PORTS: ${{ steps.nodes.outputs.ssh_ports }}
         run: |
           set -euo pipefail
-          NAMES=(${{ steps.nodes.outputs.node_names }})
-          ADDRS=(${{ steps.nodes.outputs.node_addresses }})
-          PORTS=(${{ steps.nodes.outputs.ssh_ports }})
+          read -r -a NAMES <<< "$NODE_NAMES"
+          read -r -a ADDRS <<< "$NODE_ADDRESSES"
+          read -r -a PORTS <<< "$SSH_PORTS"
           TUNNEL_PIDS=""
 
           for i in "${!NAMES[@]}"; do
@@ -622,9 +639,15 @@ jobs:
       - name: Start Proxmox API tunnel
         id: api-tunnel
         if: ${{ inputs.api_tunnel }}
+        env:
+          API_PORT: ${{ steps.nodes.outputs.api_port }}
+          HOST: ${{ steps.api-token.outputs.host }}
+          TELEPORT_HOSTS: ${{ steps.nodes.outputs.teleport_hosts }}
+          NODE_ADDRESSES: ${{ steps.nodes.outputs.node_addresses }}
+          HAS_NODES_JSON: ${{ steps.nodes.outputs.has_nodes_json }}
+          NODE_SSH_DIRECT: ${{ inputs.node_ssh_direct }}
+          NODE_SSH_TUNNELS: ${{ inputs.node_ssh_tunnels }}
         run: |
-          API_PORT=${{ steps.nodes.outputs.api_port }}
-          HOST="${{ steps.api-token.outputs.host }}"
           # Local port comes from nodes.json .api_tunnel_port; the REMOTE side
           # is FIXED at 8006 — Proxmox always listens on 8006. This removes the
           # old triple coupling (local port == remote port == api_tunnel_port).
@@ -636,11 +659,11 @@ jobs:
           # when that is on, so an env with node_ssh_tunnels=false (mssql, AD)
           # keeps the tsh tunnel regardless of node_ssh_direct.
           API_ADDR=""
-          if [ "${{ inputs.node_ssh_direct }}" = "true" ] \
-             && [ "${{ inputs.node_ssh_tunnels }}" = "true" ] \
-             && [ "${{ steps.nodes.outputs.has_nodes_json }}" = "true" ]; then
-            HOSTS=(${{ steps.nodes.outputs.teleport_hosts }})
-            ADDRS=(${{ steps.nodes.outputs.node_addresses }})
+          if [ "$NODE_SSH_DIRECT" = "true" ] \
+             && [ "$NODE_SSH_TUNNELS" = "true" ] \
+             && [ "$HAS_NODES_JSON" = "true" ]; then
+            read -r -a HOSTS <<< "$TELEPORT_HOSTS"
+            read -r -a ADDRS <<< "$NODE_ADDRESSES"
             for i in "${!HOSTS[@]}"; do
               if [ "${HOSTS[$i]}" = "$HOST" ]; then API_ADDR="${ADDRS[$i]}"; fi
             done
@@ -676,7 +699,7 @@ jobs:
           # unauthenticated /api2/json/version probe proves HTTPS end-to-end
           # through the tunnel to the Proxmox API (no token required).
           for i in $(seq 1 15); do
-            if (echo >/dev/tcp/localhost/$API_PORT) 2>/dev/null \
+            if (echo >"/dev/tcp/localhost/$API_PORT") 2>/dev/null \
                && curl -sk --max-time 5 "https://127.0.0.1:${API_PORT}/api2/json/version" >/dev/null; then
               break
             fi
@@ -858,6 +881,10 @@ jobs:
       # --- Cleanup ------------------------------------------------------------
       - name: Cleanup
         if: ${{ always() }}
+        env:
+          TELEPORT_HOSTS: ${{ steps.nodes.outputs.teleport_hosts }}
+          API_HOST_IN: ${{ steps.api-token.outputs.host }}
+          TOKEN_NAME_IN: ${{ steps.api-token.outputs.token_name }}
         run: |
           # Stop Vault tunnel
           if [ -n "${{ steps.vault-tunnel.outputs.tunnel_pid }}" ]; then
@@ -865,8 +892,8 @@ jobs:
           fi
 
           # Remove the per-run Proxmox API token
-          API_HOST="${{ steps.api-token.outputs.host }}"
-          TOKEN_NAME="${{ steps.api-token.outputs.token_name }}"
+          API_HOST="$API_HOST_IN"
+          TOKEN_NAME="$TOKEN_NAME_IN"
           if [ -n "$API_HOST" ] && [ -n "$TOKEN_NAME" ]; then
             timeout 60 tsh ssh "teleport-production@${API_HOST}" -- \
               "sudo pveum user token remove ci@pve ${TOKEN_NAME} 2>/dev/null || true" || true
@@ -876,7 +903,8 @@ jobs:
           # Remove the temp SSH key from each node's root authorized_keys —
           # precise sed by the base64 payload so we never touch unrelated lines.
           if [ -n "${TMP_KEY_DATA:-}" ]; then
-            for HOST in ${{ steps.nodes.outputs.teleport_hosts }}; do
+            read -r -a CLEANUP_HOSTS <<< "$TELEPORT_HOSTS"
+            for HOST in "${CLEANUP_HOSTS[@]}"; do
               tsh ssh -i "$TELEPORT_IDENTITY_FILE" \
                 "teleport-production@${HOST}" \
                 "sudo sed -i '\|${TMP_KEY_DATA}|d' /root/.ssh/authorized_keys" || true
