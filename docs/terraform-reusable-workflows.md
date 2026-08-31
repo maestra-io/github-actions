@@ -41,7 +41,10 @@ Ordering contract (fixed, do not reorder):
    `selector=ENV_VAR=/dest/dir`).
 6. Optional per-node SSH tunnels + temp root ed25519 key + ssh-agent
    (`node_ssh_tunnels: true`; requires `nodes.json`) — bpg/proxmox native
-   SSH transport (snippets / disk imports).
+   SSH transport (snippets / disk imports). With `node_ssh_direct: true`
+   the forward is opened AFTER the key injection, by a plain `ssh -L` to
+   the node's internal `address`, and Teleport is left with the auth
+   bootstrap only (pveum mint + key injection).
 7. Proxmox API tunnel — **the LAST `tsh ssh` before terraform**, with
    `--no-resume` (additional tsh connections can kill a resumable
    background tunnel). Forward is `-L <local>:localhost:8006`: LOCAL port =
@@ -100,6 +103,8 @@ order.
 | `proxmox_host` | string | `''` → nodes.json[0] |
 | `api_tunnel` | boolean | `true` (local port = `.api_tunnel_port // 8006`, remote fixed `8006`; TCP + unauth `/api2/json/version` readiness, fail-fast) |
 | `node_ssh_tunnels` | boolean | `false` |
+| `node_ssh_direct` | boolean | `false` — forward node + API ports with plain `ssh -L` to each node's nodes.json `address` instead of `tsh ssh -L`. Provider contract unchanged (still `127.0.0.1:<ssh_tunnel_port>`); requires `runs_on` on an in-network ARC set, `node_ssh_tunnels: true`, and an `address` key on every node |
+| `runs_on` | string | `ubuntu-latest` — or an ARC scale set (`us-omega-lw-runners`, `us-omicron-lw-runners`) |
 | `mask_sensitive_jq_path` | string | `''` |
 | `rolling` / `rolling_interval` / `rolling_module_prefix` | bool/number/string | `false` / `180` / `module.haproxy` |
 | `extra_workload_identities` | string | `''` (`selector=ENV_VAR=/dest/dir` lines) |
@@ -121,8 +126,11 @@ called workflow's token — ansible-phase evidence: dropping
 the sticky comment.
 Per-row overrides: `env_dir`, `proxmox_host`, `proxmox_token_prefix`,
 `vault_*`, `parallelism`, `mask_sensitive_jq_path`, `extra_env`,
-`extra_workload_identities`, `replace_targets`. Booleans
-(`node_ssh_tunnels`, `api_tunnel`) are workflow-wide only. Jobs: `fmt`
+`extra_workload_identities`, `replace_targets`, `runs_on`. Booleans
+(`node_ssh_tunnels`, `api_tunnel`, `node_ssh_direct`) are workflow-wide
+only. `runs_on` is per-row on purpose: an omicron row must not execute on
+an omega runner, and rows in a region with no ARC set (eu) stay hosted.
+`fmt` and `comment` stay on `ubuntu-latest` — neither touches infra. Jobs: `fmt`
 (`terraform fmt -check -recursive terraform/`) ∥ `plan` matrix (fail-fast
 false, artifacts `tf-plan-<r>-<e>-<s>`) → `comment` (always()): sticky
 comment, marker `<!-- terraform-plan-diff -->`, `comment_max_chars` default

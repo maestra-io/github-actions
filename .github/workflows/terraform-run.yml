@@ -23,6 +23,13 @@
 # background tunnel, hence --no-resume on the API tunnel) -> terraform.
 # Cleanup (always()) removes the token, the temp key, and every tunnel PID.
 #
+# Runner: `runs_on` (default ubuntu-latest). A self-hosted ARC scale set name
+# (us-omega-lw-runners / us-omicron-lw-runners) puts the job on the same
+# internal network as the Proxmox hosts. That alone does NOT remove Teleport
+# from the path — every leg still dials teleport.maestra.io:443 — it only
+# removes the Azure-to-edge internet hop. `node_ssh_direct` is what removes
+# the long-lived tunnels; see its input description.
+#
 # Env dir convention: terraform runs in `terraform/environments/<env_dir>`;
 # `env_dir` defaults to `environment` (vpn eu exception: env_dir=eu-omega).
 name: Terraform Run (reusable)
@@ -117,6 +124,22 @@ on:
         required: false
         type: boolean
         default: false
+      node_ssh_direct:
+        description: >-
+          Forward the per-node ports (and the Proxmox API port) with a plain
+          `ssh -L` to the node's own nodes.json `address` instead of
+          `tsh ssh -L`. The provider contract is UNCHANGED — it still dials
+          127.0.0.1:<ssh_tunnel_port> — so no consumer provider block needs
+          editing; the only consumer-side prerequisite is an `address` key
+          (the node's internal IP) on every nodes.json node. Teleport is then
+          used for the auth bootstrap only: the pveum token mint and the
+          temp-key injection, both single short-lived `tsh ssh` calls, instead
+          of tunnels that must stay up for the whole terraform run.
+          REQUIRES an in-network runner (`runs_on`) and node_ssh_tunnels=true
+          — a GitHub-hosted runner cannot reach the internal address at all.
+        required: false
+        type: boolean
+        default: false
       # --- haproxy-shaped specials ------------------------------------------
       mask_sensitive_jq_path:
         description: "jq field accessor (e.g. .registration_secret) whose plan values get ::add-mask:: + redaction in the plan artifact. Empty = plain plan output."
@@ -167,6 +190,20 @@ on:
         required: false
         type: string
         default: "teleport.maestra.io:443"
+      runs_on:
+        description: >-
+          Runner label for the job. Default is GitHub-hosted ubuntu-latest;
+          pass a self-hosted ARC scale-set name (e.g. us-omega-lw-runners) to
+          run in-cluster, on the same internal network as the Proxmox hosts.
+          Same convention and same scale sets as ansible-run.yml. The ARC image
+          is minimal but carries everything this workflow needs (bash / jq /
+          curl / git / python3 / ssh / ssh-keygen / ssh-agent); note sudo is
+          blocked there (no-new-privileges), so steps must not install system
+          packages — every binary here is either preinstalled or fetched into
+          the tool cache by an action.
+        required: false
+        type: string
+        default: "ubuntu-latest"
 
 permissions:
   contents: read
@@ -175,7 +212,7 @@ permissions:
 jobs:
   terraform:
     name: "${{ inputs.action }} · ${{ inputs.region }} · ${{ inputs.environment }} · ${{ inputs.site }}"
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     environment: ${{ inputs.gh_environment }}
     env:
       TF_IN_AUTOMATION: "true"
@@ -319,12 +356,18 @@ jobs:
           NODE_NAMES=$(echo "$NODES_JSON" | jq -r '.nodes[].name' | tr '\n' ' ')
           TELEPORT_HOSTS=$(echo "$NODES_JSON" | jq -r '.nodes[].teleport_host' | tr '\n' ' ')
           SSH_PORTS=$(echo "$NODES_JSON" | jq -r '.nodes[].ssh_tunnel_port' | tr '\n' ' ')
+          # Optional, node_ssh_direct only. "-" (never a valid IP) keeps the
+          # index aligned with the other three lists when a node omits it, so
+          # the direct step can name the offending node instead of silently
+          # shifting every address by one.
+          NODE_ADDRESSES=$(echo "$NODES_JSON" | jq -r '.nodes[] | .address // "-"' | tr '\n' ' ')
           NODE_COUNT=$(echo "$NODES_JSON" | jq '.nodes | length')
 
           echo "has_nodes_json=true" >> "$GITHUB_OUTPUT"
           echo "node_names=$NODE_NAMES" >> "$GITHUB_OUTPUT"
           echo "teleport_hosts=$TELEPORT_HOSTS" >> "$GITHUB_OUTPUT"
           echo "ssh_ports=$SSH_PORTS" >> "$GITHUB_OUTPUT"
+          echo "node_addresses=$NODE_ADDRESSES" >> "$GITHUB_OUTPUT"
           echo "node_count=$NODE_COUNT" >> "$GITHUB_OUTPUT"
           echo "Loaded $NODE_COUNT node(s): $NODE_NAMES"
 
@@ -461,9 +504,14 @@ jobs:
           done <<< "${{ inputs.extra_workload_identities }}"
 
       # --- Per-node SSH tunnels + temp key (bpg native SSH transport) -------
+      # Two transports, one contract: whichever runs, the provider dials
+      # 127.0.0.1:<ssh_tunnel_port>. Proxied (default) opens the forward with
+      # `tsh ssh -L` through the Teleport proxy; direct (node_ssh_direct)
+      # opens it with a plain `ssh -L` to the node's internal address and runs
+      # AFTER the key injection below, because it authenticates with that key.
       - name: Start per-node SSH tunnels to Proxmox
         id: ssh-tunnel
-        if: ${{ inputs.node_ssh_tunnels && steps.nodes.outputs.has_nodes_json == 'true' }}
+        if: ${{ inputs.node_ssh_tunnels && !inputs.node_ssh_direct && steps.nodes.outputs.has_nodes_json == 'true' }}
         run: |
           set -euo pipefail
           HOSTS=(${{ steps.nodes.outputs.teleport_hosts }})
@@ -515,6 +563,59 @@ jobs:
           TMP_KEY_DATA=$(awk '{print $2}' /tmp/proxmox-key.pub)
           echo "TMP_KEY_DATA=$TMP_KEY_DATA" >> "$GITHUB_ENV"
 
+      # --- Per-node DIRECT forwarders (node_ssh_direct) ---------------------
+      # Same local ports, same provider contract — the hop to the node is a
+      # plain ssh over the internal network instead of a tunnel riding the
+      # public Teleport edge. That edge is what fails as `SSH tunnel on port
+      # 2223 never came up`: the tunnel must survive the whole terraform run,
+      # so every transient at the proxy reds a job that had already
+      # authenticated fine.
+      - name: Start per-node direct SSH forwarders
+        id: ssh-direct
+        if: ${{ inputs.node_ssh_tunnels && inputs.node_ssh_direct && steps.nodes.outputs.has_nodes_json == 'true' }}
+        run: |
+          set -euo pipefail
+          NAMES=(${{ steps.nodes.outputs.node_names }})
+          ADDRS=(${{ steps.nodes.outputs.node_addresses }})
+          PORTS=(${{ steps.nodes.outputs.ssh_ports }})
+          TUNNEL_PIDS=""
+
+          for i in "${!NAMES[@]}"; do
+            ADDR="${ADDRS[$i]}"
+            PORT="${PORTS[$i]}"
+            if [ "$ADDR" = "-" ]; then
+              echo "::error::node_ssh_direct=true but nodes.json node '${NAMES[$i]}' has no \"address\" key — add the node's internal IP, or turn node_ssh_direct off"
+              exit 1
+            fi
+            echo "  - localhost:${PORT} -> ${ADDR}:22 (direct)"
+            # ExitOnForwardFailure turns a bind clash into a dead PID the
+            # readiness loop below catches, rather than a live ssh session
+            # forwarding nothing. Host keys are deliberately not pinned: CI
+            # runners are ephemeral and hold no known_hosts, exactly as the
+            # ansible direct path does it.
+            ssh -N \
+              -o BatchMode=yes \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              -o ExitOnForwardFailure=yes \
+              -o ServerAliveInterval=15 \
+              -o ServerAliveCountMax=4 \
+              -i /tmp/proxmox-key \
+              -L "${PORT}:127.0.0.1:22" \
+              "root@${ADDR}" &
+            TUNNEL_PIDS="$TUNNEL_PIDS $!"
+          done
+          echo "tunnel_pids=${TUNNEL_PIDS}" >> "$GITHUB_OUTPUT"
+
+          for PORT in "${PORTS[@]}"; do
+            for i in $(seq 1 15); do
+              (echo >"/dev/tcp/localhost/$PORT") 2>/dev/null && break
+              [ "$i" -eq 15 ] && { echo "::error::direct SSH forwarder on port $PORT never came up"; exit 1; }
+              sleep 1
+            done
+          done
+          echo "All direct SSH forwarders up (PIDs:${TUNNEL_PIDS})"
+
       # --- Proxmox API tunnel — MUST be the LAST tsh ssh before terraform ---
       # Additional tsh connections can kill a resumable background tunnel, so
       # this runs after every other tsh interaction and uses --no-resume.
@@ -528,12 +629,46 @@ jobs:
           # is FIXED at 8006 — Proxmox always listens on 8006. This removes the
           # old triple coupling (local port == remote port == api_tunnel_port).
           # All repos currently use 8006:8006, so no behavior change today.
-          echo "Starting API tunnel: localhost:${API_PORT} -> ${HOST}:8006"
 
-          tsh ssh --no-resume -i "$TELEPORT_IDENTITY_FILE" \
-            -L "${API_PORT}:localhost:8006" \
-            "teleport-production@${HOST}" \
-            "sleep infinity" &
+          # Direct mode carries the API forward the same way as the node
+          # forwards above — plain ssh to the host's nodes.json address, using
+          # the temp key. Gated on node_ssh_tunnels too: the key only exists
+          # when that is on, so an env with node_ssh_tunnels=false (mssql, AD)
+          # keeps the tsh tunnel regardless of node_ssh_direct.
+          API_ADDR=""
+          if [ "${{ inputs.node_ssh_direct }}" = "true" ] \
+             && [ "${{ inputs.node_ssh_tunnels }}" = "true" ] \
+             && [ "${{ steps.nodes.outputs.has_nodes_json }}" = "true" ]; then
+            HOSTS=(${{ steps.nodes.outputs.teleport_hosts }})
+            ADDRS=(${{ steps.nodes.outputs.node_addresses }})
+            for i in "${!HOSTS[@]}"; do
+              if [ "${HOSTS[$i]}" = "$HOST" ]; then API_ADDR="${ADDRS[$i]}"; fi
+            done
+            if [ -z "$API_ADDR" ] || [ "$API_ADDR" = "-" ]; then
+              echo "::error::node_ssh_direct=true but nodes.json has no \"address\" for the API host '${HOST}' — add it, or turn node_ssh_direct off"
+              exit 1
+            fi
+          fi
+
+          if [ -n "$API_ADDR" ]; then
+            echo "Starting API tunnel: localhost:${API_PORT} -> ${API_ADDR}:8006 (direct)"
+            ssh -N \
+              -o BatchMode=yes \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              -o ExitOnForwardFailure=yes \
+              -o ServerAliveInterval=15 \
+              -o ServerAliveCountMax=4 \
+              -i /tmp/proxmox-key \
+              -L "${API_PORT}:127.0.0.1:8006" \
+              "root@${API_ADDR}" &
+          else
+            echo "Starting API tunnel: localhost:${API_PORT} -> ${HOST}:8006"
+            tsh ssh --no-resume -i "$TELEPORT_IDENTITY_FILE" \
+              -L "${API_PORT}:localhost:8006" \
+              "teleport-production@${HOST}" \
+              "sleep infinity" &
+          fi
           TUNNEL_PID=$!
           echo "tunnel_pid=$TUNNEL_PID" >> "$GITHUB_OUTPUT"
 
@@ -749,8 +884,8 @@ jobs:
           fi
           kill "${SSH_AGENT_PID:-}" 2>/dev/null || true
 
-          # Kill all tunnels (node SSH + API)
-          for PID in ${{ steps.ssh-tunnel.outputs.tunnel_pids }} ${{ steps.api-tunnel.outputs.tunnel_pid }}; do
+          # Kill all tunnels (node SSH proxied + node SSH direct + API)
+          for PID in ${{ steps.ssh-tunnel.outputs.tunnel_pids }} ${{ steps.ssh-direct.outputs.tunnel_pids }} ${{ steps.api-tunnel.outputs.tunnel_pid }}; do
             kill "$PID" 2>/dev/null || true
           done
           rm -f /tmp/proxmox-key /tmp/proxmox-key.pub

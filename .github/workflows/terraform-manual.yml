@@ -83,6 +83,10 @@ on:
         required: false
         type: boolean
         default: false
+      node_ssh_direct:
+        required: false
+        type: boolean
+        default: false
       mask_sensitive_jq_path:
         required: false
         type: string
@@ -124,6 +128,11 @@ on:
         required: false
         type: string
         default: "teleport.maestra.io:443"
+      runs_on:
+        description: "Runner label passed straight to terraform-run (default ubuntu-latest; an ARC scale-set name runs the job in-cluster)."
+        required: false
+        type: string
+        default: "ubuntu-latest"
 
 permissions:
   contents: read
@@ -151,6 +160,8 @@ jobs:
       proxmox_host: ${{ inputs.proxmox_host }}
       api_tunnel: ${{ inputs.api_tunnel }}
       node_ssh_tunnels: ${{ inputs.node_ssh_tunnels }}
+      node_ssh_direct: ${{ inputs.node_ssh_direct }}
+      runs_on: ${{ inputs.runs_on }}
       mask_sensitive_jq_path: ${{ inputs.mask_sensitive_jq_path }}
       rolling: ${{ inputs.rolling }}
       rolling_interval: ${{ inputs.rolling_interval }}
