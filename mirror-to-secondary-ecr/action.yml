@@ -1,0 +1,256 @@
+name: 'Mirror an ECR tag to the secondary region'
+description: >-
+  Mirror an already-pushed ECR image (or OCI artifact / Helm chart) from the
+  primary region to the secondary one, so the tag resolves to the same digest
+  in both. For workflows that push with their own `docker push` /
+  `docker buildx build --push` / `helm push` instead of going through
+  push-to-aws-ecr-repository or bake-oci-manifests.
+inputs:
+  repository:
+    description: >-
+      Comma-separated list of ECR repository names that were just pushed, e.g.
+      `mcp-grafana` or `netbox-zone-labeler,helm-charts/netbox-zone-labeler`.
+      Every repository is mirrored at every tag (cross product).
+    required: true
+  tag:
+    description: >-
+      Comma-separated list of tags that were just pushed, e.g. `1.0.42,latest`.
+      Every tag is mirrored for every repository (cross product).
+    required: true
+  primaryRegion:
+    description: 'Region the images were pushed to.'
+    required: false
+    default: 'eu-central-1'
+  secondaryRegion:
+    description: >-
+      Second ECR region that receives a byte-identical copy of every mirrored
+      image (ECR eu-central-1 -> us-west-2 migration, phase 3 dual-push:
+      https://github.com/maestra-io/issues-maestra/issues/1354). Images are
+      imported BY DIGEST and then tagged with `crane tag`, so the tag resolves
+      to the same digest in both regions. Set to "" to disable the mirror
+      entirely — that is the phase 6 off-switch, and it turns this action into
+      a no-op.
+    required: false
+    default: 'us-west-2'
+  registry:
+    description: >-
+      Primary ECR registry host, e.g.
+      `515260921971.dkr.ecr.eu-central-1.amazonaws.com`. Defaults to the
+      calling identity's own account in primaryRegion, which is what every
+      caller in this org wants; pass it explicitly only to mirror another
+      account's registry.
+    required: false
+    default: ''
+  awsRoleArn:
+    description: >-
+      Role to assume through web identity. Only needed by the Teleport
+      Workload Identity workflows, which `export AWS_ROLE_ARN` and
+      `AWS_WEB_IDENTITY_TOKEN_FILE` INSIDE a `run:` step — those exports die
+      with that step's shell, so the credentials are not in the job env by the
+      time this action runs. Leave empty when credentials are already in the
+      job env (aws-actions/configure-aws-credentials, static keys).
+    required: false
+    default: ''
+  awsWebIdentityTokenFile:
+    description: >-
+      Path to the JWT written by tbot, e.g. `/tmp/tbot-output/jwt_svid`. Used
+      together with awsRoleArn; the file stays on the runner after the step
+      that produced it, so re-pointing at it is enough to re-assume the role.
+    required: false
+    default: ''
+  craneVersion:
+    description: >-
+      crane CLI version (without the v- prefix), downloaded into a temporary
+      directory.
+    required: false
+    default: '0.22.0'
+outputs: {}
+runs:
+  using: "composite"
+  steps:
+    # ── Dual-push: mirror an already-pushed tag to the secondary region ─────
+    # Phase 3 of the ECR eu-central-1 -> us-west-2 migration
+    # (https://github.com/maestra-io/issues-maestra/issues/1354). Skipped
+    # entirely when secondaryRegion is "" — the phase 6 off-switch.
+    #
+    # Same doctrine as push-to-aws-ecr-repository and bake-oci-manifests in
+    # this repo, and as system/components/docker-push-to-all 1.0.96 on the
+    # GitLab side. Repeated here rather than referenced because a composite
+    # action cannot `uses:` a sibling directory of its own repo by path.
+    #
+    # The secondary region carries a registry-ROOT pull-through-cache rule onto
+    # the primary one, which makes every registry READ against the secondary
+    # host lie: it answers THROUGH the cache from the primary region, for
+    # content the secondary repository does not store. Two consequences, both
+    # reproduced in production (rakes #2/#4 of the issue above):
+    #   - `crane copy` sees the proxied "destination already has it", no-ops,
+    #     and a STALE storage record for that tag survives. The only primitive
+    #     that rewrites the storage record is `crane tag`, which PUTs
+    #     unconditionally.
+    #   - `crane digest <secondary>/<repo>:<tag>` confirms content this job
+    #     never wrote — and pins that tag in the cache for up to 24 h on top.
+    # A third one bit the GitLab twin as rake #7: even on the PRIMARY host a
+    # digest read of a freshly written tag can resolve to a CHILD manifest of
+    # the index instead of the index itself, and the wrong value then travels
+    # all the way through a green job.
+    #
+    # So the reference digest is `aws ecr describe-images` — the repository's
+    # own storage record, the one honest answer — the import is triggered BY
+    # DIGEST, the wait polls storage rather than the read path, and the result
+    # is asserted against storage in both regions.
+    - name: Mirror to the secondary region
+      if: ${{ inputs.secondaryRegion != '' }}
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        REGISTRY_PRIMARY_IN: ${{ inputs.registry }}
+        AWS_REGION_PRIMARY: ${{ inputs.primaryRegion }}
+        AWS_REGION_SECONDARY: ${{ inputs.secondaryRegion }}
+        CRANE_VERSION: ${{ inputs.craneVersion }}
+        REPOSITORIES: ${{ inputs.repository }}
+        TAGS: ${{ inputs.tag }}
+        ROLE_ARN_IN: ${{ inputs.awsRoleArn }}
+        WEB_IDENTITY_TOKEN_FILE_IN: ${{ inputs.awsWebIdentityTokenFile }}
+      run: |
+        set -euo pipefail
+
+        IMPORT_TIMEOUT=180
+        IMPORT_POLL=5
+
+        # The Teleport Workload Identity workflows export their credentials
+        # inside a `run:` step, so they are gone by the time this composite
+        # runs. Re-pointing at the same on-disk JWT re-assumes the role
+        # without touching the workflow's login step.
+        if [ -n "$ROLE_ARN_IN" ] && [ -n "$WEB_IDENTITY_TOKEN_FILE_IN" ]; then
+          if [ ! -s "$WEB_IDENTITY_TOKEN_FILE_IN" ]; then
+            echo "::error::awsWebIdentityTokenFile ${WEB_IDENTITY_TOKEN_FILE_IN} is missing or empty"
+            exit 1
+          fi
+          export AWS_ROLE_ARN="$ROLE_ARN_IN"
+          export AWS_WEB_IDENTITY_TOKEN_FILE="$WEB_IDENTITY_TOKEN_FILE_IN"
+        fi
+
+        # <account>.dkr.ecr.<region>.amazonaws.com — same account, same suffix,
+        # only the region differs.
+        if [ -n "$REGISTRY_PRIMARY_IN" ]; then
+          REGISTRY_PRIMARY="$REGISTRY_PRIMARY_IN"
+          AWS_ACCOUNT_ID="${REGISTRY_PRIMARY%%.*}"
+        else
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
+          REGISTRY_PRIMARY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION_PRIMARY}.amazonaws.com"
+        fi
+        REGISTRY_SECONDARY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION_SECONDARY}.amazonaws.com"
+        echo "Mirroring ${REGISTRY_PRIMARY} -> ${REGISTRY_SECONDARY}"
+
+        # crane goes into a temp dir, never into the workspace: a chart repo
+        # whose package path is the repo root packs the working tree, and a
+        # 15 MB binary dropped there breaks `helm package` (rake #5).
+        CRANE_DIR="$(mktemp -d)"
+        curl -sfL "https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz" \
+          | tar -xz -C "$CRANE_DIR" crane
+        export PATH="${CRANE_DIR}:${PATH}"
+        crane version
+
+        aws ecr get-login-password --region "$AWS_REGION_PRIMARY" \
+          | crane auth login "$REGISTRY_PRIMARY" --username AWS --password-stdin
+        aws ecr get-login-password --region "$AWS_REGION_SECONDARY" \
+          | crane auth login "$REGISTRY_SECONDARY" --username AWS --password-stdin
+
+        # Waits for a manifest to appear in the secondary region's real
+        # STORAGE. The import is asynchronous and the read path answers "yes"
+        # immediately, so describe-images is the only usable predicate.
+        wait_for_storage() {
+          local repo="$1" digest="$2" waited=0
+          until aws ecr describe-images \
+                  --region "$AWS_REGION_SECONDARY" \
+                  --repository-name "$repo" \
+                  --image-ids "imageDigest=${digest}" >/dev/null 2>&1; do
+            if [ "$waited" -ge "$IMPORT_TIMEOUT" ]; then
+              echo "::error::${repo}@${digest} did not reach ${AWS_REGION_SECONDARY} storage within ${IMPORT_TIMEOUT}s"
+              return 1
+            fi
+            sleep "$IMPORT_POLL"
+            waited=$((waited + IMPORT_POLL))
+          done
+          echo "${repo}@${digest} is in ${AWS_REGION_SECONDARY} storage after ${waited}s"
+        }
+
+        IFS=',' read -ra REPOS <<< "$REPOSITORIES"
+        IFS=',' read -ra TAG_LIST <<< "$TAGS"
+        for repo in "${REPOS[@]}"; do
+          repo=$(echo "$repo" | xargs)  # trim whitespace
+          [ -n "$repo" ] || continue
+
+          # ECR never auto-creates a repository on push, and the pull-through
+          # cache rule only materialises one on a PULL — so the mirror target
+          # has to be created here, with the same org-wide policy the primary
+          # repository gets.
+          aws ecr describe-repositories --region "$AWS_REGION_SECONDARY" --repository-names "$repo" >/dev/null 2>&1 || {
+            aws ecr create-repository --region "$AWS_REGION_SECONDARY" --repository-name "$repo" >/dev/null
+            aws ecr set-repository-policy --region "$AWS_REGION_SECONDARY" --repository-name "$repo" --policy-text file://ecr-policy.json >/dev/null
+          }
+
+          for tag in "${TAG_LIST[@]}"; do
+            tag=$(echo "$tag" | xargs)  # trim whitespace
+            [ -n "$tag" ] || continue
+            echo "--- ${repo}:${tag}"
+
+            # Reference digest = what the PRIMARY region STORES for this tag.
+            # `None` is what describe-images prints for a missing image with
+            # --output text, and it would poison the tag write just as
+            # silently as an empty value.
+            REF_DIGEST=$(aws ecr describe-images \
+              --region "$AWS_REGION_PRIMARY" \
+              --repository-name "$repo" \
+              --image-ids "imageTag=${tag}" \
+              --query 'imageDetails[0].imageDigest' --output text 2>/dev/null) || REF_DIGEST=""
+            if [ -z "$REF_DIGEST" ] || [ "$REF_DIGEST" = "None" ]; then
+              echo "::error::could not read the ${AWS_REGION_PRIMARY} storage digest of ${repo}:${tag}"
+              exit 1
+            fi
+
+            MIRROR_DIGEST=$(aws ecr describe-images \
+              --region "$AWS_REGION_SECONDARY" \
+              --repository-name "$repo" \
+              --image-ids "imageTag=${tag}" \
+              --query 'imageDetails[0].imageDigest' --output text 2>/dev/null) || MIRROR_DIGEST=""
+            if [ "$MIRROR_DIGEST" = "$REF_DIGEST" ]; then
+              echo "${REGISTRY_SECONDARY}/${repo}:${tag} already stores ${REF_DIGEST} — mirror skipped"
+              continue
+            fi
+
+            # Import BY DIGEST. A tag read through the secondary host would
+            # pin that tag in the pull-through cache to the then-current
+            # primary content for up to 24 h, un-evictable; digest mappings
+            # cannot go stale. A multi-arch index needs its CHILDREN imported
+            # first — otherwise the index lands with no manifests behind it,
+            # which is the MANIFEST_BLOB_UNKNOWN family of rake #4. The child
+            # list comes from the PRIMARY manifest (read by digest, so no
+            # read-path ambiguity); for a single-manifest image, and for a
+            # Helm chart or any other single OCI artifact, it is empty.
+            CHILDREN=$(crane manifest "${REGISTRY_PRIMARY}/${repo}@${REF_DIGEST}" | jq -r '.manifests[]?.digest // empty')
+            for child in $CHILDREN; do
+              echo "Priming ${AWS_REGION_SECONDARY} with ${repo}@${child} (child of ${REF_DIGEST})"
+              crane manifest "${REGISTRY_SECONDARY}/${repo}@${child}" >/dev/null 2>&1 || true
+              wait_for_storage "$repo" "$child"
+            done
+
+            echo "Priming ${AWS_REGION_SECONDARY} with ${repo}@${REF_DIGEST}"
+            crane manifest "${REGISTRY_SECONDARY}/${repo}@${REF_DIGEST}" >/dev/null 2>&1 || true
+            wait_for_storage "$repo" "$REF_DIGEST"
+
+            echo "Tagging ${REGISTRY_SECONDARY}/${repo}@${REF_DIGEST} as ${tag}"
+            crane tag "${REGISTRY_SECONDARY}/${repo}@${REF_DIGEST}" "${tag}"
+
+            MIRROR_DIGEST=$(aws ecr describe-images \
+              --region "$AWS_REGION_SECONDARY" \
+              --repository-name "$repo" \
+              --image-ids "imageTag=${tag}" \
+              --query 'imageDetails[0].imageDigest' --output text 2>/dev/null) || MIRROR_DIGEST=""
+            if [ "$MIRROR_DIGEST" != "$REF_DIGEST" ]; then
+              echo "::error::${AWS_REGION_SECONDARY} stores ${MIRROR_DIGEST:-<none>} for ${repo}:${tag}, ${AWS_REGION_PRIMARY} has ${REF_DIGEST}"
+              exit 1
+            fi
+            echo "Mirrored ${REGISTRY_SECONDARY}/${repo}:${tag} @ ${MIRROR_DIGEST}"
+          done
+        done

@@ -139,6 +139,11 @@ Off-switch (phase 6, when the EU push is decommissioned or a repo must opt out):
 `awsRegionSecondary: ''` (or `aws-region-secondary: ''` for the bake action). The mirror steps are
 then skipped entirely and the actions behave exactly as they did before.
 
+Workflows that push with their **own** `docker push` / `docker buildx build --push` /
+`docker/build-push-action` / `helm push` instead of going through either action get the same
+guarantee from [`mirror-to-secondary-ecr`](#mirror-an-ecr-tag-to-the-secondary-region) — one step
+after their push.
+
 ## Bake OCI manifests artifact
 
 Bakes a microservice's `kustomization/` tree into an OCI artifact at `${ECR_REGISTRY}/<service>-manifests:<tag>`, cosign-keyless-signs the digest, and verifies the pulled artifact contains no leftover `${APP_PACKAGE_VERSION_TO_BE_REPLACED}` placeholders. This is the GitHub-side half of the **OCI + Kargo** deploy pattern documented in [`maestra-io/fluxcd/docs/microservice-deployment.md`](https://github.com/maestra-io/fluxcd/blob/main/docs/microservice-deployment.md).
@@ -228,3 +233,73 @@ jobs:
 2. A Teleport bot named `image-push-github-actions-<service>` is provisioned on `teleport.maestra.io` with permission to mint workload-identity JWTs for the `image-push` selector against `sts.amazonaws.com`.
 3. AWS IAM role `arn:aws:iam::515260921971:role/teleport-image-push` trusts the Teleport SPIFFE issuer (`teleport.maestra.io`).
 4. GitLab CI has already pushed all images named in `images:` to ECR for the target tag — the action will refuse to proceed otherwise. See the [`create-gitlab-release.needs` recipe in microservice-deployment.md §3.1](https://github.com/maestra-io/fluxcd/blob/main/docs/microservice-deployment.md) for the gating that prevents this race.
+## Mirror an ECR tag to the secondary region
+
+For workflows that push to ECR with their **own** `docker push` /
+`docker buildx build --push` / `docker/build-push-action` / `helm push oci://` instead of going
+through `push-to-aws-ecr-repository` or `bake-oci-manifests`. One step after the push and the tag
+resolves to the same digest in `eu-central-1` and `us-west-2`
+([issues-maestra#1354](https://github.com/maestra-io/issues-maestra/issues/1354), rake #8).
+
+The mirror body is the same doctrine documented in
+[Dual-push to a second region](#dual-push-to-a-second-region): reference digest from
+`aws ecr describe-images` in the primary region, import **by digest** (children before the index for
+a multi-arch image), wait on `describe-images` in the secondary region for real storage, `crane tag`,
+assert both regions. It nowhere uses `crane copy` or `crane digest`.
+
+The action assumes AWS credentials are **already** usable — it does not log in on its own.
+
+### Usage
+
+`aws-actions/configure-aws-credentials` or static keys (credentials persist into the job env):
+
+```yaml
+- name: Mirror to us-west-2
+  uses: maestra-io/github-actions/mirror-to-secondary-ecr@main
+  with:
+    repository: my-service
+    tag: ${{ steps.release-number.outputs.release-number }},latest
+```
+
+Teleport Workload Identity workflows export `AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE` inside
+a `run:` step, so those exports are gone by the next step. Point the action back at the same
+on-disk JWT instead of changing the login step:
+
+```yaml
+- name: Mirror to us-west-2
+  uses: maestra-io/github-actions/mirror-to-secondary-ecr@main
+  with:
+    repository: ${{ env.IMAGE_NAME }}
+    tag: ${{ steps.release-number.outputs.release-number }},latest
+    registry: ${{ env.ECR_REGISTRY }}
+    awsRoleArn: ${{ env.AWS_ROLE_ARN }}
+    awsWebIdentityTokenFile: /tmp/tbot-output/jwt_svid
+```
+
+### Inputs
+
+- `repository`: comma-separated ECR repository names just pushed, e.g. `my-service` or
+  `my-service,helm-charts/my-service`. **(required)**
+- `tag`: comma-separated tags just pushed, e.g. `1.0.42,latest`. Every tag is mirrored for every
+  repository (cross product). **(required)**
+- `primaryRegion`: region the images were pushed to. Default `eu-central-1`.
+- `secondaryRegion`: region that receives the copy. Default `us-west-2`; `''` turns the action into
+  a no-op (phase 6 off-switch).
+- `registry`: primary ECR registry host. Default `''` — the calling identity's own account in
+  `primaryRegion`, resolved with `aws sts get-caller-identity`.
+- `awsRoleArn` / `awsWebIdentityTokenFile`: only for Teleport Workload Identity workflows, see
+  above. Default `''` — credentials are taken from the job env.
+- `craneVersion`: crane CLI version, no `v-` prefix. Default `0.22.0`. Downloaded into a `mktemp -d`,
+  never into the workspace (a chart repo that packs its own root would ship the binary).
+
+### Prerequisites
+
+The identity the job runs as needs, in the secondary region: `ecr:DescribeImages`,
+`ecr:DescribeRepositories`, `ecr:CreateRepository`, `ecr:SetRepositoryPolicy`, `ecr:PutImage` and
+the layer/manifest read verbs — `teleport-image-push` has them from `TeleportImagePush`
+([aws-infra#53](https://github.com/maestra-io/aws-infra/pull/53),
+[#54](https://github.com/maestra-io/aws-infra/pull/54)) and the static registry user has them from
+`AmazonEC2ContainerRegistryFullAccess`. `ecr:BatchImportUpstreamImage` (the pull-through-cache
+import) comes from the `us-west-2` **registry** policy, which grants it org-wide — note that
+`aws iam simulate-principal-policy` does not evaluate registry policies and will report
+`implicitDeny` for it.
