@@ -76,6 +76,8 @@ This action pushes multiple Docker images to AWS ECR repositories.
 - `repositories`: Comma-separated list of repository names (required)
 - `localTag`: Tag of locally built images that must be pre-built (required)
 - `targetTag`: Target tag for all ECR repositories (required)
+- `awsRegionSecondary`: second ECR region every pushed image is mirrored to. Default `us-west-2`; set to `''` to disable the mirror. See [Dual-push to a second region](#dual-push-to-a-second-region).
+- `craneVersion`: crane CLI version used by the mirror step, no `v-` prefix. Default `0.22.0`.
 
 ### Prerequisites
 
@@ -109,6 +111,33 @@ If you have three services: `api`, `frontend`, and `worker`, you would:
    ```
 
 This will push all three images to their respective ECR repositories with the `v1.0.0` tag.
+
+### Dual-push to a second region
+
+Both `push-to-aws-ecr-repository` and `bake-oci-manifests` mirror everything they push to
+`us-west-2` — phase 3 of the ECR `eu-central-1` → `us-west-2` migration
+([issues-maestra#1354](https://github.com/maestra-io/issues-maestra/issues/1354)). Consumers need
+no change: they pin `@main`, and the mirror is on by default.
+
+The mirror never re-pushes. It reads the digest the **primary** region *stores* for the tag
+(`aws ecr describe-images` — the repository's own record), triggers the import in the secondary
+region **by digest**, waits until `describe-images` there confirms real storage, writes the tag with
+`crane tag`, and asserts the tag resolves to the same digest in both regions.
+
+That shape is not stylistic. `us-west-2` carries a registry-root pull-through-cache rule onto
+`eu-central-1`, so a registry *read* against the US host answers through the cache for content the
+US repository does not store: `crane copy` sees "destination already has it" and no-ops over a stale
+tag, and `crane digest` confirms content the job never wrote — while pinning that tag in the cache
+for 24 h. `crane tag` is the only primitive that rewrites the storage record unconditionally, and
+`describe-images` is the only honest "what is actually stored" question.
+
+Multi-arch images have their child manifests imported before the index — an index whose children
+have not landed fails with `MANIFEST_BLOB_UNKNOWN`. Single-manifest images have no children and skip
+that loop.
+
+Off-switch (phase 6, when the EU push is decommissioned or a repo must opt out): pass
+`awsRegionSecondary: ''` (or `aws-region-secondary: ''` for the bake action). The mirror steps are
+then skipped entirely and the actions behave exactly as they did before.
 
 ## Bake OCI manifests artifact
 
@@ -182,6 +211,9 @@ jobs:
 - `flux-version`: flux CLI version, no `v-` prefix. Default `2.8.6`.
 - `aws-region`: ECR region. Default `eu-central-1`.
 - `ecr-registry`: ECR registry host. Default `515260921971.dkr.ecr.eu-central-1.amazonaws.com`.
+- `aws-region-secondary`: second ECR region the baked artifact is mirrored to. Default `us-west-2`; set to `''` to disable. See [Dual-push to a second region](#dual-push-to-a-second-region).
+- `ecr-registry-secondary`: ECR registry host in that region. Default `515260921971.dkr.ecr.us-west-2.amazonaws.com`.
+- `crane-version`: crane CLI version used by the mirror step, no `v-` prefix. Default `0.22.0`.
 - `teleport-fqdn`: Teleport proxy. Default `teleport.maestra.io:443`.
 - `aws-role-arn`: IAM role assumed via Teleport workload-identity. Default `arn:aws:iam::515260921971:role/teleport-image-push`.
 
