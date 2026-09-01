@@ -50,6 +50,27 @@ inputs:
     description: 'ECR registry host.'
     required: false
     default: '515260921971.dkr.ecr.eu-central-1.amazonaws.com'
+  aws-region-secondary:
+    description: >-
+      Second ECR region that receives a byte-identical copy of the baked
+      artifact (ECR eu-central-1 -> us-west-2 migration, phase 3 dual-push:
+      https://github.com/maestra-io/issues-maestra/issues/1354). The artifact is
+      imported BY DIGEST and then tagged with `crane tag`, so both regions hold
+      the digest this job baked — a second `flux push` would re-tar the tree and
+      produce a different one. Set to "" to disable the mirror entirely; that is
+      the phase 6 off-switch and restores the single-region behaviour.
+    required: false
+    default: 'us-west-2'
+  ecr-registry-secondary:
+    description: 'ECR registry host in the secondary region. Only used when aws-region-secondary is non-empty.'
+    required: false
+    default: '515260921971.dkr.ecr.us-west-2.amazonaws.com'
+  crane-version:
+    description: >-
+      crane CLI version (without the v- prefix), downloaded into a temporary
+      directory. Only used when aws-region-secondary is non-empty.
+    required: false
+    default: '0.22.0'
   teleport-fqdn:
     description: 'Teleport proxy host:port.'
     required: false
@@ -183,6 +204,23 @@ runs:
                --image-tag-mutability IMMUTABLE \
                --region "$AWS_REGION" >/dev/null
 
+    # Same repository in the dual-push region. ECR never auto-creates a
+    # repository on push, and the registry-root pull-through-cache rule only
+    # materialises one on a PULL — so the mirror target has to be created here.
+    - name: ensure manifests repo exists in the secondary region
+      if: ${{ inputs.aws-region-secondary != '' }}
+      shell: bash
+      env:
+        AWS_REGION_SECONDARY: ${{ inputs.aws-region-secondary }}
+        IMAGE_MANIFESTS: ${{ inputs.service }}-manifests
+      run: |
+        aws ecr describe-repositories --repository-names "$IMAGE_MANIFESTS" \
+          --region "$AWS_REGION_SECONDARY" >/dev/null 2>&1 \
+          || aws ecr create-repository \
+               --repository-name "$IMAGE_MANIFESTS" \
+               --image-tag-mutability IMMUTABLE \
+               --region "$AWS_REGION_SECONDARY" >/dev/null
+
     # ── Tools ─────────────────────────────────────────────────────────────
     - name: install flux CLI
       shell: bash
@@ -266,3 +304,133 @@ runs:
           echo "::error::Placeholder leaked into pulled artifact"
           exit 1
         fi
+
+    # ── Dual-push: mirror the verified artifact to the secondary region ────
+    # Phase 3 of the ECR eu-central-1 -> us-west-2 migration
+    # (https://github.com/maestra-io/issues-maestra/issues/1354). Runs after the
+    # verify pull so a broken artifact is never propagated. Hard failure by
+    # design: a soft-failed mirror is an invisible gap that phase 4 (repointing
+    # Kargo/Flux at us-west-2) would only discover as missing Freight.
+    #
+    # The secondary region carries a registry-ROOT pull-through-cache rule onto
+    # the primary one, which makes every registry READ against the secondary
+    # host lie: it answers THROUGH the cache from the primary region, for
+    # content the secondary repository does not store. Two consequences, both
+    # reproduced in production (rakes #2/#4 of the issue above):
+    #   - `crane copy` sees the proxied "destination already has it", no-ops,
+    #     and a STALE storage record for that tag survives. The only primitive
+    #     that rewrites the storage record is `crane tag`, which PUTs
+    #     unconditionally.
+    #   - `crane digest <secondary>/<repo>:<tag>` confirms content this job
+    #     never wrote — and pins that tag in the cache for up to 24 h on top.
+    # So: read the reference digest from STORAGE (`describe-images`), import
+    # deliberately BY DIGEST, wait for real storage, write the tag with
+    # `crane tag`, and assert against storage in both regions. Same doctrine as
+    # system/components/maestra-bake-oci-manifests 1.0.5 on the GitLab side.
+    - name: mirror manifests artifact to the secondary region
+      if: ${{ inputs.aws-region-secondary != '' }}
+      shell: bash
+      env:
+        AWS_REGION: ${{ inputs.aws-region }}
+        AWS_REGION_SECONDARY: ${{ inputs.aws-region-secondary }}
+        ECR_REGISTRY: ${{ inputs.ecr-registry }}
+        ECR_REGISTRY_SECONDARY: ${{ inputs.ecr-registry-secondary }}
+        CRANE_VERSION: ${{ inputs.crane-version }}
+        IMAGE_MANIFESTS: ${{ inputs.service }}-manifests
+        TAG: ${{ steps.ver.outputs.version }}
+        DIGEST: ${{ steps.push.outputs.digest }}
+      run: |
+        set -euo pipefail
+
+        IMPORT_TIMEOUT=180
+        IMPORT_POLL=5
+
+        # Reference digest = what the primary region STORES for this tag, never
+        # a registry read path. `None` is what describe-images prints for a
+        # missing image with --output text, and it would poison the tag write
+        # just as silently as an empty value.
+        REF_DIGEST=$(aws ecr describe-images \
+          --repository-name "$IMAGE_MANIFESTS" \
+          --region "$AWS_REGION" \
+          --image-ids "imageTag=${TAG}" \
+          --query 'imageDetails[0].imageDigest' --output text 2>/dev/null) || REF_DIGEST=""
+        if [ -z "$REF_DIGEST" ] || [ "$REF_DIGEST" = "None" ]; then
+          echo "::error::could not read the ${AWS_REGION} storage digest of ${IMAGE_MANIFESTS}:${TAG}"
+          exit 1
+        fi
+        if [ -n "${DIGEST:-}" ] && [ "$REF_DIGEST" != "$DIGEST" ]; then
+          echo "::error::${AWS_REGION} stores ${REF_DIGEST} for ${IMAGE_MANIFESTS}:${TAG}, but this job baked ${DIGEST}"
+          exit 1
+        fi
+
+        # Storage truth on the secondary side too: a proxied read would report
+        # "present" for a tag this repository does not actually store.
+        MIRROR_DIGEST=$(aws ecr describe-images \
+          --repository-name "$IMAGE_MANIFESTS" \
+          --region "$AWS_REGION_SECONDARY" \
+          --image-ids "imageTag=${TAG}" \
+          --query 'imageDetails[0].imageDigest' --output text 2>/dev/null) || MIRROR_DIGEST=""
+        if [ "$MIRROR_DIGEST" = "$REF_DIGEST" ]; then
+          echo "${ECR_REGISTRY_SECONDARY}/${IMAGE_MANIFESTS}:${TAG} already stores ${REF_DIGEST} — mirror skipped"
+          exit 0
+        fi
+        if [ -n "$MIRROR_DIGEST" ] && [ "$MIRROR_DIGEST" != "None" ]; then
+          # Presence alone is NOT the question — a tag already pointing at other
+          # content is the exact silent failure this step exists to prevent, and
+          # the mirror repository is IMMUTABLE so `crane tag` cannot repair it.
+          echo "::error::${AWS_REGION_SECONDARY} stores ${MIRROR_DIGEST} for ${IMAGE_MANIFESTS}:${TAG}, ${AWS_REGION} has ${REF_DIGEST}"
+          echo "::error::the mirror repository has IMMUTABLE tags — delete the diverged tag by hand, then re-run:"
+          echo "::error::  aws ecr batch-delete-image --region ${AWS_REGION_SECONDARY} --repository-name ${IMAGE_MANIFESTS} --image-ids imageTag=${TAG}"
+          exit 1
+        fi
+
+        # crane goes into a temp dir, never into the workspace — the tree that
+        # was just packed into the artifact stays exactly as verified.
+        CRANE_DIR="$(mktemp -d)"
+        curl -sfL "https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz" \
+          | tar -xz -C "$CRANE_DIR" crane
+        export PATH="${CRANE_DIR}:${PATH}"
+        crane version
+
+        aws ecr get-login-password --region "$AWS_REGION" \
+          | crane auth login "$ECR_REGISTRY" --username AWS --password-stdin
+        aws ecr get-login-password --region "$AWS_REGION_SECONDARY" \
+          | crane auth login "$ECR_REGISTRY_SECONDARY" --username AWS --password-stdin
+
+        # Trigger the server-side import BY DIGEST. A tag read through the
+        # secondary host would pin that tag in the pull-through cache to the
+        # then-current primary content for up to 24 h, un-evictable; digest
+        # mappings cannot go stale. A manifests artifact is a single OCI
+        # manifest — no child manifests to import alongside it (the multi-arch
+        # recursion that push-to-aws-ecr-repository needs does not apply here).
+        echo "Priming ${AWS_REGION_SECONDARY} with ${IMAGE_MANIFESTS}@${REF_DIGEST}"
+        crane manifest "${ECR_REGISTRY_SECONDARY}/${IMAGE_MANIFESTS}@${REF_DIGEST}" >/dev/null 2>&1 || true
+
+        # The import is ASYNCHRONOUS, and describe-images is the only honest
+        # "has it landed yet" question — the read path answers yes immediately.
+        waited=0
+        until aws ecr describe-images --region "$AWS_REGION_SECONDARY" \
+                --repository-name "$IMAGE_MANIFESTS" \
+                --image-ids "imageDigest=${REF_DIGEST}" >/dev/null 2>&1; do
+          if [ "$waited" -ge "$IMPORT_TIMEOUT" ]; then
+            echo "::error::${IMAGE_MANIFESTS}@${REF_DIGEST} did not reach ${AWS_REGION_SECONDARY} storage within ${IMPORT_TIMEOUT}s"
+            exit 1
+          fi
+          sleep "$IMPORT_POLL"
+          waited=$((waited + IMPORT_POLL))
+        done
+        echo "${IMAGE_MANIFESTS}@${REF_DIGEST} is in ${AWS_REGION_SECONDARY} storage after ${waited}s"
+
+        echo "Tagging ${ECR_REGISTRY_SECONDARY}/${IMAGE_MANIFESTS}@${REF_DIGEST} as ${TAG}"
+        crane tag "${ECR_REGISTRY_SECONDARY}/${IMAGE_MANIFESTS}@${REF_DIGEST}" "${TAG}"
+
+        MIRROR_DIGEST=$(aws ecr describe-images \
+          --repository-name "$IMAGE_MANIFESTS" \
+          --region "$AWS_REGION_SECONDARY" \
+          --image-ids "imageTag=${TAG}" \
+          --query 'imageDetails[0].imageDigest' --output text 2>/dev/null) || MIRROR_DIGEST=""
+        if [ "$MIRROR_DIGEST" != "$REF_DIGEST" ]; then
+          echo "::error::${AWS_REGION_SECONDARY} stores ${MIRROR_DIGEST:-<none>} for ${IMAGE_MANIFESTS}:${TAG}, ${AWS_REGION} has ${REF_DIGEST}"
+          exit 1
+        fi
+        echo "Mirrored ${ECR_REGISTRY_SECONDARY}/${IMAGE_MANIFESTS}:${TAG} @ ${MIRROR_DIGEST}"
