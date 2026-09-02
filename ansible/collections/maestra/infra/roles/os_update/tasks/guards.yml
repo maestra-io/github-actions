@@ -14,7 +14,9 @@
       No Alertmanager URL. Refusing to drain/reboot without maintenance silences —
       a rebooting LB/gateway pages Rootly within 1-3 minutes. The reusable workflow
       opens the tunnel with `tbot_tunnels: app=alertmanager listen=9093`.
-  when: os_update_mode in ['apply', 'undrain-only']
+  # binary-update drains exactly like apply — same masked unit, same
+  # HaproxySystemdUnitFailed at for: 1m — so it needs the same silences.
+  when: os_update_mode in ['apply', 'binary-update', 'undrain-only']
 
 - name: Fetch the active silences
   ansible.builtin.uri:
@@ -61,7 +63,10 @@
     fail_msg: >-
       Another os-update drain window is open: {{ os_update_other_drains | default([]) }}.
       Two hosts out of rotation at once is how a redundant pair becomes an outage. STOP.
-  when: os_update_mode == 'apply'
+  # Both draining modes. A binary-update sweep and an OS sweep can be dispatched
+  # by different people minutes apart, and the interlock is contour-wide precisely
+  # so it does not care WHICH mode took the other host out.
+  when: os_update_mode in ['apply', 'binary-update']
 
 - name: Guard — this host must have a peer (draining a singleton IS the outage)
   ansible.builtin.assert:

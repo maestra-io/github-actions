@@ -4,8 +4,7 @@
 # ansible/tasks/os-update/{vars,preflight,drain,verify,undrain,settle}.yml
 # (contract: docs/ansible-os-update.md).
 
-# plan | apply | undrain-only
-# plan | stage | apply | undrain-only.
+# plan | stage | apply | binary-update | undrain-only.
 #   plan        mutates nothing.
 #   stage       installs the upgrade (kernel included) and stops there: no cordon,
 #               no drain, no reboot. The new kernel becomes active at the node's
@@ -15,6 +14,28 @@
 #               from wasted into the activation step, and removes the second
 #               fleet-wide reboot entirely.
 #   apply       the full drain -> upgrade -> reboot -> verify contract.
+#   binary-update
+#               drain -> swap the SERVING BINARY -> verify -> undrain, with the
+#               apt/kernel/reboot path skipped entirely. It exists because a
+#               binary bump (haproxy-otel track, a rebuilt agent) needs exactly
+#               the same "out of rotation, proven, back in" window as an OS
+#               patch and none of the patching, and driving it through the
+#               config-deploy pipeline instead costs 3 PRs and a full CI matrix
+#               per host (issues-maestra#1373).
+#
+#               It differs from `apply` in ONE load-bearing way: on failure the
+#               host STAYS DRAINED and the job goes red. `apply` un-drains in
+#               `always` because a patched host that failed verify is usually a
+#               host that needs a human look while it serves; a host whose
+#               serving binary was just replaced and cannot be proven healthy is
+#               the opposite — putting THAT back into rotation is the outage.
+#               Rollback is re-running the mode with the previous track pinned,
+#               and `undrain-only` stays the escape hatch.
+#
+#               The payload is consumer-specific, so it is two hooks in the
+#               consumer repo (binary-update.yml + verify-binary-update.yml);
+#               a consumer that does not implement them cannot use the mode, and
+#               the role says so BEFORE it drains anything.
 os_update_mode: plan
 
 # Where the consumer repo's hook task-files live (playbook_dir = <repo>/ansible/playbooks).

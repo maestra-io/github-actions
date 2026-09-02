@@ -85,7 +85,10 @@ grep -A10 "ansible.builtin.include_tasks: \"{{ lookup('ansible.builtin.first_fou
   || bad "reboot step has no fallback to the role's reboot.yml"
 
 echo "== workflow accepts the mode"
-have "$WF" 'plan|stage|apply|undrain-only)' \
+# No trailing `)`: the case arm grew a fifth mode (binary-update), and pinning
+# the closing paren made this assertion fail on a correct file the moment
+# another mode was added — which is the opposite of what it is for.
+have "$WF" 'plan|stage|apply|undrain-only' \
   && ok "mode validation accepts stage" \
   || bad "workflow's mode case does not accept stage"
 have "$WF" "inputs.mode == 'stage'" \
@@ -99,12 +102,13 @@ echo "== stage must not be gated by the plan job"
 # WHILE a node-update wave is rolling; a wave means some node is cordoned or
 # NotReady, so those gates refuse and a failed plan job skips the apply job.
 # Two production runs died this way before the structural fix.
-# -A30, not -A14: the job carries a long note between its name and its `if:`,
-# and a window too short reports a correct file as broken (it did, first run).
-grep -A30 "^  plan:" "$WF" | grep -q "inputs.mode != 'stage'" \
+# -A40, not -A14: the job carries a long note between its name and its `if:`,
+# and a window too short reports a correct file as broken (it did, first run —
+# and again when binary-update added its own paragraph to that same note).
+grep -A40 "^  plan:" "$WF" | grep -q "inputs.mode != 'stage'" \
   && ok "the plan job is skipped for stage" \
   || bad "the plan job still runs for stage — its preflight will refuse under a wave"
-grep -A12 "needs: \[enumerate, plan\]" "$WF" | grep -q "inputs.mode == 'stage'" \
+grep -A20 "needs: \[enumerate, plan\]" "$WF" | grep -q "inputs.mode == 'stage'" \
   && ok "the apply job does not require plan success for stage" \
   || bad "the apply job still requires plan success for stage"
 

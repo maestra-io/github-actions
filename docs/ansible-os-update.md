@@ -75,6 +75,12 @@ cheerfully unmask the `keepalived`/`haproxy` unit we just masked.
 | `verify.yml` | apply, after reboot, **before** undrain | prove the host is healthy again, with `until`/`retries` | undrain; touch the peer |
 | `undrain.yml` | **`always`** | put it back, idempotently, safe on a host that was never drained | fail silently |
 | `settle.yml` | apply, after undrain | prove traffic is actually flowing and the pair is redundant again | be a `sleep` |
+| `binary-update.yml` | **`binary-update` only**, optional | install the new binary on the drained host and restart onto it, flushing handlers **inside** the drain window | leave the restart to end-of-play handlers |
+| `verify-binary-update.yml` | **`binary-update` only**, optional | prove the NEW binary is fit to serve, with `until`/`retries` | undrain; assume `verify.yml` fits (there the unit is masked, here it is running) |
+
+The last two are **optional**: a repo that does not ship them simply cannot be run
+with `mode: binary-update`, and the role says so — with the hook names — **before it
+drains anything**.
 
 `os_update_silence_sets` is a **list of lists**: each element becomes its **own** silence.
 Matchers *within* one silence are ANDed — folding `instance=<host>` and
@@ -158,6 +164,57 @@ same as today. Track the gap with `count by (kernel_version) (kube_node_info)`.
 ```bash
 gh workflow run os-update.yml --repo maestra-io/kubernetes-clusters \
   -f environment=omicron -f target=worker -f mode=stage
+```
+
+## `mode: binary-update` — swap the serving binary, patch nothing
+
+`issues-maestra#1373`. Drain → install the new binary → verify → undrain, with the
+**apt / kernel / reboot path skipped entirely**. It exists because bumping the binary a
+service runs needs exactly the same *out of rotation, proven, back in* window as an OS
+patch and **none** of the patching — and the alternative was driving it through the
+config-deploy pipeline, which costs **3 PRs and a full CI matrix per host** (the
+haproxy AWS-LC campaign: 11 hosts × 3 merges = 33 production PRs, ~55–60 min/host,
+`issues-maestra#1362`). One dispatch per host, ~6–9.5 min.
+
+Being a *mode* rather than a new workflow is the whole trick: it inherits the
+contour-wide one-at-a-time interlock, the maintenance silences, the drain marker, the
+per-host matrix with a fresh Teleport certificate, the omega approval Environment, and
+haproxy's `os-update-gate` against a concurrent `terraform apply` — **for free**.
+
+**Its failure contract is the inverse of `apply`'s, and that is the point.**
+
+| | `apply` | `binary-update` |
+|---|---|---|
+| verify fails | un-drains in `always`, then fails red | **stays drained**, fails red |
+| drain marker on failure | cleared (unless the undrain also failed) | **left in place** |
+| silences on failure | dropped | dropped |
+
+`apply` un-drains unconditionally because a patched host that failed verify has usually
+just booted a kernel that works, and holding a healthy box out of rotation costs
+redundancy for nothing. Here the failing thing **is** the thing that serves traffic: an
+unproven binary put back into rotation is the outage the drain existed to prevent. So
+recovery is explicitly manual and named in the failure message — re-run the mode with
+the previous track pinned (the same drain window reinstalls the old artifact), or
+`mode: undrain-only` once a human has looked. `OsUpdateHostStrandedDrain` fires on the
+marker meanwhile, and the one-at-a-time guard holds the next host.
+
+What it skips, and why:
+
+* **`plan.yml`** — everything it produces is the apt/kernel decision, and its `/boot`
+  guard would refuse a run that unpacks no kernel. The farm-wide **plan job** is skipped
+  for the same reason (plus ~2.7 min of a ≤10 min budget); the peer gates still run,
+  in-band, as the role's **preflight**, immediately before the drain — the only moment
+  their answer is still true.
+* **`holds.yml`, `apt.yml`, `boot_safety.yml`, `reboot.yml`, `kernel_gc.yml`** — steps of
+  an OS patch, and this mode performs none of one. The consumer's install task owns the
+  pins on the packages it ships.
+* **the SOC re-scan** — no archive package moves, so nothing the host CVE board reads
+  changes.
+
+```bash
+gh workflow run os-update.yml --repo maestra-io/haproxy-maestra \
+  -f environment=omicron -f farm=private -f mode=binary-update \
+  -f host_limit=us-omicron-lw-haproxy-private-01
 ```
 
 ## The reboot step is overridable by the consumer
