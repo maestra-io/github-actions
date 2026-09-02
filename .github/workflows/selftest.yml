@@ -11,12 +11,14 @@ on:
       - ".github/workflows/ansible-os-update.yml"
       - ".github/workflows/selftest.yml"
       - "ansible/tests/**"
+      - "ci/**"
   push:
     branches: [main]
     paths:
       - ".github/workflows/ansible-os-update.yml"
       - ".github/workflows/selftest.yml"
       - "ansible/tests/**"
+      - "ci/**"
 
 permissions:
   contents: read
@@ -31,6 +33,12 @@ jobs:
 
       - name: host_limit selector
         run: bash ansible/tests/test-host-limit-selector.sh
+
+      # The release tag is derived from the commit range by a shell script, and
+      # a wrong bump is silent: it publishes a version that is merely the wrong
+      # number, which consumers then pin. The cases build real throwaway repos.
+      - name: next release version
+        run: bash ci/tests/test-next-version.sh
 
       # `mode: stage` is only safe BECAUSE it disrupts nothing — that is why it is
       # allowed to skip preflight. This checks the property structurally, so the
