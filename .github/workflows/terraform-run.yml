@@ -219,16 +219,32 @@ jobs:
       TF_INPUT: "false"
       TELEPORT_FQDN: ${{ inputs.teleport_fqdn }}
     steps:
+      # persist-credentials: false — nothing in this job uses the git credential
+      # actions/checkout leaves in .git/config. Verified, not assumed: no `git
+      # push|fetch|pull|clone|commit|tag` and no `github.token`/`GITHUB_TOKEN`
+      # anywhere in this file, one checkout in the job, and `terraform init`
+      # fetches nothing over github.com — every module source in all six consumer
+      # repos is a local `../../modules/...` path and every provider comes from a
+      # registry (`bpg/proxmox`, `hashicorp/aws`, `terraform.releases.teleport.dev`).
+      # The job's own credentials are Teleport/Vault/AWS, minted per run.
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
+      # Inputs reach the shell through `env:`, never through ${{ }} in the script
+      # body: GitHub substitutes the expression BEFORE bash parses the line, so a
+      # quote or a `;` in a caller-supplied value would execute in this job, which
+      # holds Teleport, Vault and AWS credentials.
       - name: Inject caller extra env
         if: ${{ inputs.extra_env != '' }}
+        env:
+          EXTRA_ENV: ${{ inputs.extra_env }}
         run: |
           while IFS= read -r line; do
             [ -z "$line" ] && continue
             echo "$line" >> "$GITHUB_ENV"
-          done <<< "${{ inputs.extra_env }}"
+          done <<< "${EXTRA_ENV}"
 
       - name: Set Terraform plugin cache
         run: echo "TF_PLUGIN_CACHE_DIR=${{ runner.temp }}/terraform-plugins" >> "$GITHUB_ENV"
@@ -338,20 +354,23 @@ jobs:
       - name: Start Vault tunnel via Teleport
         id: vault-tunnel
         if: ${{ inputs.vault_mode == 'tunnel' && inputs.teleport_app != '' }}
+        env:
+          TELEPORT_JOIN_TOKEN: ${{ inputs.teleport_join_token }}
+          TELEPORT_APP: ${{ inputs.teleport_app }}
         run: |
           cat > /tmp/tbot-vault-config.yaml <<EOF
           version: v2
           onboarding:
             join_method: github
-            token: ${{ inputs.teleport_join_token }}
-          proxy_server: ${{ inputs.teleport_fqdn }}
+            token: ${TELEPORT_JOIN_TOKEN}
+          proxy_server: ${TELEPORT_FQDN}
           # memory storage: default /var/lib/teleport is not writable on hosted
           # runners (mkdir: permission denied -> tunnel never opens).
           storage:
             type: memory
           services:
             - type: application-tunnel
-              app_name: ${{ inputs.teleport_app }}
+              app_name: ${TELEPORT_APP}
               listen: tcp://127.0.0.1:8200
           EOF
           # Two attempts, in ONE step rather than a gated twin: the first tbot is
@@ -367,13 +386,13 @@ jobs:
               (echo > /dev/tcp/127.0.0.1/8200) >/dev/null 2>&1 && break 2
               sleep 1
             done
-            echo "::warning::vault tunnel (${{ inputs.teleport_app }}) did not open in 15s on attempt ${attempt}"
+            echo "::warning::vault tunnel (${TELEPORT_APP}) did not open in 15s on attempt ${attempt}"
             kill "${tunnel_pid}" 2>/dev/null || true
             wait "${tunnel_pid}" 2>/dev/null || true
             tunnel_pid=""
           done
           if [ -z "${tunnel_pid}" ]; then
-            echo "::error::vault tunnel (tbot app-tunnel ${{ inputs.teleport_app }}) did not open in 15s, twice"
+            echo "::error::vault tunnel (tbot app-tunnel ${TELEPORT_APP}) did not open in 15s, twice"
             exit 1
           fi
           echo "tunnel_pid=${tunnel_pid}" >> "$GITHUB_OUTPUT"
@@ -438,12 +457,13 @@ jobs:
         env:
           TELEPORT_HOSTS: ${{ steps.nodes.outputs.teleport_hosts }}
           PROXMOX_HOST_IN: ${{ inputs.proxmox_host }}
+          PROXMOX_TOKEN_PREFIX: ${{ inputs.proxmox_token_prefix }}
         run: |
           set -euo pipefail
 
           # Per-run token name: concurrent runs never remove each other's token
           # (the static-name scheme caused documented 401 races).
-          TOKEN_NAME="${{ inputs.proxmox_token_prefix }}-${{ github.run_id }}-${{ github.run_attempt }}"
+          TOKEN_NAME="${PROXMOX_TOKEN_PREFIX}-${{ github.run_id }}-${{ github.run_attempt }}"
           echo "token_name=$TOKEN_NAME" >> "$GITHUB_OUTPUT"
 
           PROXMOX_HOST="$PROXMOX_HOST_IN"
@@ -493,6 +513,8 @@ jobs:
 
       # --- AWS state creds via Teleport Workload Identity -------------------
       - name: Get AWS credentials via Teleport Workload Identity
+        env:
+          TELEPORT_JOIN_TOKEN: ${{ inputs.teleport_join_token }}
         run: |
           set -euo pipefail
           mkdir -p /tmp/tbot-aws
@@ -502,7 +524,7 @@ jobs:
           proxy_server: ${TELEPORT_FQDN}
           onboarding:
             join_method: github
-            token: ${{ inputs.teleport_join_token }}
+            token: ${TELEPORT_JOIN_TOKEN}
           storage:
             type: memory
           oneshot: true
@@ -531,6 +553,9 @@ jobs:
       # --- Extra WI legs (e.g. haproxy route53 via cert-manager) ------------
       - name: Get extra workload identities
         if: ${{ inputs.extra_workload_identities != '' }}
+        env:
+          TELEPORT_JOIN_TOKEN: ${{ inputs.teleport_join_token }}
+          EXTRA_WORKLOAD_IDENTITIES: ${{ inputs.extra_workload_identities }}
         run: |
           set -euo pipefail
           while IFS= read -r line; do
@@ -551,7 +576,7 @@ jobs:
           proxy_server: ${TELEPORT_FQDN}
           onboarding:
             join_method: github
-            token: ${{ inputs.teleport_join_token }}
+            token: ${TELEPORT_JOIN_TOKEN}
           storage:
             type: memory
           oneshot: true
@@ -572,7 +597,7 @@ jobs:
             fi
             echo "${ENV_VAR}=${DEST}/jwt_svid" >> "$GITHUB_ENV"
             echo "Workload identity '${SELECTOR}' exported as ${ENV_VAR}"
-          done <<< "${{ inputs.extra_workload_identities }}"
+          done <<< "${EXTRA_WORKLOAD_IDENTITIES}"
 
       # --- Per-node SSH tunnels + temp key (bpg native SSH transport) -------
       # Two transports, one contract: whichever runs, the provider dials
@@ -841,19 +866,26 @@ jobs:
 
       - name: Terraform Plan
         working-directory: terraform/environments/${{ inputs.env_dir != '' && inputs.env_dir || inputs.environment }}
+        env:
+          PARALLELISM: ${{ inputs.parallelism }}
+          REPLACE_TARGETS: ${{ inputs.replace_targets }}
+          REGION: ${{ inputs.region }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          SITE: ${{ inputs.site }}
+          MASK_SENSITIVE_JQ_PATH: ${{ inputs.mask_sensitive_jq_path }}
         run: |
           set -euo pipefail
 
           PLAN_ARGS=(-out=tfplan -input=false)
-          if [ -n "${{ inputs.parallelism }}" ]; then
-            PLAN_ARGS+=("-parallelism=${{ inputs.parallelism }}")
+          if [ -n "${PARALLELISM}" ]; then
+            PLAN_ARGS+=("-parallelism=${PARALLELISM}")
           fi
           # -replace targets composed as array elements — NO eval (quoting-safe).
           # Trim is plain bash (NOT `echo | xargs`): addresses like
           # module.sql["sql01"] need their double quotes intact, and xargs
           # strips unescaped quotes. Elements are appended verbatim post-trim.
-          if [ -n "${{ inputs.replace_targets }}" ]; then
-            IFS=',' read -ra TARGETS <<< "${{ inputs.replace_targets }}"
+          if [ -n "${REPLACE_TARGETS}" ]; then
+            IFS=',' read -ra TARGETS <<< "${REPLACE_TARGETS}"
             for target in "${TARGETS[@]}"; do
               target="${target#"${target%%[![:space:]]*}"}"   # ltrim
               target="${target%"${target##*[![:space:]]}"}"   # rtrim
@@ -862,9 +894,9 @@ jobs:
             echo "Replace targets: ${PLAN_ARGS[*]}"
           fi
 
-          PLAN_TXT="plan-${{ inputs.region }}-${{ inputs.environment }}-${{ inputs.site }}.txt"
+          PLAN_TXT="plan-${REGION}-${ENVIRONMENT}-${SITE}.txt"
 
-          MASK_PATH="${{ inputs.mask_sensitive_jq_path }}"
+          MASK_PATH="${MASK_SENSITIVE_JQ_PATH}"
           if [ -n "$MASK_PATH" ]; then
             # IMPORTANT: terraform plan's stdout may include cleartext sensitive
             # values on creates/replacements (e.g. the gravitational/teleport
@@ -882,7 +914,7 @@ jobs:
               echo "::add-mask::$secret"
             done < <(
               terraform show -json tfplan \
-                | jq -r '.. | objects | ${{ inputs.mask_sensitive_jq_path }}? // empty'
+                | jq -r ".. | objects | ${MASK_PATH}? // empty"
             )
 
             # Belt-and-braces: also redact the value in the persisted plan text
@@ -899,25 +931,30 @@ jobs:
       - name: Terraform Apply
         if: ${{ inputs.action == 'apply' }}
         working-directory: terraform/environments/${{ inputs.env_dir != '' && inputs.env_dir || inputs.environment }}
+        env:
+          PARALLELISM: ${{ inputs.parallelism }}
+          ROLLING: ${{ inputs.rolling }}
+          ROLLING_INTERVAL: ${{ inputs.rolling_interval }}
+          ROLLING_MODULE_PREFIX: ${{ inputs.rolling_module_prefix }}
         run: |
           PAR_ARG=""
-          if [ -n "${{ inputs.parallelism }}" ]; then
-            PAR_ARG="-parallelism=${{ inputs.parallelism }}"
+          if [ -n "${PARALLELISM}" ]; then
+            PAR_ARG="-parallelism=${PARALLELISM}"
           fi
 
           # rolling=false -> just apply the saved plan in parallel.
-          if [[ "${{ inputs.rolling }}" != "true" ]]; then
-            terraform apply -auto-approve ${PAR_ARG} tfplan
+          if [[ "${ROLLING}" != "true" ]]; then
+            terraform apply -auto-approve ${PAR_ARG:+"$PAR_ARG"} tfplan
             exit 0
           fi
 
-          INTERVAL=${{ inputs.rolling_interval }}
+          INTERVAL="${ROLLING_INTERVAL}"
           if ! [[ "$INTERVAL" =~ ^[0-9]+$ ]]; then
             echo "::error::rolling_interval must be a non-negative integer (seconds). Got: $INTERVAL"
             exit 1
           fi
 
-          PREFIX='${{ inputs.rolling_module_prefix }}'
+          PREFIX="${ROLLING_MODULE_PREFIX}"
           PLAN_JSON=$(terraform show -json tfplan)
 
           # Rolling apply targets each changed resource by its full plan
@@ -933,7 +970,7 @@ jobs:
           if [ -n "$NON_VM" ]; then
             echo "::notice::Plan touches resources outside ${PREFIX} — rolling skipped, running normal apply:"
             echo "$NON_VM"
-            terraform apply -auto-approve ${PAR_ARG} tfplan
+            terraform apply -auto-approve ${PAR_ARG:+"$PAR_ARG"} tfplan
             exit 0
           fi
 
@@ -1047,18 +1084,27 @@ jobs:
 
       - name: Generate summary
         if: ${{ always() }}
+        # The summary is markdown built by the shell, so an input pasted into it is
+        # the same injection point as an input pasted into a command. Same rule: env.
+        env:
+          ACTION: ${{ inputs.action }}
+          REGION: ${{ inputs.region }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          SITE: ${{ inputs.site }}
+          ENV_DIR_EFFECTIVE: ${{ inputs.env_dir != '' && inputs.env_dir || inputs.environment }}
+          ROLLING: ${{ inputs.rolling }}
         run: |
           {
-            echo "## Terraform ${{ inputs.action }}"
+            echo "## Terraform ${ACTION}"
             echo ""
             echo "| Parameter | Value |"
             echo "|-----------|-------|"
-            echo "| **Region** | ${{ inputs.region }} |"
-            echo "| **Environment** | ${{ inputs.environment }} |"
-            echo "| **Env dir** | \`terraform/environments/${{ inputs.env_dir != '' && inputs.env_dir || inputs.environment }}\` |"
-            echo "| **Site** | ${{ inputs.site }} |"
-            echo "| **Action** | ${{ inputs.action }} |"
-            echo "| **Rolling** | ${{ inputs.rolling }} |"
+            echo "| **Region** | ${REGION} |"
+            echo "| **Environment** | ${ENVIRONMENT} |"
+            echo "| **Env dir** | \`terraform/environments/${ENV_DIR_EFFECTIVE}\` |"
+            echo "| **Site** | ${SITE} |"
+            echo "| **Action** | ${ACTION} |"
+            echo "| **Rolling** | ${ROLLING} |"
             echo "| **Status** | ${{ job.status }} |"
             echo "| **Timestamp** | $(date -u) |"
           } >> "$GITHUB_STEP_SUMMARY"

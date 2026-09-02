@@ -367,8 +367,11 @@ jobs:
         with:
           enable-cache: true
 
+      # See the tp-version step: inputs reach the shell through env only.
       - name: Install ansible + pip requirements
-        run: uv pip install --system -r "${{ inputs.requirements_pip }}"
+        env:
+          REQUIREMENTS_PIP: ${{ inputs.requirements_pip }}
+        run: uv pip install --system -r "$REQUIREMENTS_PIP"
 
       - name: Cache Ansible Galaxy collections
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -383,7 +386,9 @@ jobs:
         # (source repos all ran `cd ansible && ansible-galaxy install`). No `|| true`:
         # a galaxy failure must surface here, not later as "role not found".
         working-directory: ${{ inputs.working_directory }}
-        run: ansible-galaxy install -r "${GITHUB_WORKSPACE}/${{ inputs.requirements_galaxy }}"
+        env:
+          REQUIREMENTS_GALAXY: ${{ inputs.requirements_galaxy }}
+        run: ansible-galaxy install -r "${GITHUB_WORKSPACE}/${REQUIREMENTS_GALAXY}"
 
       - name: Get Teleport version from proxy
         id: tp-version
@@ -468,6 +473,7 @@ jobs:
         env:
           TELEPORT_FQDN: ${{ inputs.teleport_fqdn }}
           TELEPORT_JOIN_TOKEN: ${{ inputs.teleport_join_token }}
+          TELEPORT_APP: ${{ inputs.teleport_app }}
         run: |
           cat > /tmp/tbot-vault-config.yaml <<EOF
           version: v2
@@ -481,7 +487,7 @@ jobs:
             type: memory
           services:
             - type: application-tunnel
-              app_name: ${{ inputs.teleport_app }}
+              app_name: ${TELEPORT_APP}
               listen: tcp://127.0.0.1:8200
           EOF
           # Two attempts. The retry is IN the step, not a twin step, for one
@@ -497,7 +503,7 @@ jobs:
               (echo > /dev/tcp/127.0.0.1/8200) >/dev/null 2>&1 && break 2
               sleep 1
             done
-            echo "::warning::vault tunnel (${{ inputs.teleport_app }}) did not open in 15s on attempt ${attempt}"
+            echo "::warning::vault tunnel (${TELEPORT_APP}) did not open in 15s on attempt ${attempt}"
             kill "${tunnel_pid}" 2>/dev/null || true
             wait "${tunnel_pid}" 2>/dev/null || true
             tunnel_pid=""
@@ -509,7 +515,7 @@ jobs:
           # later inside hashicorp/vault-action, reporting a connection error to
           # 127.0.0.1 with nothing to say about why nothing was listening.
           if [ -z "${tunnel_pid}" ]; then
-            echo "::error::vault tunnel (tbot app-tunnel ${{ inputs.teleport_app }}) did not open in 15s, twice"
+            echo "::error::vault tunnel (tbot app-tunnel ${TELEPORT_APP}) did not open in 15s, twice"
             exit 1
           fi
           echo "tunnel_pid=${tunnel_pid}" >> "$GITHUB_OUTPUT"
@@ -785,22 +791,32 @@ jobs:
           # An env var is data, never code.
           HOST_LIMIT_INPUT: ${{ inputs.host_limit }}
           TAGS_INPUT: ${{ inputs.tags }}
+          EXTRA_ENV_INPUT: ${{ inputs.extra_env }}
+          REGION_INPUT: ${{ inputs.region }}
+          ENVIRONMENT_INPUT: ${{ inputs.environment }}
+          SITE_INPUT: ${{ inputs.site }}
+          GROUP_SUFFIX_INPUT: ${{ inputs.inventory_group_suffix }}
+          VERBOSITY_INPUT: ${{ inputs.verbosity }}
+          INVENTORY_INPUT: ${{ inputs.inventory }}
+          PLAYBOOK_INPUT: ${{ inputs.playbook }}
+          CHECK_MODE_INPUT: ${{ inputs.check_mode }}
+          NO_HOSTS_FAIL_INPUT: ${{ inputs.no_hosts_fail_on_apply }}
         run: |
           set -uo pipefail
 
           # inject caller-provided extra env
-          if [ -n "${{ inputs.extra_env }}" ]; then
+          if [ -n "${EXTRA_ENV_INPUT}" ]; then
             while IFS= read -r line; do
               [ -z "$line" ] && continue
               # skip a KEY= line with an empty value so it can't clobber a real
               # step-env value (e.g. a caller forwarding an empty github.token)
               case "$line" in *=) continue ;; esac
               export "$line"
-            done <<< "${{ inputs.extra_env }}"
+            done <<< "${EXTRA_ENV_INPUT}"
           fi
 
           # check-mode display trim (matches source repos: hide ok/skipped hosts in plans)
-          if [ "${{ inputs.check_mode }}" = "true" ]; then
+          if [ "${CHECK_MODE_INPUT}" = "true" ]; then
             export ANSIBLE_DISPLAY_OK_HOSTS=false
             export ANSIBLE_DISPLAY_SKIPPED_HOSTS=false
           fi
@@ -808,7 +824,7 @@ jobs:
           # compute target group / --limit
           LIMIT="${HOST_LIMIT_INPUT}"
           if [ -z "$LIMIT" ]; then
-            LIMIT="${{ inputs.region }}_${{ inputs.environment }}_${{ inputs.site }}${{ inputs.inventory_group_suffix }}"
+            LIMIT="${REGION_INPUT}_${ENVIRONMENT_INPUT}_${SITE_INPUT}${GROUP_SUFFIX_INPUT}"
           fi
           # ansible --limit patterns are [a-zA-Z0-9_.,:*!&-] — anything else in a
           # dispatch input is not a host pattern, it is an attempt at the shell.
@@ -819,7 +835,7 @@ jobs:
           esac
 
           # verbosity
-          VERB="${{ inputs.verbosity }}"
+          VERB="${VERBOSITY_INPUT}"
           [ "$VERB" = "normal" ] && VERB=""
 
           # tags / check
@@ -829,29 +845,44 @@ jobs:
               echo "::error::tags contains characters that are not a valid ansible tag list: ${TAGS_INPUT}"
               exit 1 ;;
           esac
-          TAGS_ARG=""; [ -n "${TAGS_INPUT}" ] && TAGS_ARG="--tags ${TAGS_INPUT}"
-          CHECK_ARG=""; [ "${{ inputs.check_mode }}" = "true" ] && CHECK_ARG="--check --diff"
-
-          MODE="apply"; [ "${{ inputs.check_mode }}" = "true" ] && MODE="plan"
-          SAFE_NAME="${{ inputs.region }}-${{ inputs.environment }}-${{ inputs.site }}${{ inputs.inventory_group_suffix }}"
+          MODE="apply"; [ "${CHECK_MODE_INPUT}" = "true" ] && MODE="plan"
+          SAFE_NAME="${REGION_INPUT}-${ENVIRONMENT_INPUT}-${SITE_INPUT}${GROUP_SUFFIX_INPUT}"
           mkdir -p "${{ github.workspace }}/logs"
           LOG_FILE="${{ github.workspace }}/logs/${MODE}-${SAFE_NAME}.log"
           echo "log_file=${LOG_FILE}" >> "$GITHUB_OUTPUT"
 
-          COMMON="-i ${{ inputs.inventory }} --limit ${LIMIT} ${TAGS_ARG} ${VERB} ${{ inputs.extra_run_args }}"
+          # Argument ARRAY, not a word-split string: every value that came from an
+          # input is one element, so a space in it can never become a new argument.
+          COMMON=(-i "$INVENTORY_INPUT" --limit "$LIMIT")
+          [ -n "$TAGS_INPUT" ] && COMMON+=(--tags "$TAGS_INPUT")
+          [ -n "$VERB" ] && COMMON+=("$VERB")
+          # `extra_run_args` is the ONE input that stays a template interpolation, on
+          # purpose: its contract is a fragment of SHELL, not a value. haproxy-maestra
+          # passes `-e vault_consul_template_token=$CONSUL_TEMPLATE_VAULT_TOKEN`, which
+          # only works because bash expands the pasted text — through `env:` it would
+          # reach ansible as the literal string and consul-template would render certs
+          # with a garbage token on a traffic-serving farm. It is not caller free text
+          # either: every consumer builds it from a boolean or from a validated
+          # generator (haproxy-maestra .github/scripts/otel-track-override.py), never
+          # from a raw dispatch field. Narrowing it is a contract change for the
+          # consumers, not a pin-PR edit.
+          COMMON+=(${{ inputs.extra_run_args }})
 
           # no-hosts pre-flight guard
-          ansible-playbook ${{ inputs.playbook }} ${COMMON} --list-hosts > /tmp/list-hosts.txt 2>&1 || true
+          ansible-playbook "$PLAYBOOK_INPUT" "${COMMON[@]}" --list-hosts > /tmp/list-hosts.txt 2>&1 || true
           if grep -qiE 'no hosts (matched|to target)' /tmp/list-hosts.txt; then
             echo "No hosts matched" | tee -a "$LOG_FILE"
-            if [ "${{ inputs.no_hosts_fail_on_apply }}" = "true" ] && [ "${{ inputs.check_mode }}" != "true" ]; then
+            if [ "${NO_HOSTS_FAIL_INPUT}" = "true" ] && [ "${CHECK_MODE_INPUT}" != "true" ]; then
               exit 1
             fi
             exit 0
           fi
 
+          RUN_ARGS=("${COMMON[@]}")
+          [ "${CHECK_MODE_INPUT}" = "true" ] && RUN_ARGS+=(--check --diff)
+
           set -o pipefail
-          ansible-playbook ${{ inputs.playbook }} ${COMMON} ${CHECK_ARG} 2>&1 | tee -a "$LOG_FILE"
+          ansible-playbook "$PLAYBOOK_INPUT" "${RUN_ARGS[@]}" 2>&1 | tee -a "$LOG_FILE"
 
       # --- Vault tunnel teardown -----------------------------------------
       - name: Stop Vault tunnel
@@ -877,16 +908,28 @@ jobs:
 
       - name: Generate summary
         if: ${{ always() }}
+        # The summary is markdown built by the shell, so an input pasted into it is
+        # the same injection point as an input pasted into a command. Same rule: env.
+        env:
+          MODE_LABEL: ${{ inputs.check_mode && 'plan (check)' || 'apply' }}
+          REGION_INPUT: ${{ inputs.region }}
+          ENVIRONMENT_INPUT: ${{ inputs.environment }}
+          SITE_INPUT: ${{ inputs.site }}
+          GROUP_SUFFIX_INPUT: ${{ inputs.inventory_group_suffix }}
+          PLAYBOOK_INPUT: ${{ inputs.playbook }}
+          TAGS_INPUT: ${{ inputs.tags }}
+          CHECK_MODE_INPUT: ${{ inputs.check_mode }}
+          LIMIT_INPUT: ${{ inputs.host_limit || format('{0}_{1}_{2}{3}', inputs.region, inputs.environment, inputs.site, inputs.inventory_group_suffix) }}
         run: |
           {
-            echo "### Ansible ${{ inputs.check_mode && 'plan (check)' || 'apply' }} — ${{ inputs.region }}-${{ inputs.environment }}-${{ inputs.site }}${{ inputs.inventory_group_suffix }}"
+            echo "### Ansible ${MODE_LABEL} — ${REGION_INPUT}-${ENVIRONMENT_INPUT}-${SITE_INPUT}${GROUP_SUFFIX_INPUT}"
             echo ""
             echo "| field | value |"
             echo "| --- | --- |"
-            echo "| playbook | \`${{ inputs.playbook }}\` |"
-            echo "| limit | \`${{ inputs.host_limit || format('{0}_{1}_{2}{3}', inputs.region, inputs.environment, inputs.site, inputs.inventory_group_suffix) }}\` |"
-            echo "| tags | \`${{ inputs.tags }}\` |"
-            echo "| check_mode | ${{ inputs.check_mode }} |"
+            echo "| playbook | \`${PLAYBOOK_INPUT}\` |"
+            echo "| limit | \`${LIMIT_INPUT}\` |"
+            echo "| tags | \`${TAGS_INPUT}\` |"
+            echo "| check_mode | ${CHECK_MODE_INPUT} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload log artifact

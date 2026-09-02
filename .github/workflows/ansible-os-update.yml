@@ -205,6 +205,7 @@ jobs:
           GROUP: ${{ inputs.region }}_${{ inputs.environment }}_${{ inputs.site }}${{ inputs.inventory_group_suffix }}
           HOST_LIMIT: ${{ inputs.host_limit }}
           ORDER: ${{ inputs.order }}
+          INVENTORY: ${{ inputs.inventory }}
           MAX_HOSTS: ${{ inputs.max_hosts }}
           MODE: ${{ inputs.mode }}
         run: |
@@ -219,7 +220,7 @@ jobs:
             *) echo "::error::Unknown mode '${MODE}' — must be plan, stage, apply, binary-update or undrain-only"; exit 1;;
           esac
 
-          ansible-inventory -i "${{ inputs.inventory }}" --list > /tmp/inv.json
+          ansible-inventory -i "${INVENTORY}" --list > /tmp/inv.json
 
           if [ -n "${HOST_LIMIT}" ]; then
             # One host, or a CSV batch. A batch exists to amortise enumerate+plan,

@@ -102,14 +102,22 @@ outputs:
 runs:
   using: 'composite'
   steps:
+    # Inputs reach the shell through `env:`, never through ${{ }} in the script
+    # body: GitHub substitutes the expression BEFORE bash parses the line, so a
+    # quote or a `;` in a caller-supplied value would execute in a step that
+    # holds a Teleport identity and AWS/ECR credentials.
     - name: resolve version
       id: ver
       shell: bash
+      env:
+        TAG_INPUT: ${{ inputs.tag }}
+        TAG_DISPATCH: ${{ github.event.inputs.tag }}
+        SERVICE: ${{ inputs.service }}
       run: |
-        if [ -n "${{ inputs.tag }}" ]; then
-          tag="${{ inputs.tag }}"
+        if [ -n "${TAG_INPUT}" ]; then
+          tag="${TAG_INPUT}"
         elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-          tag="${{ github.event.inputs.tag }}"
+          tag="${TAG_DISPATCH}"
         else
           tag="${GITHUB_REF_NAME}"
         fi
@@ -118,7 +126,7 @@ runs:
           *) echo "::error::tag '$tag' is not bare semver (e.g. 1.0.648)"; exit 1 ;;
         esac
         echo "version=$tag" >> "$GITHUB_OUTPUT"
-        echo "Baking manifests for ${{ inputs.service }} $tag"
+        echo "Baking manifests for ${SERVICE} $tag"
 
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       with:
@@ -129,8 +137,10 @@ runs:
     - name: get teleport version
       id: tp-version
       shell: bash
+      env:
+        TELEPORT_FQDN: ${{ inputs.teleport-fqdn }}
       run: |
-        version=$(curl -sf "https://${{ inputs.teleport-fqdn }}/webapi/find" \
+        version=$(curl -sf "https://${TELEPORT_FQDN}/webapi/find" \
           | jq -r '.auto_update.tools_version // .server_version')
         echo "version=$version" >> "$GITHUB_OUTPUT"
 
@@ -141,13 +151,16 @@ runs:
 
     - name: mint Teleport workload-identity JWT for AWS
       shell: bash
+      env:
+        TELEPORT_FQDN: ${{ inputs.teleport-fqdn }}
+        SERVICE: ${{ inputs.service }}
       run: |
         cat > /tmp/tbot.yaml <<EOF
         version: v2
-        proxy_server: ${{ inputs.teleport-fqdn }}
+        proxy_server: ${TELEPORT_FQDN}
         onboarding:
           join_method: github
-          token: image-push-github-actions-${{ inputs.service }}
+          token: image-push-github-actions-${SERVICE}
         oneshot: true
         storage:
           type: memory

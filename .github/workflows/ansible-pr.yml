@@ -122,8 +122,14 @@ jobs:
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           enable-cache: true
+      # Inputs reach the shell through `env:`, never through ${{ }} in the script
+      # body: GitHub substitutes the expression BEFORE bash parses the line, so a
+      # quote or a `;` in a caller-supplied value would execute here. Same rule as
+      # the tp-version / Execute steps in ansible-run.yml.
       - name: Install lint deps
-        run: uv pip install --system ansible -r "${{ inputs.requirements_lint }}"
+        env:
+          REQUIREMENTS_LINT: ${{ inputs.requirements_lint }}
+        run: uv pip install --system ansible -r "$REQUIREMENTS_LINT"
       - name: Cache Ansible Galaxy collections
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -134,13 +140,26 @@ jobs:
         # From working_directory so ansible.cfg's roles_path/collections_path apply
         # (matches the runner and the source repos' `cd ansible && ansible-galaxy install`).
         working-directory: ${{ inputs.working_directory }}
-        run: ansible-galaxy install -r "${GITHUB_WORKSPACE}/${{ inputs.requirements_galaxy }}"
+        env:
+          REQUIREMENTS_GALAXY: ${{ inputs.requirements_galaxy }}
+        run: ansible-galaxy install -r "${GITHUB_WORKSPACE}/${REQUIREMENTS_GALAXY}"
+      # `lint_paths` is a space-separated list by contract (default `.`), so the
+      # word-splitting is deliberate. `read -ra` keeps exactly that meaning while
+      # the value stays DATA — an env var is never re-parsed as script text.
       - name: yamllint
         working-directory: ${{ inputs.working_directory }}
-        run: yamllint ${{ inputs.lint_paths }}
+        env:
+          LINT_PATHS: ${{ inputs.lint_paths }}
+        run: |
+          read -ra paths <<< "$LINT_PATHS"
+          yamllint "${paths[@]}"
       - name: ansible-lint
         working-directory: ${{ inputs.working_directory }}
-        run: ansible-lint ${{ inputs.lint_paths }}
+        env:
+          LINT_PATHS: ${{ inputs.lint_paths }}
+        run: |
+          read -ra paths <<< "$LINT_PATHS"
+          ansible-lint "${paths[@]}"
 
   check:
     needs: lint
