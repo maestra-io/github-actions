@@ -43,13 +43,16 @@ inputs:
     required: false
     default: '2.8.6'
   aws-region:
-    description: 'AWS region for ECR.'
+    description: >-
+      AWS region for ECR. us-west-2 since phase 6 of the ECR eu-central-1 ->
+      us-west-2 migration
+      (https://github.com/maestra-io/issues-maestra/issues/1354).
     required: false
-    default: 'eu-central-1'
+    default: 'us-west-2'
   ecr-registry:
     description: 'ECR registry host.'
     required: false
-    default: '515260921971.dkr.ecr.eu-central-1.amazonaws.com'
+    default: '515260921971.dkr.ecr.us-west-2.amazonaws.com'
   aws-region-secondary:
     description: >-
       Second ECR region that receives a byte-identical copy of the baked
@@ -57,14 +60,19 @@ inputs:
       https://github.com/maestra-io/issues-maestra/issues/1354). The artifact is
       imported BY DIGEST and then tagged with `crane tag`, so both regions hold
       the digest this job baked — a second `flux push` would re-tar the tree and
-      produce a different one. Set to "" to disable the mirror entirely; that is
-      the phase 6 off-switch and restores the single-region behaviour.
+      produce a different one. EMPTY since phase 6: eu-central-1 is frozen and
+      us-west-2 is the only push target, so the mirror has nothing to copy.
     required: false
-    default: 'us-west-2'
+    default: ''
   ecr-registry-secondary:
-    description: 'ECR registry host in the secondary region. Only used when aws-region-secondary is non-empty.'
+    description: >-
+      ECR registry host in the secondary region. Only used when
+      aws-region-secondary is non-empty, which it is not since phase 6. Kept at
+      the eu-central-1 host so that setting aws-region-secondary back to
+      eu-central-1 is a single edit -- and see that input for why the mirror
+      only works in the direction with the pull-through-cache rule.
     required: false
-    default: '515260921971.dkr.ecr.us-west-2.amazonaws.com'
+    default: '515260921971.dkr.ecr.eu-central-1.amazonaws.com'
   crane-version:
     description: >-
       crane CLI version (without the v- prefix), downloaded into a temporary
