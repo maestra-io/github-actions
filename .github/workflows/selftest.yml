@@ -46,6 +46,14 @@ jobs:
       - name: stage-mode wiring and the overridable reboot
         run: bash ansible/tests/test-stage-mode-wiring.sh
 
+      # `mode: binary-update` is the one mode that leaves a failed host OUT of
+      # rotation. That is a property of WHICH block the undrain sits in, and the
+      # most natural tidy-up — moving it next to the unsilence, the way `apply`
+      # has it — silently turns the mode into one that puts an unproven binary
+      # back into production. Checked structurally for that reason.
+      - name: binary-update wiring (a failed host must stay drained)
+        run: bash ansible/tests/test-binary-update-wiring.sh
+
       # The test carries its own copy of the selector; a change to the workflow
       # that does not update the test would leave the test green and meaningless.
       - name: the test's copy of the selector still matches the workflow

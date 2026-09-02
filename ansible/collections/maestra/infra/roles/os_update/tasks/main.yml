@@ -7,6 +7,10 @@
 #   boot_safety -> holds -> apt -> reboot -> kernel_gc -> VERIFY]
 #   always: holds(restore) -> UNDRAIN -> marker(clear) -> SETTLE -> unsilence
 #
+# `binary-update` is the one mode that does NOT end in that `always`. It lives at
+# the bottom of this file, and its undrain sits in the success block on purpose —
+# see its own header and defaults/main.yml.
+#
 # PREFLIGHT sits immediately before the drain, in the same block — not in an
 # earlier play. Ansible finishes an entire play (all serial batches) before
 # starting the next one, so a preflight in play 1 would evaluate "is my peer
@@ -48,7 +52,16 @@
     os_update_marker_action: read
 
 - name: Plan — what would this update do (read-only, every probe check_mode:false)
+  # Skipped in `binary-update`, and that is a correctness fix rather than a
+  # micro-optimisation. Everything plan.yml produces is about the APT/KERNEL
+  # decision — pending packages, "does this need a reboot", how much room /boot
+  # has for one more kernel — and binary-update unpacks no kernel and reboots
+  # nothing. Its /boot assert would therefore REFUSE a run that cannot consume
+  # /boot at all, on a host whose only mutation is one .deb replacing one binary.
+  # (It is also ~40 s of apt-index refresh + dist-upgrade simulation inside a
+  # mode whose whole point is a <=10 min per-host cycle, issues-maestra#1373.)
   ansible.builtin.include_tasks: plan.yml
+  when: os_update_mode != 'binary-update'
 
 - name: PREFLIGHT — is the peer healthy, and is this host safe to reboot
   # Skipped in `stage`, and that is the point rather than an oversight: every gate
@@ -72,6 +85,20 @@
       boot_free_mb={{ os_update_boot_free_mb }}
       resuming_drain={{ os_update_resuming }}
       pre_existing_holds={{ os_update_holds_before }}
+  # Every fact on this line is set by plan.yml, which binary-update skips — so
+  # the report has to be skipped with it or it renders `'os_update_pending' is
+  # undefined` before the mode has done anything.
+  when: os_update_mode != 'binary-update'
+
+- name: Binary-update plan report (no apt, no kernel, no reboot — that is the mode)
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} mode=binary-update
+      kernel={{ ansible_facts.kernel }} (untouched)
+      resuming_drain={{ os_update_resuming }}
+      — drain -> swap the serving binary -> verify -> undrain.
+      A FAILURE ANYWHERE LEAVES THIS HOST DRAINED, on purpose.
+  when: os_update_mode == 'binary-update'
 
 - name: Nothing to do — host is current, it is NOT drained and NOT rebooted
   ansible.builtin.debug:
@@ -352,3 +379,125 @@
              else 'THE UNDRAIN ALSO FAILED — the host may still be OUT of rotation, and the drain marker was left in place on purpose.' }}
           No further host is touched (the matrix is fail-fast).
       when: (os_update_failed | default(false)) or (os_update_undrain_failed | default(false))
+
+# ── BINARY-UPDATE ────────────────────────────────────────────────────────────
+# Same drain contract as APPLY, a different payload, and a DIFFERENT FAILURE
+# CONTRACT. issues-maestra#1373.
+#
+# Payload: one .deb replaces the binary the service runs, and the service is
+# restarted onto it. No apt index refresh, no dist-upgrade, no holds dance (the
+# consumer's own install task owns the pins on the packages it ships), no
+# boot_safety, no reboot, no kernel GC. Those are all steps of an OS PATCH, and
+# this mode performs none of one.
+#
+# THE INVARIANT: a host that fails ANY step here STAYS DRAINED and the job goes
+# red. That is why the undrain is the last task of the `block` and not, as in
+# APPLY, the first task of `always`. APPLY un-drains unconditionally because a
+# patched host that failed verify has usually just booted a kernel that works,
+# and leaving a healthy box out of rotation costs redundancy for no gain. Here
+# the failing thing IS the thing that serves traffic: an unproven binary put back
+# into rotation is the outage the drain existed to prevent. So the recovery is
+# explicitly manual and named in the failure message — re-run with the previous
+# track pinned, or `mode=undrain-only` once a human has looked.
+#
+# What still runs in `always`: the silences are dropped, exactly as in APPLY and
+# for the sharper version of the same reason — a stranded, drained host is
+# precisely the host whose alerts must be free to fire. The drain marker is NOT
+# cleared on the failure path, so OsUpdateHostStrandedDrain reports it and the
+# contour-wide one-at-a-time guard keeps the next host out until it is resolved.
+- name: BINARY-UPDATE — swap the serving binary inside a drain window
+  when: os_update_mode == 'binary-update'
+  block:
+    - name: Does this consumer implement the binary-update hooks
+      # Checked BEFORE the drain, not by the include that needs them. An
+      # `include_tasks` of a missing file fails where it stands — which here is
+      # two tasks past the drain, so a consumer that simply never implemented the
+      # mode would have a production host taken out of rotation to find that out.
+      ansible.builtin.stat:
+        path: "{{ os_update_hooks_dir }}/{{ item }}"
+      loop:
+        - binary-update.yml
+        - verify-binary-update.yml
+      # The hooks live in the checkout on the CONTROLLER, not on the host.
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      register: os_update_binmode_hooks
+
+    - name: Both hooks must exist
+      ansible.builtin.assert:
+        that: (os_update_binmode_hooks.results | rejectattr('stat.exists') | list | length) == 0
+        fail_msg: >-
+          {{ inventory_hostname }}: this repo does not implement mode=binary-update.
+          Missing under {{ os_update_hooks_dir }}:
+          {{ os_update_binmode_hooks.results | rejectattr('stat.exists')
+             | map(attribute='item') | join(', ') }}.
+          Nothing has been touched — the host is still in rotation.
+        success_msg: "binary-update hooks present under {{ os_update_hooks_dir }}."
+
+    - name: Silence this host's alerts (dead-man window)
+      # Before the drain, not before the restart: the drain masks and stops the
+      # unit, and HaproxySystemdUnitFailed has for: 1m.
+      ansible.builtin.include_tasks: silence.yml
+
+    - name: DRAIN — take the host out of rotation, persistently, and prove it
+      # Byte-identically the same hook APPLY uses, marker included. A binary swap
+      # cuts every established session on this host, so it needs the full
+      # withdrawal + idle proof, not a lighter one.
+      ansible.builtin.include_tasks: "{{ os_update_hooks_dir }}/drain.yml"
+
+    - name: SWAP — install the new binary and restart onto it, still drained
+      ansible.builtin.include_tasks: "{{ os_update_hooks_dir }}/binary-update.yml"
+
+    - name: VERIFY — the NEW binary is fit to serve (still out of rotation)
+      ansible.builtin.include_tasks: "{{ os_update_hooks_dir }}/verify-binary-update.yml"
+
+    # ── success path only — everything below is unreachable on a failure ──
+    - name: UNDRAIN — put the host back into rotation
+      ansible.builtin.include_tasks: "{{ os_update_hooks_dir }}/undrain.yml"
+
+    - name: Clear the drain marker
+      ansible.builtin.include_tasks: marker.yml
+      vars:
+        os_update_marker_action: clear
+
+    - name: SETTLE — traffic is actually flowing through the new binary
+      ansible.builtin.include_tasks: "{{ os_update_hooks_dir }}/settle.yml"
+
+  rescue:
+    - name: Record the failure — and deliberately do NOT undrain
+      ansible.builtin.set_fact:
+        os_update_failed: true
+
+    - name: Say exactly what state the host was left in
+      ansible.builtin.debug:
+        msg: >-
+          BINARY-UPDATE FAILED on {{ inventory_hostname }}. The host is LEFT DRAINED
+          on purpose — an unproven binary must not go back into rotation. The drain
+          marker is left in place, so OsUpdateHostStrandedDrain will report it and
+          the contour-wide one-at-a-time guard will hold the next host.
+          Recover by: (1) reading this job's log to see WHICH gate failed;
+          (2) re-running mode=binary-update with the previous track pinned, which
+          reinstalls the old .deb inside the same drain window; or
+          (3) `gh workflow run os-update.yml -f mode=undrain-only
+          -f host_limit={{ inventory_hostname }}` once you are satisfied the host
+          is fit to serve. No further host is touched (the matrix is fail-fast).
+
+  always:
+    # Dropped even on the failure path — that is the point. A host we have just
+    # decided to leave out of rotation is the one host whose alerts must fire.
+    - name: Drop the silences
+      block:
+        - name: Unsilence
+          ansible.builtin.include_tasks: unsilence.yml
+      rescue:
+        - name: Could not expire the silences — the dead-man endsAt still covers us
+          ansible.builtin.debug:
+            msg: "WARNING: could not expire the maintenance silences; they expire on their own in <= {{ os_update_silence_minutes }} min."
+
+    - name: Fail the job
+      ansible.builtin.fail:
+        msg: >-
+          BINARY UPDATE FAILED on {{ inventory_hostname }} — the host is STILL DRAINED
+          (weight 0, unit not proven). See the message above for the recovery paths.
+      when: os_update_failed | default(false)

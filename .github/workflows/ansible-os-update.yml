@@ -56,7 +56,12 @@ on:
         type: string
         default: ""
       mode:
-        description: "plan | stage | apply | undrain-only. `plan` mutates nothing; `stage` installs without rebooting."
+        description: >-
+          plan | stage | apply | binary-update | undrain-only. `plan` mutates
+          nothing; `stage` installs without rebooting; `binary-update` drains,
+          swaps the SERVING BINARY, verifies and undrains, skipping the
+          apt/kernel/reboot path entirely — and on failure it leaves the host
+          DRAINED (issues-maestra#1373).
         required: false
         type: string
         default: "plan"
@@ -210,8 +215,8 @@ jobs:
           # job's `if` false and the run would end GREEN as a plan — a typo'd
           # `mode=aply` must fail loudly instead.
           case "${MODE}" in
-            plan|stage|apply|undrain-only) ;;
-            *) echo "::error::Unknown mode '${MODE}' — must be plan, stage, apply or undrain-only"; exit 1;;
+            plan|stage|apply|undrain-only|binary-update) ;;
+            *) echo "::error::Unknown mode '${MODE}' — must be plan, stage, apply, binary-update or undrain-only"; exit 1;;
           esac
 
           ansible-inventory -i "${{ inputs.inventory }}" --list > /tmp/inv.json
@@ -316,7 +321,15 @@ jobs:
     #     DRAIN" on a run that drains nothing. Patching gate by gate was the wrong
     #     shape — the next drain gate would do it again. A non-draining mode must
     #     not be gated by drain preflights at all.
-    if: ${{ inputs.mode != 'undrain-only' && inputs.mode != 'stage' }}
+    #   binary-update — a different reason: the plan is entirely an APT/KERNEL
+    #     report (pending packages, reboot decision, /boot headroom) and this mode
+    #     unpacks no kernel, so the /boot guard would refuse a run that cannot
+    #     consume /boot. It DOES drain, but its peer gates run in-band in the apply
+    #     job — the role runs the consumer preflight for every mode but `stage`,
+    #     immediately before the drain, which is the only place that answer is
+    #     still true. Skipping this job also returns ~2.7 min to a mode whose
+    #     acceptance criterion is a <=10 min per-host cycle (issues-maestra#1373).
+    if: ${{ inputs.mode != 'undrain-only' && inputs.mode != 'stage' && inputs.mode != 'binary-update' }}
     uses: ./.github/workflows/ansible-run.yml
     secrets: inherit
     with:
@@ -355,17 +368,20 @@ jobs:
 
   apply:
     needs: [enumerate, plan]
-    # `!cancelled()` because in undrain-only and stage the plan job is SKIPPED (see
-    # above) and the default `success()` would skip this job too. plan success is
-    # still required for mode=apply — the one mode that drains; the other two need
-    # only the host list.
+    # `!cancelled()` because in undrain-only, stage and binary-update the plan job
+    # is SKIPPED (see above) and the default `success()` would skip this job too.
+    # plan success is still required for mode=apply. binary-update drains as well,
+    # but its peer gates are the role's in-band preflight rather than this job —
+    # see the plan job's note.
     if: >-
       ${{ !cancelled()
           && needs.enumerate.result == 'success'
           && (needs.plan.result == 'success'
               || inputs.mode == 'undrain-only'
-              || inputs.mode == 'stage')
-          && (inputs.mode == 'apply' || inputs.mode == 'stage' || inputs.mode == 'undrain-only') }}
+              || inputs.mode == 'stage'
+              || inputs.mode == 'binary-update')
+          && (inputs.mode == 'apply' || inputs.mode == 'stage'
+              || inputs.mode == 'binary-update' || inputs.mode == 'undrain-only') }}
     strategy:
       matrix:
         host: ${{ fromJSON(needs.enumerate.outputs.hosts) }}
@@ -386,8 +402,9 @@ jobs:
       use_mitogen: false
       no_hosts_fail_on_apply: true
       certificate_ttl: ${{ inputs.certificate_ttl }}
-      # apply only — the plan job runs preflight and never touches Route53.
-      # undrain-only routes through THIS job too, so the restore is covered.
+      # Every MUTATING mode routes through this job — apply, binary-update and
+      # undrain-only — and all three move a weighted Route53 record (withdraw or
+      # restore). The plan job never does, which is why it is not forwarded there.
       aws_workload_identity: ${{ inputs.aws_workload_identity }}
       tbot_tunnels: |
         app=${{ inputs.alertmanager_app }} listen=9093
@@ -423,6 +440,11 @@ jobs:
     # rest) has still patched hosts 1..k-1, and skipping the re-scan would leave
     # exactly the stale-board scenario this job exists to prevent. The dispatched
     # list is the full enumerate list — re-scanning an unpatched host is harmless.
+    #
+    # `apply` ONLY, deliberately: binary-update installs no archive package and
+    # changes no OS-package inventory, so it moves nothing the host CVE board
+    # reads. Dispatching a scan there would burn the scanner on an unchanged host
+    # every time a binary track is bumped.
     if: ${{ inputs.mode == 'apply' && !cancelled() && contains(fromJSON('["success","failure"]'), needs.apply.result) }}
     runs-on: ubuntu-latest
     steps:
