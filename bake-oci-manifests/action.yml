@@ -67,12 +67,15 @@ inputs:
   ecr-registry-secondary:
     description: >-
       ECR registry host in the secondary region. Only used when
-      aws-region-secondary is non-empty, which it is not since phase 6. Kept at
-      the eu-central-1 host so that setting aws-region-secondary back to
-      eu-central-1 is a single edit -- and see that input for why the mirror
-      only works in the direction with the pull-through-cache rule.
+      aws-region-secondary is non-empty, which it is not since phase 6.
+      Restoring the mirror is a FOUR-value override, never a single edit:
+      aws-region=eu-central-1, ecr-registry=515260921971.dkr.ecr.eu-central-1.amazonaws.com,
+      aws-region-secondary=us-west-2, ecr-registry-secondary=this default.
+      The direction cannot be inverted — the mirror is a cache prime plus a
+      storage poll, and only us-west-2 carries the registry-ROOT
+      pull-through-cache rule (see aws-region-secondary above).
     required: false
-    default: '515260921971.dkr.ecr.eu-central-1.amazonaws.com'
+    default: '515260921971.dkr.ecr.us-west-2.amazonaws.com'
   crane-version:
     description: >-
       crane CLI version (without the v- prefix), downloaded into a temporary
