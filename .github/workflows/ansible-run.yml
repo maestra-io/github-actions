@@ -326,7 +326,43 @@ jobs:
         with:
           python-version: ${{ inputs.python_version }}
 
+      # --- retry-once, and ONLY on the steps that dial the internet -----------
+      # Every step from here to "Execute Ansible" is setup: it fetches a tool or
+      # opens a tunnel, and it can fail for reasons that have nothing to do with
+      # the change under test. Those steps get one retry. "Execute Ansible" and
+      # everything downstream deliberately do NOT: a play that failed is the
+      # answer this workflow exists to give, and re-running it until it passes
+      # is how a check stops meaning anything.
+      #
+      # The pattern is the one "Teleport auth" has used since it was written —
+      # `continue-on-error` on the first attempt, a twin gated on its `outcome`.
+      # It is used rather than a retry ACTION because it adds no dependency, and
+      # rather than a job-level rerun because GitHub has no job retry at all: the
+      # only "job level" options are a third-party action (still step-scoped) or
+      # `gh run rerun --failed`, which reruns the REAL failures too.
+      #
+      # Which rows this is for: the ones with no `runs_on`, i.e. GitHub-hosted.
+      # They reach every host over the PUBLIC Teleport proxy and pull tools from
+      # the public internet; the in-cluster ARC rows do neither. Across the
+      # AWS-LC campaign (~40 runs, maestra-io/haproxy-maestra) every CI flake was
+      # a GitHub-hosted row and not one was an ARC row. The retry is written here
+      # rather than gated on `runs_on` because an ARC row that never flakes never
+      # reaches the retry either — a condition that is always false on the rows
+      # it would exclude is a condition worth not writing.
       - name: Set up uv
+        id: setup-uv
+        continue-on-error: true
+        uses: astral-sh/setup-uv@v8.2.0 # TODO: SHA-pin via Renovate on landing
+        with:
+          enable-cache: true
+
+      # Observed 2026-09-02 on the eu _haproxy_cdp check row (run 33612325844):
+      # `Fetching manifest data from https://raw.githubusercontent.com/astral-sh/
+      # versions/main/v1/uv.ndjson` -> `##[error]fetch failed`. No version is
+      # pinned anywhere in the consumer repos, so the action resolves "latest",
+      # which makes that fetch mandatory on every single run.
+      - name: Set up uv — retry
+        if: steps.setup-uv.outcome == 'failure'
         uses: astral-sh/setup-uv@v8.2.0 # TODO: SHA-pin via Renovate on landing
         with:
           enable-cache: true
@@ -357,8 +393,18 @@ jobs:
         env:
           TELEPORT_FQDN: ${{ inputs.teleport_fqdn }}
         run: |
-          VER="$(/usr/bin/curl -sf "https://${TELEPORT_FQDN}/webapi/find" \
+          # --retry-all-errors is what makes --retry cover the case that actually
+          # happens here: curl retries transient HTTP/transfer errors on its own,
+          # but a CONNECTION reset — which is how the public proxy fails — is not
+          # one of them without this flag. -f turns an HTTP error into a non-zero
+          # exit so --retry can see it at all.
+          VER="$(/usr/bin/curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
+            "https://${TELEPORT_FQDN}/webapi/find" \
             | jq -r '.auto_update.tools_version // .server_version')"
+          if [ -z "${VER}" ] || [ "${VER}" = "null" ]; then
+            echo "::error::could not read a Teleport version from https://${TELEPORT_FQDN}/webapi/find"
+            exit 1
+          fi
           echo "version=${VER}" >> "$GITHUB_OUTPUT"
 
       - name: Cache Teleport binaries
@@ -367,7 +413,18 @@ jobs:
           path: ${{ runner.tool_cache }}/teleport
           key: teleport-${{ runner.os }}-${{ runner.arch }}-${{ steps.tp-version.outputs.version }}
 
+      # Downloads the tarball from get.gravitational.com on every cache miss, so
+      # it is one more internet dependency standing between a PR and its check.
+      # Safe to repeat: the action unpacks into the tool cache and is idempotent.
       - name: Setup Teleport
+        id: teleport-setup
+        continue-on-error: true
+        uses: teleport-actions/setup@v1 # TODO: SHA-pin via Renovate on landing
+        with:
+          version: ${{ steps.tp-version.outputs.version }}
+
+      - name: Setup Teleport — retry
+        if: steps.teleport-setup.outcome == 'failure'
         uses: teleport-actions/setup@v1 # TODO: SHA-pin via Renovate on landing
         with:
           version: ${{ steps.tp-version.outputs.version }}
@@ -427,12 +484,35 @@ jobs:
               app_name: ${{ inputs.teleport_app }}
               listen: tcp://127.0.0.1:8200
           EOF
-          tbot start -c /tmp/tbot-vault-config.yaml &
-          echo "tunnel_pid=$!" >> "$GITHUB_OUTPUT"
-          for i in $(seq 1 15); do
-            (echo > /dev/tcp/127.0.0.1/8200) >/dev/null 2>&1 && break
-            sleep 1
+          # Two attempts. The retry is IN the step, not a twin step, for one
+          # reason: the first tbot is a background process holding (or trying to
+          # hold) 127.0.0.1:8200, so a second attempt has to reap it first or it
+          # binds nothing and the port check passes on a dead tunnel. A gated
+          # twin step cannot see the first one's PID reliably; a loop can.
+          tunnel_pid=""
+          for attempt in 1 2; do
+            tbot start -c /tmp/tbot-vault-config.yaml &
+            tunnel_pid=$!
+            for _ in $(seq 1 15); do
+              (echo > /dev/tcp/127.0.0.1/8200) >/dev/null 2>&1 && break 2
+              sleep 1
+            done
+            echo "::warning::vault tunnel (${{ inputs.teleport_app }}) did not open in 15s on attempt ${attempt}"
+            kill "${tunnel_pid}" 2>/dev/null || true
+            wait "${tunnel_pid}" 2>/dev/null || true
+            tunnel_pid=""
           done
+
+          # FAIL CLOSED, matching the twin step in terraform-run.yml, which has
+          # exited 1 here since it was written. This copy used to fall through
+          # silently: the job carried on with no tunnel and died several steps
+          # later inside hashicorp/vault-action, reporting a connection error to
+          # 127.0.0.1 with nothing to say about why nothing was listening.
+          if [ -z "${tunnel_pid}" ]; then
+            echo "::error::vault tunnel (tbot app-tunnel ${{ inputs.teleport_app }}) did not open in 15s, twice"
+            exit 1
+          fi
+          echo "tunnel_pid=${tunnel_pid}" >> "$GITHUB_OUTPUT"
 
       # --- Generic Teleport app tunnels (os-update: Alertmanager) --------
       - name: Start Teleport app tunnels

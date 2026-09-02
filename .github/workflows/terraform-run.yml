@@ -241,12 +241,43 @@ jobs:
           # is a degenerate static key. Kept as-is deliberately (harvest decision).
           key: tf-providers-${{ hashFiles('terraform/**/.terraform.lock.hcl') }}
 
+      # --- retry-once, and ONLY on the steps that dial the internet -----------
+      # From here to "Terraform Plan/Apply" everything is setup: fetch a tool,
+      # open a tunnel. Those steps get one retry, because they fail for reasons
+      # that have nothing to do with the change under test. Terraform itself gets
+      # none — a plan that failed is the answer this workflow exists to give.
+      #
+      # The pattern is the one "Teleport auth" below has used since it was
+      # written: `continue-on-error` on the first attempt, a twin gated on its
+      # `outcome`. Not a retry action (no new dependency) and not a job rerun
+      # (GitHub has no job-level retry; `gh run rerun --failed` would rerun the
+      # REAL failures too).
+      #
+      # Who this is for: rows with no `runs_on`, i.e. GitHub-hosted, which reach
+      # the hosts over the PUBLIC Teleport proxy. On 2026-08-31 four plan jobs on
+      # maestra-io/haproxy-maestra PRs 445/447 died inside 40 minutes on that hop
+      # (`proxy returned non-JSON to a MachineID join`, `DeadlineExceeded` dialing
+      # auth, `SSH tunnel on port 2223 never came up`) with the server side
+      # healthy and every manual retry green — see the runner-routing note in
+      # that repo's terraform-pr.yml. In-cluster ARC rows have not produced one.
       - name: Get Teleport version from proxy
         id: tp-version
         run: |
-          VER="$(/usr/bin/curl -sf "https://${TELEPORT_FQDN}/webapi/find" \
+          # --retry-all-errors is what makes --retry cover the failure that
+          # actually happens here: curl retries transient HTTP/transfer errors on
+          # its own, but a CONNECTION reset — how the public proxy fails — is not
+          # one of them without this flag.
+          VER="$(/usr/bin/curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
+            "https://${TELEPORT_FQDN}/webapi/find" \
             | jq -r '.auto_update.tools_version // .server_version')"
           echo "Detected Teleport version: $VER"
+          # The pipeline's exit status is jq's, so a dead curl used to leave VER
+          # empty and this step GREEN — the version only went missing two steps
+          # later, inside teleport-actions/setup.
+          if [ -z "${VER}" ] || [ "${VER}" = "null" ]; then
+            echo "::error::could not read a Teleport version from https://${TELEPORT_FQDN}/webapi/find"
+            exit 1
+          fi
           echo "version=${VER}" >> "$GITHUB_OUTPUT"
 
       - name: Cache Teleport binaries
@@ -255,7 +286,19 @@ jobs:
           path: ${{ runner.tool_cache }}/teleport
           key: teleport-${{ runner.os }}-${{ runner.arch }}-${{ steps.tp-version.outputs.version }}
 
+      # Downloads the tarball from get.gravitational.com on every cache miss, so
+      # it is one more internet dependency between a PR and its plan. Safe to
+      # repeat: the action unpacks into the tool cache and is idempotent.
       - name: Setup Teleport
+        id: teleport-setup
+        continue-on-error: true
+        uses: teleport-actions/setup@v1 # TODO: SHA-pin via Renovate on landing
+        with:
+          version: ${{ steps.tp-version.outputs.version }}
+          proxy: ${{ inputs.teleport_fqdn }}
+
+      - name: Setup Teleport — retry
+        if: steps.teleport-setup.outcome == 'failure'
         uses: teleport-actions/setup@v1 # TODO: SHA-pin via Renovate on landing
         with:
           version: ${{ steps.tp-version.outputs.version }}
@@ -311,16 +354,29 @@ jobs:
               app_name: ${{ inputs.teleport_app }}
               listen: tcp://127.0.0.1:8200
           EOF
-          tbot start -c /tmp/tbot-vault-config.yaml &
-          echo "tunnel_pid=$!" >> "$GITHUB_OUTPUT"
-          for i in $(seq 1 15); do
-            (echo > /dev/tcp/127.0.0.1/8200) >/dev/null 2>&1 && break
-            if [ "$i" -eq 15 ]; then
-              echo "::error::vault tunnel (tbot app-tunnel ${{ inputs.teleport_app }}) did not open in 15s"
-              exit 1
-            fi
-            sleep 1
+          # Two attempts, in ONE step rather than a gated twin: the first tbot is
+          # a background process holding (or trying to hold) 127.0.0.1:8200, so a
+          # second attempt must reap it first or it binds nothing and the port
+          # check then passes on a dead tunnel. A twin step cannot see the first
+          # one's PID reliably; a loop can.
+          tunnel_pid=""
+          for attempt in 1 2; do
+            tbot start -c /tmp/tbot-vault-config.yaml &
+            tunnel_pid=$!
+            for _ in $(seq 1 15); do
+              (echo > /dev/tcp/127.0.0.1/8200) >/dev/null 2>&1 && break 2
+              sleep 1
+            done
+            echo "::warning::vault tunnel (${{ inputs.teleport_app }}) did not open in 15s on attempt ${attempt}"
+            kill "${tunnel_pid}" 2>/dev/null || true
+            wait "${tunnel_pid}" 2>/dev/null || true
+            tunnel_pid=""
           done
+          if [ -z "${tunnel_pid}" ]; then
+            echo "::error::vault tunnel (tbot app-tunnel ${{ inputs.teleport_app }}) did not open in 15s, twice"
+            exit 1
+          fi
+          echo "tunnel_pid=${tunnel_pid}" >> "$GITHUB_OUTPUT"
 
       # --- Vault: fetch secrets (public OR tunnel) -------------------------
       - name: Retrieve secrets from Vault
@@ -536,25 +592,61 @@ jobs:
           read -r -a PORTS <<< "$SSH_PORTS"
           TUNNEL_PIDS=""
 
-          for i in "${!HOSTS[@]}"; do
-            HOST="${HOSTS[$i]}"
-            PORT="${PORTS[$i]}"
-            echo "  - localhost:${PORT} -> ${HOST}:22"
-            tsh ssh -i "$TELEPORT_IDENTITY_FILE" \
-              -L "${PORT}:localhost:22" \
-              "teleport-production@${HOST}" \
-              "sleep infinity" &
-            TUNNEL_PIDS="$TUNNEL_PIDS $!"
-          done
-          echo "tunnel_pids=${TUNNEL_PIDS}" >> "$GITHUB_OUTPUT"
-
-          for PORT in "${PORTS[@]}"; do
-            for i in $(seq 1 15); do
-              (echo >/dev/tcp/localhost/$PORT) 2>/dev/null && break
-              [ "$i" -eq 15 ] && { echo "::error::SSH tunnel on port $PORT never came up"; exit 1; }
-              sleep 1
+          # Open every forward and wait for every port. Returns non-zero if any
+          # port never answers, leaving TUNNEL_PIDS set so the caller can reap.
+          start_tunnels() {
+            TUNNEL_PIDS=""
+            for i in "${!HOSTS[@]}"; do
+              HOST="${HOSTS[$i]}"
+              PORT="${PORTS[$i]}"
+              echo "  - localhost:${PORT} -> ${HOST}:22"
+              tsh ssh -i "$TELEPORT_IDENTITY_FILE" \
+                -L "${PORT}:localhost:22" \
+                "teleport-production@${HOST}" \
+                "sleep infinity" &
+              TUNNEL_PIDS="$TUNNEL_PIDS $!"
             done
+
+            for PORT in "${PORTS[@]}"; do
+              up=0
+              for _ in $(seq 1 15); do
+                (echo >/dev/tcp/localhost/"$PORT") 2>/dev/null && { up=1; break; }
+                sleep 1
+              done
+              if [ "$up" != 1 ]; then
+                echo "::warning::SSH tunnel on port ${PORT} never came up"
+                return 1
+              fi
+            done
+            return 0
+          }
+
+          # ALL-OR-NOTHING per attempt, and the reap is the reason the retry is a
+          # loop inside this step rather than a gated twin step: a half-open
+          # attempt leaves live `tsh ssh` children bound to some of the ports, so
+          # a naive second attempt would fail to bind those and the readiness
+          # check would then pass against the FIRST attempt's forwards — which
+          # are exactly the ones already proven unreliable. Kill first, then
+          # retry, and export only the surviving attempt's PIDs so Cleanup kills
+          # the right processes.
+          ok=0
+          for attempt in 1 2; do
+            if start_tunnels; then ok=1; break; fi
+            echo "::warning::attempt ${attempt} did not bring every tunnel up — reaping and retrying"
+            # Deliberate word splitting: TUNNEL_PIDS is a PID LIST.
+            # shellcheck disable=SC2086
+            kill ${TUNNEL_PIDS} 2>/dev/null || true
+            # shellcheck disable=SC2086
+            wait ${TUNNEL_PIDS} 2>/dev/null || true
+            TUNNEL_PIDS=""
+            sleep 3
           done
+
+          if [ "$ok" != 1 ]; then
+            echo "::error::SSH tunnels to Proxmox never came up (two attempts). This is the public Teleport edge, not the nodes: the forward has to SURVIVE the whole terraform run, so a transient at the proxy reds a job that had already authenticated fine."
+            exit 1
+          fi
+          echo "tunnel_pids=${TUNNEL_PIDS}" >> "$GITHUB_OUTPUT"
           echo "All SSH tunnels up (PIDs:${TUNNEL_PIDS})"
 
       - name: Setup temporary SSH key for Proxmox provider
