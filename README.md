@@ -130,12 +130,15 @@ This action pushes multiple Docker images to AWS ECR repositories.
 
 - `awsAccessKey`: AWS Access Key ID (required)
 - `awsSecretKey`: AWS Secret Access Key (required)
-- `awsRegion`: AWS Region (required)
+- `awsRegion`: AWS Region (required). Since phase 6 of the ECR migration
+  ([issues-maestra#1354](https://github.com/maestra-io/issues-maestra/issues/1354)) a stale
+  `eu-central-1` is normalised to `us-west-2` with a workflow warning — the EU registry is frozen
+  and read by nothing.
 - `awsOrganizationId`: AWS Organization ID for ECR policy (required)
 - `repositories`: Comma-separated list of repository names (required)
 - `localTag`: Tag of locally built images that must be pre-built (required)
 - `targetTag`: Target tag for all ECR repositories (required)
-- `awsRegionSecondary`: second ECR region every pushed image is mirrored to. Default `us-west-2`; set to `''` to disable the mirror. See [Dual-push to a second region](#dual-push-to-a-second-region).
+- `awsRegionSecondary`: second ECR region every pushed image is mirrored to. Default `''` (mirror off) since phase 6 — `us-west-2` is the only push target. See [Dual-push to a second region](#dual-push-to-a-second-region) for the one direction a mirror can be re-enabled in.
 - `craneVersion`: crane CLI version used by the mirror step, no `v-` prefix. Default `0.22.0`.
 
 ### Prerequisites
@@ -194,9 +197,13 @@ Multi-arch images have their child manifests imported before the index — an in
 have not landed fails with `MANIFEST_BLOB_UNKNOWN`. Single-manifest images have no children and skip
 that loop.
 
-Off-switch (phase 6, when the EU push is decommissioned or a repo must opt out): pass
-`awsRegionSecondary: ''` (or `aws-region-secondary: ''` for the bake action). The mirror steps are
-then skipped entirely and the actions behave exactly as they did before.
+**The off-switch is the default since phase 6**: `awsRegionSecondary` / `aws-region-secondary`
+default to `''`, the mirror steps are skipped entirely, and the actions push to `us-west-2` only —
+eu-central-1 is frozen. If a mirror ever needs to come back, the ONLY working direction is
+`awsRegion: eu-central-1` + `awsRegionSecondary: us-west-2` (for the bake action additionally the
+two matching registry-host inputs): the mirror is a cache prime + storage poll, and only us-west-2
+carries the registry-ROOT pull-through-cache rule. The inverse assignment would poll `describe-images`
+for 180 s per digest and fail the job.
 
 Workflows that push with their **own** `docker push` / `docker buildx build --push` /
 `docker/build-push-action` / `helm push` instead of going through either action get the same
@@ -273,9 +280,9 @@ jobs:
 - `images`: comma-separated list of image basenames the action will verify exist in ECR before baking. If any is missing, the bake fails. **(required)**
 - `tag`: explicit bare-semver tag to bake. Default `''`. When empty, the tag is taken from the `workflow_dispatch` input (if any) or `GITHUB_REF_NAME` (the tag that triggered the run) — the behaviour for mirrored repos. **Set this for GitHub-native repos** that bake from a `needs: build` job in a push-to-`main` release run: there the release tag is created with `GITHUB_TOKEN`, which GitHub will not let trigger a separate `on: push: tags` workflow, and `GITHUB_REF_NAME` is `main` rather than the semver tag. Precedence: `tag` → `workflow_dispatch.inputs.tag` → `GITHUB_REF_NAME`.
 - `flux-version`: flux CLI version, no `v-` prefix. Default `2.8.6`.
-- `aws-region`: ECR region. Default `eu-central-1`.
-- `ecr-registry`: ECR registry host. Default `515260921971.dkr.ecr.eu-central-1.amazonaws.com`.
-- `aws-region-secondary`: second ECR region the baked artifact is mirrored to. Default `us-west-2`; set to `''` to disable. See [Dual-push to a second region](#dual-push-to-a-second-region).
+- `aws-region`: ECR region. Default `us-west-2` (phase 6 of [issues-maestra#1354](https://github.com/maestra-io/issues-maestra/issues/1354) — the eu-central-1 registry is frozen).
+- `ecr-registry`: ECR registry host. Default `515260921971.dkr.ecr.us-west-2.amazonaws.com`.
+- `aws-region-secondary`: second ECR region the baked artifact is mirrored to. Default `''` (mirror off) since phase 6. See [Dual-push to a second region](#dual-push-to-a-second-region) — re-enabling only works as `aws-region: eu-central-1` + `aws-region-secondary: us-west-2` (plus the matching two registry hosts), never the inverse.
 - `ecr-registry-secondary`: ECR registry host in that region. Default `515260921971.dkr.ecr.us-west-2.amazonaws.com`.
 - `crane-version`: crane CLI version used by the mirror step, no `v-` prefix. Default `0.22.0`.
 - `teleport-fqdn`: Teleport proxy. Default `teleport.maestra.io:443`.
@@ -341,9 +348,11 @@ on-disk JWT instead of changing the login step:
   `my-service,helm-charts/my-service`. **(required)**
 - `tag`: comma-separated tags just pushed, e.g. `1.0.42,latest`. Every tag is mirrored for every
   repository (cross product). **(required)**
-- `primaryRegion`: region the images were pushed to. Default `eu-central-1`.
-- `secondaryRegion`: region that receives the copy. Default `us-west-2`; `''` turns the action into
-  a no-op (phase 6 off-switch).
+- `primaryRegion`: region the images were pushed to. Default `us-west-2` (phase 6 — eu-central-1 is
+  frozen).
+- `secondaryRegion`: region that receives the copy. Default `''` (no-op) since phase 6. Re-enabling
+  only works as `primaryRegion: eu-central-1` + `secondaryRegion: us-west-2` — the copy is a cache
+  prime + storage poll and only us-west-2 carries the registry-ROOT pull-through-cache rule.
 - `registry`: primary ECR registry host. Default `''` — the calling identity's own account in
   `primaryRegion`, resolved with `aws sts get-caller-identity`.
 - `awsRoleArn` / `awsWebIdentityTokenFile`: only for Teleport Workload Identity workflows, see
