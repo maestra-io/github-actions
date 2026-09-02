@@ -406,11 +406,18 @@ jobs:
           # business (the regex-on-`│` parser once extracted the literal string
           # "value" on some PVE 9.x output paths -> every API call 401'd).
           # Box-table grep kept as fallback for pveum builds that ignore the flag.
+          # Every token expires in 24h and expired ones are pruned here, so a
+          # run that never reaches Cleanup (runner killed) cannot leave a
+          # live token behind.
+          TOKEN_EXPIRE=$(( $(date +%s) + 86400 ))
           TOKEN_OUTPUT=$(tsh ssh "teleport-production@${PROXMOX_HOST}" -- \
             "sudo pveum user add ci@pve --comment 'Terraform CI automation' 2>/dev/null || true && \
              sudo pveum acl modify / -user ci@pve -role Administrator 2>/dev/null || true && \
+             sudo pveum user token list ci@pve --output-format=json 2>/dev/null \
+               | python3 -c 'import json,sys,time; [print(t[\"tokenid\"]) for t in json.load(sys.stdin) if 0 < t.get(\"expire\", 0) < time.time()]' \
+               | xargs -r -n1 sudo pveum user token remove ci@pve 2>/dev/null; \
              sudo pveum user token remove ci@pve ${TOKEN_NAME} 2>/dev/null || true && \
-             sudo pveum user token add ci@pve ${TOKEN_NAME} --privsep=0 --output-format=json")
+             sudo pveum user token add ci@pve ${TOKEN_NAME} --privsep=0 --expire ${TOKEN_EXPIRE} --output-format=json")
 
           TOKEN_VALUE=$(echo "$TOKEN_OUTPUT" | jq -er '.value // empty' 2>/dev/null || true)
           if [ -z "$TOKEN_VALUE" ]; then
@@ -558,14 +565,35 @@ jobs:
           set -euo pipefail
           read -r -a HOSTS <<< "$TELEPORT_HOSTS"
 
-          ssh-keygen -t ed25519 -f /tmp/proxmox-key -N "" -q
+          # Comment = marker + epoch, so any run can tell a dead key from a live
+          # one. Runs are capped well under 24h, so anything older is a leak
+          # from a run that never reached Cleanup (runner killed, edge lost).
+          ssh-keygen -t ed25519 -f /tmp/proxmox-key -N "" -q \
+            -C "tf-ci-tmp $(date +%s) ${{ github.repository }}#${{ github.run_id }}"
+
+          # Remote editor shared with Cleanup: drops blank lines, keys older
+          # than 24h and DROP_KEY, appends ADD_KEY, and exits 3 if DROP_KEY is
+          # still there. Writes through the symlink (/root/.ssh/authorized_keys
+          # -> /etc/pve/priv/authorized_keys on PVE); `sed -i` used to replace
+          # that symlink with a diverging copy that `pvecm updatecerts` later
+          # merged back, resurrecting removed keys.
+          cat > /tmp/ak-edit.sh <<'EOF'
+          set -u
+          f=/root/.ssh/authorized_keys
+          mkdir -p /root/.ssh; [ -e "$f" ] || touch "$f"
+          f=$(readlink -f "$f"); t=$(mktemp)
+          awk -v now="$(date +%s)" -v drop="${DROP_KEY:-}" \
+            'NF==0 {next} drop != "" && $2 == drop {next} $3 == "tf-ci-tmp" && now - $4 > 86400 {next} {print}' \
+            "$f" > "$t" || exit 4
+          cat "$t" > "$f"; rm -f "$t"
+          if [ -n "${ADD_KEY:-}" ]; then echo "$ADD_KEY" >> "$f" || exit 4; fi
+          if [ -n "${DROP_KEY:-}" ] && grep -qF "$DROP_KEY" "$f"; then exit 3; fi
+          EOF
 
           for HOST in "${HOSTS[@]}"; do
             echo "Injecting temp SSH key into $HOST..."
-            tsh ssh -i "$TELEPORT_IDENTITY_FILE" \
-              "teleport-production@${HOST}" \
-              "sudo mkdir -p /root/.ssh && sudo tee -a /root/.ssh/authorized_keys > /dev/null" \
-              < /tmp/proxmox-key.pub
+            { printf 'ADD_KEY=%q\n' "$(cat /tmp/proxmox-key.pub)"; cat /tmp/ak-edit.sh; } \
+              | tsh ssh -i "$TELEPORT_IDENTITY_FILE" "teleport-production@${HOST}" "sudo bash -s"
           done
 
           eval "$(ssh-agent -s)"
@@ -900,14 +928,20 @@ jobs:
             echo "API token cleaned up"
           fi
 
-          # Remove the temp SSH key from each node's root authorized_keys —
-          # precise sed by the base64 payload so we never touch unrelated lines.
+          # Remove the temp SSH key from each node's root authorized_keys and
+          # prove it is gone (exit 3 = still there -> red job). An unreachable
+          # node is only a warning: the 24h age prune on the next run covers it.
+          KEY_LEAKED=0
           if [ -n "${TMP_KEY_DATA:-}" ]; then
             read -r -a CLEANUP_HOSTS <<< "$TELEPORT_HOSTS"
             for HOST in "${CLEANUP_HOSTS[@]}"; do
-              tsh ssh -i "$TELEPORT_IDENTITY_FILE" \
-                "teleport-production@${HOST}" \
-                "sudo sed -i '\|${TMP_KEY_DATA}|d' /root/.ssh/authorized_keys" || true
+              { printf 'DROP_KEY=%q\n' "$TMP_KEY_DATA"; cat /tmp/ak-edit.sh; } \
+                | timeout 60 tsh ssh -i "$TELEPORT_IDENTITY_FILE" "teleport-production@${HOST}" "sudo bash -s"
+              case $? in
+                0) echo "Temp SSH key removed from ${HOST}" ;;
+                3) echo "::error::temp SSH key STILL PRESENT on ${HOST} — standing root login left behind"; KEY_LEAKED=1 ;;
+                *) echo "::warning::could not remove temp SSH key from ${HOST}; the next run prunes it after 24h" ;;
+              esac
             done
           fi
           kill "${SSH_AGENT_PID:-}" 2>/dev/null || true
@@ -916,7 +950,8 @@ jobs:
           for PID in ${{ steps.ssh-tunnel.outputs.tunnel_pids }} ${{ steps.ssh-direct.outputs.tunnel_pids }} ${{ steps.api-tunnel.outputs.tunnel_pid }}; do
             kill "$PID" 2>/dev/null || true
           done
-          rm -f /tmp/proxmox-key /tmp/proxmox-key.pub
+          rm -f /tmp/proxmox-key /tmp/proxmox-key.pub /tmp/ak-edit.sh
+          [ "$KEY_LEAKED" = 0 ] || exit 1
 
       - name: Generate summary
         if: ${{ always() }}
