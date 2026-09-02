@@ -1,0 +1,123 @@
+---
+# Cut a release tag for every push to main.
+#
+# WHY THIS EXISTS. Tags here were cut by hand, so they lagged main: on
+# 2026-09-02 the newest tag was v1.1.6 (176e92c) while main was 26 commits
+# ahead, and consumers had pinned NEWER shas while keeping the old `# v1.1.6`
+# label. Renovate reads the label, not the sha, so its digest updater proposed
+# "update digest to 176e92c" — a DOWNGRADE that would have removed the
+# `runs_on` input terraform-run.yml needs
+# (https://github.com/maestra-io/haproxy-maestra/pull/388). The stopgap was to
+# switch Renovate off for this repo entirely
+# (https://github.com/maestra-io/haproxy-maestra/pull/511). The fix is for the
+# tag to never lag: main IS the release.
+#
+# WHAT IT DOES. Reads the commits since the previous tag, derives a semver bump
+# from Conventional Commits (see ci/next-version.sh for the rules and for why
+# the fallback is `patch` rather than "no release"), creates an ANNOTATED
+# `vX.Y.Z`, force-moves the major alias `vX`, and publishes a GitHub Release
+# with generated notes.
+#
+# NOTE ON THE TOKEN. The tag is pushed with GITHUB_TOKEN, and GitHub refuses to
+# let a GITHUB_TOKEN push start another workflow run (anti-recursion). Nothing
+# in this repo listens on `on: push: tags`, so that costs us nothing today — but
+# a future tag-triggered workflow here would need a GitHub App token instead.
+# The same rule is what keeps THIS workflow from re-triggering itself.
+name: release
+
+on:
+  push:
+    branches: [main]
+  # A failed `gh release create` (or a tag pushed before the release call) can
+  # be retried without an empty commit: re-run on main, and an already-tagged
+  # HEAD is reported and skipped rather than re-cut.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Never in parallel: two runs would read the same "previous tag" and race to
+  # create the same next one.
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Tag and release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # Push the tag and publish the release. Everything else stays read-only.
+      contents: write
+    steps:
+      - uses: actions/checkout@v6 # TODO: SHA-pin via Renovate on landing
+        with:
+          # The version is computed from tags and from the commit range since
+          # the previous one; a shallow clone has neither.
+          fetch-depth: 0
+          fetch-tags: true
+
+      # The decision is a shell script with its own test suite
+      # (ci/tests/test-next-version.sh, wired into selftest.yml) rather than
+      # inline YAML, because a version bump that reads correct and is not is
+      # exactly the class this repo already writes tests for.
+      - name: Decide the version
+        id: version
+        run: ci/next-version.sh >> "$GITHUB_OUTPUT"
+
+      - name: Nothing to release
+        if: steps.version.outputs.release != 'true'
+        run: |
+          {
+            echo "### No release"
+            echo
+            echo "HEAD already carries \`${{ steps.version.outputs.next }}\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create and push the tag
+        if: steps.version.outputs.release == 'true'
+        env:
+          NEXT: ${{ steps.version.outputs.next }}
+          PREV: ${{ steps.version.outputs.prev }}
+          BUMP: ${{ steps.version.outputs.bump }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git tag -a "$NEXT" -m "${NEXT}: ${BUMP} release from ${PREV:-the beginning of the repo}"
+          git push origin "$NEXT"
+
+          # Moving major alias, so a consumer that does not want to take every
+          # patch through Renovate can write `@v1` and still be on a ref that
+          # only ever moves forward within the major. Force-updated by design;
+          # `vX.Y.Z` is the immutable one.
+          major="${NEXT%%.*}"
+          git tag -f -a "$major" -m "${major} -> ${NEXT}"
+          git push -f origin "$major"
+
+      - name: Publish the GitHub release
+        if: steps.version.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEXT: ${{ steps.version.outputs.next }}
+          PREV: ${{ steps.version.outputs.prev }}
+        run: |
+          set -euo pipefail
+          # --notes-start-tag scopes the generated notes to the commits since
+          # the previous TAG. Without it the first release of a repo that has
+          # tags but no Releases (this one) would generate notes covering the
+          # entire history.
+          args=(--verify-tag --latest --generate-notes --title "$NEXT")
+          if [ -n "$PREV" ]; then
+            args+=(--notes-start-tag "$PREV")
+          fi
+          gh release create "$NEXT" "${args[@]}"
+
+          {
+            echo "### Released \`${NEXT}\`"
+            echo
+            echo "Bump: \`${{ steps.version.outputs.bump }}\` from \`${PREV:-none}\`."
+            echo "Major alias \`${NEXT%%.*}\` now points here."
+          } >> "$GITHUB_STEP_SUMMARY"

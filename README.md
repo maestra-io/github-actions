@@ -1,5 +1,64 @@
 # GitHub Actions
 
+## Releases and versioning
+
+**Every push to `main` cuts a release.** [`.github/workflows/release.yml`](.github/workflows/release.yml)
+reads the commits since the previous tag, creates an annotated `vX.Y.Z`, force-moves the major alias
+`vX`, and publishes a GitHub Release with generated notes. Nobody tags this repo by hand.
+
+The bump comes from [Conventional Commits](https://www.conventionalcommits.org/) when the range has
+any, and falls back to `patch` when it does not:
+
+| in the range since the last tag | bump |
+| --- | --- |
+| `<type>(<scope>)!:` in a subject, or `BREAKING CHANGE:` in a body | major |
+| `feat:` / `feat(<scope>):` | minor |
+| anything else, including a range with no conventional subject at all | patch |
+
+This repo squash-merges with `COMMIT_OR_PR_TITLE`, so in practice the subject the bump is read from
+is the **PR title** for a multi-commit PR and the **commit subject** for a single-commit one. Write
+the one that will land.
+
+The fallback is deliberate. Fewer than half the subjects in this repo are conventional, and a tool
+that releases *only* on `feat:`/`fix:` would cut no tag for most merges — which is the failure this
+replaced. The rules live in [`ci/next-version.sh`](ci/next-version.sh) and are tested by
+[`ci/tests/test-next-version.sh`](ci/tests/test-next-version.sh) (run by `selftest` on every PR that
+touches `ci/`).
+
+### How consumers should pin
+
+**Reusable workflows and composite actions** — pin the immutable sha and name the tag in a trailing
+comment. That is the format Renovate writes and reads, so it bumps the sha and the comment together
+and can never propose the two out of step:
+
+```yaml
+uses: maestra-io/github-actions/.github/workflows/terraform-run.yml@4400cd4787fea8b4353aad7d90621d573af8ddc9 # v1.1.7
+```
+
+If you would rather not review a Renovate PR per patch, `@v1` is also valid — a moving alias that
+only goes forward inside major 1. You give up the audit trail of *which* revision ran, so prefer the
+sha form for anything that touches production.
+
+**The `maestra.infra` ansible collection** — `ansible-galaxy` takes any git ref in `version:`, so
+pin the tag rather than `main`:
+
+```yaml
+- name: https://github.com/maestra-io/github-actions.git#/ansible/collections/maestra/infra/
+  type: git
+  version: v1.1.7
+```
+
+> `@main` is never a pin. It re-resolves on every run, so a consumer's behaviour changes on a merge
+> here that nobody reviewed against that consumer. Pin `@main` only where the coupling is genuinely
+> intentional and stated.
+
+### Breaking changes
+
+A `!` or a `BREAKING CHANGE:` footer cuts `v2.0.0` and moves the alias `v2` — it does **not** move
+`v1`, so consumers on `@v1` stay where they are until they migrate. Consumers pinned to a sha are
+unaffected until their Renovate PR is reviewed. Mark a change breaking whenever an input is removed
+or renamed, a default changes meaning, or a required secret appears.
+
 ## Octopus Deploy Package and Release
 
 This action creates an Octopus Deploy package, uploads it, and creates a release in a single step.
