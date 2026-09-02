@@ -115,17 +115,23 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6 # TODO: SHA-pin via Renovate on landing
-      - uses: actions/setup-python@v6 # TODO: SHA-pin via Renovate on landing
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ inputs.python_version }}
-      - uses: astral-sh/setup-uv@v8.2.0 # TODO: SHA-pin via Renovate on landing
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           enable-cache: true
+      # Inputs reach the shell through `env:`, never through ${{ }} in the script
+      # body: GitHub substitutes the expression BEFORE bash parses the line, so a
+      # quote or a `;` in a caller-supplied value would execute here. Same rule as
+      # the tp-version / Execute steps in ansible-run.yml.
       - name: Install lint deps
-        run: uv pip install --system ansible -r "${{ inputs.requirements_lint }}"
+        env:
+          REQUIREMENTS_LINT: ${{ inputs.requirements_lint }}
+        run: uv pip install --system ansible -r "$REQUIREMENTS_LINT"
       - name: Cache Ansible Galaxy collections
-        uses: actions/cache@v6 # TODO: SHA-pin via Renovate on landing
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.ansible/collections
           key: galaxy-${{ runner.os }}-${{ hashFiles(inputs.requirements_galaxy) }}
@@ -134,13 +140,26 @@ jobs:
         # From working_directory so ansible.cfg's roles_path/collections_path apply
         # (matches the runner and the source repos' `cd ansible && ansible-galaxy install`).
         working-directory: ${{ inputs.working_directory }}
-        run: ansible-galaxy install -r "${GITHUB_WORKSPACE}/${{ inputs.requirements_galaxy }}"
+        env:
+          REQUIREMENTS_GALAXY: ${{ inputs.requirements_galaxy }}
+        run: ansible-galaxy install -r "${GITHUB_WORKSPACE}/${REQUIREMENTS_GALAXY}"
+      # `lint_paths` is a space-separated list by contract (default `.`), so the
+      # word-splitting is deliberate. `read -ra` keeps exactly that meaning while
+      # the value stays DATA — an env var is never re-parsed as script text.
       - name: yamllint
         working-directory: ${{ inputs.working_directory }}
-        run: yamllint ${{ inputs.lint_paths }}
+        env:
+          LINT_PATHS: ${{ inputs.lint_paths }}
+        run: |
+          read -ra paths <<< "$LINT_PATHS"
+          yamllint "${paths[@]}"
       - name: ansible-lint
         working-directory: ${{ inputs.working_directory }}
-        run: ansible-lint ${{ inputs.lint_paths }}
+        env:
+          LINT_PATHS: ${{ inputs.lint_paths }}
+        run: |
+          read -ra paths <<< "$LINT_PATHS"
+          ansible-lint "${paths[@]}"
 
   check:
     needs: lint
@@ -191,13 +210,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all check logs (flat)
-        uses: actions/download-artifact@v8 # TODO: SHA-pin via Renovate on landing
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: ansible-check-*
           merge-multiple: true
           path: logs
       - name: Upsert plan-diff comment
-        uses: actions/github-script@v9 # TODO: SHA-pin via Renovate on landing
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const fs = require('fs');

@@ -102,14 +102,22 @@ outputs:
 runs:
   using: 'composite'
   steps:
+    # Inputs reach the shell through `env:`, never through ${{ }} in the script
+    # body: GitHub substitutes the expression BEFORE bash parses the line, so a
+    # quote or a `;` in a caller-supplied value would execute in a step that
+    # holds a Teleport identity and AWS/ECR credentials.
     - name: resolve version
       id: ver
       shell: bash
+      env:
+        TAG_INPUT: ${{ inputs.tag }}
+        TAG_DISPATCH: ${{ github.event.inputs.tag }}
+        SERVICE: ${{ inputs.service }}
       run: |
-        if [ -n "${{ inputs.tag }}" ]; then
-          tag="${{ inputs.tag }}"
+        if [ -n "${TAG_INPUT}" ]; then
+          tag="${TAG_INPUT}"
         elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-          tag="${{ github.event.inputs.tag }}"
+          tag="${TAG_DISPATCH}"
         else
           tag="${GITHUB_REF_NAME}"
         fi
@@ -118,9 +126,9 @@ runs:
           *) echo "::error::tag '$tag' is not bare semver (e.g. 1.0.648)"; exit 1 ;;
         esac
         echo "version=$tag" >> "$GITHUB_OUTPUT"
-        echo "Baking manifests for ${{ inputs.service }} $tag"
+        echo "Baking manifests for ${SERVICE} $tag"
 
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       with:
         ref: ${{ steps.ver.outputs.version }}
         fetch-depth: 1
@@ -129,25 +137,30 @@ runs:
     - name: get teleport version
       id: tp-version
       shell: bash
+      env:
+        TELEPORT_FQDN: ${{ inputs.teleport-fqdn }}
       run: |
-        version=$(curl -sf "https://${{ inputs.teleport-fqdn }}/webapi/find" \
+        version=$(curl -sf "https://${TELEPORT_FQDN}/webapi/find" \
           | jq -r '.auto_update.tools_version // .server_version')
         echo "version=$version" >> "$GITHUB_OUTPUT"
 
-    - uses: teleport-actions/setup@v1
+    - uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
       with:
         version: ${{ steps.tp-version.outputs.version }}
         proxy: ${{ inputs.teleport-fqdn }}
 
     - name: mint Teleport workload-identity JWT for AWS
       shell: bash
+      env:
+        TELEPORT_FQDN: ${{ inputs.teleport-fqdn }}
+        SERVICE: ${{ inputs.service }}
       run: |
         cat > /tmp/tbot.yaml <<EOF
         version: v2
-        proxy_server: ${{ inputs.teleport-fqdn }}
+        proxy_server: ${TELEPORT_FQDN}
         onboarding:
           join_method: github
-          token: image-push-github-actions-${{ inputs.service }}
+          token: image-push-github-actions-${SERVICE}
         oneshot: true
         storage:
           type: memory
@@ -164,13 +177,13 @@ runs:
         tbot start -c /tmp/tbot.yaml || true
         test -f /tmp/tbot-output/jwt_svid
 
-    - uses: aws-actions/configure-aws-credentials@v4
+    - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
       with:
         role-to-assume: ${{ inputs.aws-role-arn }}
         aws-region: ${{ inputs.aws-region }}
         web-identity-token-file: /tmp/tbot-output/jwt_svid
 
-    - uses: aws-actions/amazon-ecr-login@v2
+    - uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
       with:
         registries: "515260921971"
 
@@ -284,7 +297,7 @@ runs:
         echo "$out" | jq .
         echo "digest=$(echo "$out" | jq -r .digest)" >> "$GITHUB_OUTPUT"
 
-    - uses: sigstore/cosign-installer@v3
+    - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
 
     - name: cosign keyless sign manifests
       shell: bash

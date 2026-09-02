@@ -65,7 +65,7 @@ runs:
         echo "value=${region}" >> "$GITHUB_OUTPUT"
 
     - name: Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v2
+      uses: aws-actions/configure-aws-credentials@5fd3084fc36e372ff1fff382a39b10d03659f355 # v2.2.0
       with:
         aws-access-key-id: ${{ inputs.awsAccessKey }}
         aws-secret-access-key: ${{ inputs.awsSecretKey }}
@@ -73,13 +73,19 @@ runs:
 
     - name: Login to Amazon ECR Private
       id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v2
+      uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
 
+    # Inputs reach the shell through `env:`, never through ${{ }} in the script
+    # body: GitHub substitutes the expression BEFORE bash parses the line, so a
+    # quote or a `;` in a caller-supplied value would execute in a step holding
+    # AWS credentials and an ECR login.
     - name: Create AWS repositories if not exist
       shell: bash
       working-directory: ${{ github.action_path }}
+      env:
+        REPOSITORIES: ${{ inputs.repositories }}
       run: |
-        IFS=',' read -ra REPOS <<< "${{ inputs.repositories }}"
+        IFS=',' read -ra REPOS <<< "${REPOSITORIES}"
         for repo in "${REPOS[@]}"; do
           repo=$(echo "$repo" | xargs)  # trim whitespace
           aws ecr describe-repositories --repository-names "$repo" || {
@@ -91,23 +97,28 @@ runs:
     - name: Tag docker images
       env:
         registry: ${{ steps.login-ecr.outputs.registry }}
+        REPOSITORIES: ${{ inputs.repositories }}
+        LOCAL_TAG: ${{ inputs.localTag }}
+        TARGET_TAG: ${{ inputs.targetTag }}
       shell: bash
       run: |
-        IFS=',' read -ra REPOS <<< "${{ inputs.repositories }}"
+        IFS=',' read -ra REPOS <<< "${REPOSITORIES}"
         for repo in "${REPOS[@]}"; do
           repo=$(echo "$repo" | xargs)  # trim whitespace
-          docker tag "local/$repo:${{ inputs.localTag }}" "${{ env.registry }}/$repo:${{ inputs.targetTag }}"
+          docker tag "local/$repo:${LOCAL_TAG}" "${registry}/$repo:${TARGET_TAG}"
         done
     
     - name: Docker push
       env:
         registry: ${{ steps.login-ecr.outputs.registry }}
+        REPOSITORIES: ${{ inputs.repositories }}
+        TARGET_TAG: ${{ inputs.targetTag }}
       shell: bash
       run: |
-        IFS=',' read -ra REPOS <<< "${{ inputs.repositories }}"
+        IFS=',' read -ra REPOS <<< "${REPOSITORIES}"
         for repo in "${REPOS[@]}"; do
           repo=$(echo "$repo" | xargs)  # trim whitespace
-          docker push "${{ env.registry }}/$repo:${{ inputs.targetTag }}"
+          docker push "${registry}/$repo:${TARGET_TAG}"
         done
 
     # ── Dual-push: mirror every pushed image to the secondary region ───────

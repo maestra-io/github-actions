@@ -43,13 +43,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      # Both actions are pinned to full-length commit SHAs, not to the `@v6` tag the
-      # rest of this repo still uses. A tag is mutable — re-pointing it runs new code
-      # here with this job's token — and the `# TODO: SHA-pin via Renovate on landing`
-      # comments on the other 38 external `uses:` in .github/workflows/ are not a mechanism:
-      # there is no Renovate configuration in this repo at all. The trailing `# vX.Y.Z`
-      # is the form Renovate/Dependabot read, so the pins stay updatable once there is.
-      # Sweeping the other workflows is a separate change, not this PR's subject.
+      # Pinned to full-length commit SHAs, like every other external `uses:` in this
+      # repo since the Renovate landing. A tag is mutable — re-pointing it runs new
+      # code here with this job's token. The trailing `# vX.Y.Z` is the form
+      # Renovate/Dependabot read, so the pin stays updatable: renovate.json turns on
+      # `helpers:pinGitHubActionDigests` plus `pinDigests` for the github-actions
+      # manager, so a new tag arrives as a sha bump with the label rewritten, and a
+      # hand-written `@v6` gets a PR converting it to a sha.
       #
       # persist-credentials: false — nothing here pushes, so the token has no job
       # to do past the clone, and the steps after it execute code from the PR branch.
