@@ -4,4 +4,7 @@
 #   "[WARNING]: maestra.infra:1.0.0 does not have requires_ansible metadata".
 # 2.16 is the floor for the modules used here (ansible.builtin.reboot with
 # post_reboot_delay, systemd masked:, apt lock_timeout).
-requires_ansible: ">=2.16"
+# The patch component is not decoration: ansible-lint meta-runtime matches the
+# value against a list of currently-supported versions written as x.y.z, so a
+# bare ">=2.16" is reported as unsupported.
+requires_ansible: ">=2.16.0"

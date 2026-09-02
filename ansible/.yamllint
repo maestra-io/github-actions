@@ -1,0 +1,22 @@
+---
+extends: default
+
+rules:
+  # Same relaxation the consumer repos use (haproxy-maestra, kubernetes-clusters,
+  # vpn-maestra, maestra-nat-gateway): the os_update task files carry long
+  # explanatory comments on purpose, and reflowing them to 80 loses the sentences.
+  line-length:
+    max: 200
+    level: warning
+  truthy:
+    allowed-values: ['true', 'false', 'yes', 'no']
+  comments:
+    min-spaces-from-content: 1
+  # Demanded by ansible-lint's own yaml rule; without them it prints
+  # "Found incompatible custom yamllint configuration" and disables fix mode.
+  comments-indentation: false
+  braces:
+    max-spaces-inside: 1
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: true

@@ -48,7 +48,9 @@
 # Re-probe when the GC actually ran — os_update_boot_free_post was measured
 # BEFORE the purge, and the one case this message matters is the one where the
 # number just changed.
-- name: Re-measure /boot after the GC
+# noqa: no-handler — this is a read probe whose value the very next task prints;
+# deferring it to the end of the play would report a number nobody is waiting for.
+- name: Re-measure /boot after the GC  # noqa: no-handler
   ansible.builtin.shell:
     executable: /bin/bash
     cmd: |

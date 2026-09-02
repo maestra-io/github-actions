@@ -19,7 +19,12 @@
     state: present
   register: os_update_grub
 
-- name: Regenerate grub.cfg
+# noqa: no-handler — a handler would be WRONG here, not merely different. Handlers
+# flush at the end of the play, and the reboot this file exists to make safe happens
+# a few tasks later in the SAME block: grub.cfg would be regenerated after the host
+# had already rebooted on the old config. The whole point is that it is a hard
+# prerequisite of the reboot.
+- name: Regenerate grub.cfg  # noqa: no-handler
   ansible.builtin.command:
     argv: [update-grub]
   when: os_update_grub.changed
