@@ -18,20 +18,30 @@ inputs:
       Every tag is mirrored for every repository (cross product).
     required: true
   primaryRegion:
-    description: 'Region the images were pushed to.'
+    description: >-
+      Region the images were pushed to. us-west-2 since phase 6 of the ECR
+      eu-central-1 -> us-west-2 migration
+      (https://github.com/maestra-io/issues-maestra/issues/1354).
     required: false
-    default: 'eu-central-1'
+    default: 'us-west-2'
   secondaryRegion:
     description: >-
       Second ECR region that receives a byte-identical copy of every mirrored
       image (ECR eu-central-1 -> us-west-2 migration, phase 3 dual-push:
       https://github.com/maestra-io/issues-maestra/issues/1354). Images are
       imported BY DIGEST and then tagged with `crane tag`, so the tag resolves
-      to the same digest in both regions. Set to "" to disable the mirror
-      entirely — that is the phase 6 off-switch, and it turns this action into
-      a no-op.
+      to the same digest in both regions. EMPTY since phase 6: eu-central-1 is
+      frozen and us-west-2 is the only push target, so there is nothing to
+      mirror and this action is a no-op by default.
+
+      Note the direction this was built for: the SECONDARY region must be the
+      one carrying the registry-ROOT pull-through-cache rule onto the primary,
+      because the copy is a cache prime plus a storage poll. Only us-west-2 has
+      such a rule (checked 2026-09-02), so restoring a mirror means
+      primaryRegion=eu-central-1 AND secondaryRegion=us-west-2, never the
+      inverse.
     required: false
-    default: 'us-west-2'
+    default: ''
   registry:
     description: >-
       Primary ECR registry host, e.g.
