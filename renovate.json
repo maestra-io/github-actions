@@ -1,0 +1,39 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "timezone": "Europe/Lisbon",
+  "semanticCommits": "enabled",
+  "semanticCommitType": "chore",
+  "packageRules": [
+    {
+      "description": "Every external action in this repo is pinned to a full-length commit sha with a trailing `# vX.Y.Z` label. pinDigests keeps that true: a `@v6` written by hand comes back as a PR converting it to a sha, and a new upstream tag arrives as a sha bump with the label rewritten. Grouped and weekly because these workflows are a shared library — one PR a week is one review and one release tag, instead of a dozen tags nobody reads. `separateMajorMinor: false` is what makes it literally one PR -- config:recommended would otherwise split majors into a second branch. Flip it back to true if a stuck major (checkout v7, setup-python v7, configure-aws-credentials v6 are all waiting) starts holding the routine bumps hostage.",
+      "matchManagers": ["github-actions"],
+      "groupName": "github actions",
+      "groupSlug": "github-actions",
+      "pinDigests": true,
+      "separateMajorMinor": false,
+      "separateMinorPatch": false,
+      "schedule": ["* 0-6 * * 1"],
+      "commitMessageTopic": "the pinned GitHub Actions"
+    },
+    {
+      "description": "ansible-lint / yamllint in ansible/requirements-lint.txt are `==` pins consumed only by collection-lint.yml. Same weekly window, own PR: a linter bump can turn the lint job red on code nobody touched, and that must not be bisected out of an actions group.",
+      "matchManagers": ["pip_requirements"],
+      "groupName": "ansible lint toolchain",
+      "schedule": ["* 0-6 * * 1"]
+    },
+    {
+      "description": "Never let a dependency PR cut anything but a patch tag. release.yml derives the bump from Conventional Commits (ci/next-version.sh): `feat:` is a minor and `!`/BREAKING CHANGE is a major, and consumers pin `vX`. `chore(deps)` keeps every automated bump on the patch line.",
+      "matchPackageNames": ["*"],
+      "semanticCommitType": "chore",
+      "semanticCommitScope": "deps"
+    }
+  ],
+  "ansible-galaxy": {
+    "description": "Left at its default (enabled, nothing to match). The collection here is a PUBLISHER — ansible/collections/maestra/infra/galaxy.yml — not a consumer: there is no requirements.yml in the repo, so this manager finds no files. Recorded so the next reader does not have to re-derive it.",
+    "enabled": true
+  }
+}

@@ -120,7 +120,7 @@ runs:
         echo "version=$tag" >> "$GITHUB_OUTPUT"
         echo "Baking manifests for ${{ inputs.service }} $tag"
 
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       with:
         ref: ${{ steps.ver.outputs.version }}
         fetch-depth: 1
@@ -134,7 +134,7 @@ runs:
           | jq -r '.auto_update.tools_version // .server_version')
         echo "version=$version" >> "$GITHUB_OUTPUT"
 
-    - uses: teleport-actions/setup@v1
+    - uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
       with:
         version: ${{ steps.tp-version.outputs.version }}
         proxy: ${{ inputs.teleport-fqdn }}
@@ -164,13 +164,13 @@ runs:
         tbot start -c /tmp/tbot.yaml || true
         test -f /tmp/tbot-output/jwt_svid
 
-    - uses: aws-actions/configure-aws-credentials@v4
+    - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
       with:
         role-to-assume: ${{ inputs.aws-role-arn }}
         aws-region: ${{ inputs.aws-region }}
         web-identity-token-file: /tmp/tbot-output/jwt_svid
 
-    - uses: aws-actions/amazon-ecr-login@v2
+    - uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
       with:
         registries: "515260921971"
 
@@ -284,7 +284,7 @@ runs:
         echo "$out" | jq .
         echo "digest=$(echo "$out" | jq -r .digest)" >> "$GITHUB_OUTPUT"
 
-    - uses: sigstore/cosign-installer@v3
+    - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
 
     - name: cosign keyless sign manifests
       shell: bash

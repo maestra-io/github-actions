@@ -65,7 +65,7 @@ runs:
         echo "value=${region}" >> "$GITHUB_OUTPUT"
 
     - name: Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v2
+      uses: aws-actions/configure-aws-credentials@5fd3084fc36e372ff1fff382a39b10d03659f355 # v2.2.0
       with:
         aws-access-key-id: ${{ inputs.awsAccessKey }}
         aws-secret-access-key: ${{ inputs.awsSecretKey }}
@@ -73,7 +73,7 @@ runs:
 
     - name: Login to Amazon ECR Private
       id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v2
+      uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
 
     - name: Create AWS repositories if not exist
       shell: bash

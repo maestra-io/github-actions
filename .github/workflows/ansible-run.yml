@@ -319,10 +319,10 @@ jobs:
       ANSIBLE_STRATEGY: ${{ (inputs.use_mitogen && !inputs.windows_mode) && 'mitogen_linear' || 'linear' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6 # TODO: SHA-pin via Renovate on landing
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Set up Python
-        uses: actions/setup-python@v6 # TODO: SHA-pin via Renovate on landing
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ inputs.python_version }}
 
@@ -352,7 +352,7 @@ jobs:
       - name: Set up uv
         id: setup-uv
         continue-on-error: true
-        uses: astral-sh/setup-uv@v8.2.0 # TODO: SHA-pin via Renovate on landing
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           enable-cache: true
 
@@ -363,7 +363,7 @@ jobs:
       # which makes that fetch mandatory on every single run.
       - name: Set up uv — retry
         if: steps.setup-uv.outcome == 'failure'
-        uses: astral-sh/setup-uv@v8.2.0 # TODO: SHA-pin via Renovate on landing
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           enable-cache: true
 
@@ -371,7 +371,7 @@ jobs:
         run: uv pip install --system -r "${{ inputs.requirements_pip }}"
 
       - name: Cache Ansible Galaxy collections
-        uses: actions/cache@v6 # TODO: SHA-pin via Renovate on landing
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.ansible/collections
           key: galaxy-${{ runner.os }}-${{ hashFiles(inputs.requirements_galaxy) }}
@@ -408,7 +408,7 @@ jobs:
           echo "version=${VER}" >> "$GITHUB_OUTPUT"
 
       - name: Cache Teleport binaries
-        uses: actions/cache@v6 # TODO: SHA-pin via Renovate on landing
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.tool_cache }}/teleport
           key: teleport-${{ runner.os }}-${{ runner.arch }}-${{ steps.tp-version.outputs.version }}
@@ -419,13 +419,13 @@ jobs:
       - name: Setup Teleport
         id: teleport-setup
         continue-on-error: true
-        uses: teleport-actions/setup@v1 # TODO: SHA-pin via Renovate on landing
+        uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
         with:
           version: ${{ steps.tp-version.outputs.version }}
 
       - name: Setup Teleport — retry
         if: steps.teleport-setup.outcome == 'failure'
-        uses: teleport-actions/setup@v1 # TODO: SHA-pin via Renovate on landing
+        uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
         with:
           version: ${{ steps.tp-version.outputs.version }}
 
@@ -438,7 +438,7 @@ jobs:
       - name: Teleport auth (SSH)
         id: teleport-auth
         continue-on-error: true
-        uses: teleport-actions/auth@v2 # TODO: SHA-pin via Renovate on landing
+        uses: teleport-actions/auth@3b365df2b4f64891358392a444ff34929ba0d0b1 # v2.1.2
         with:
           proxy: ${{ inputs.teleport_fqdn }}
           token: ${{ inputs.teleport_join_token }}
@@ -447,7 +447,7 @@ jobs:
       - name: Teleport auth (SSH) — retry
         id: teleport-auth-retry
         if: steps.teleport-auth.outcome == 'failure'
-        uses: teleport-actions/auth@v2 # TODO: SHA-pin via Renovate on landing
+        uses: teleport-actions/auth@3b365df2b4f64891358392a444ff34929ba0d0b1 # v2.1.2
         with:
           proxy: ${{ inputs.teleport_fqdn }}
           token: ${{ inputs.teleport_join_token }}
@@ -639,7 +639,7 @@ jobs:
       # --- Vault: fetch secrets (public OR tunnel) -----------------------
       - name: Retrieve secrets from Vault
         if: ${{ inputs.vault_mode != 'none' && inputs.vault_secrets != '' }}
-        uses: hashicorp/vault-action@v4 # TODO: SHA-pin via Renovate on landing
+        uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
         with:
           url: ${{ inputs.vault_addr }}
           method: jwt
@@ -657,7 +657,7 @@ jobs:
       # silently. Give it its own ENV_NAME.
       - name: Retrieve secrets from the second Vault
         if: ${{ inputs.vault2_secrets != '' }}
-        uses: hashicorp/vault-action@v4 # TODO: SHA-pin via Renovate on landing
+        uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
         with:
           url: ${{ inputs.vault2_addr != '' && inputs.vault2_addr || inputs.vault_addr }}
           method: jwt
@@ -891,7 +891,7 @@ jobs:
 
       - name: Upload log artifact
         if: ${{ always() }}
-        uses: actions/upload-artifact@v7 # TODO: SHA-pin via Renovate on landing
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ inputs.artifact_name != '' && inputs.artifact_name || format('ansible-check-{0}-{1}-{2}{3}', inputs.region, inputs.environment, inputs.site, inputs.inventory_group_suffix) }}
           path: logs/

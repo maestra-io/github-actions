@@ -51,7 +51,7 @@ jobs:
       # Push the tag and publish the release. Everything else stays read-only.
       contents: write
     steps:
-      - uses: actions/checkout@v6 # TODO: SHA-pin via Renovate on landing
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           # The version is computed from tags and from the commit range since
           # the previous one; a shallow clone has neither.
