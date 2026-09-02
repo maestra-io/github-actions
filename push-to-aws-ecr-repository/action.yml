@@ -40,12 +40,36 @@ outputs: {}
 runs:
   using: "composite"
   steps:
+    # Phase 6 safety net (ECR eu-central-1 -> us-west-2,
+    # https://github.com/maestra-io/issues-maestra/issues/1354).
+    #
+    # awsRegion is `required`, so every caller passes it, and a caller still
+    # passing the retired eu-central-1 would push where nothing reads: all five
+    # clusters and every Kargo/Flux/Renovate subscription moved to us-west-2 on
+    # 2026-09-02. That is not a red job -- it is a release that reaches nobody,
+    # which is the one failure mode of this phase worth engineering against.
+    # Callers are being swept in their own PRs; until the last one lands (and
+    # for any that reappears from an old branch) the region is normalised here,
+    # loudly. Remove this step in phase 7 once the sweep is closed.
+    - name: Resolve the ECR region
+      id: region
+      shell: bash
+      env:
+        REQUESTED_REGION: ${{ inputs.awsRegion }}
+      run: |
+        region="$REQUESTED_REGION"
+        if [ "$region" = "eu-central-1" ]; then
+          echo "::warning::awsRegion is pinned to the retired eu-central-1 registry, which stopped receiving new tags in phase 6 of issues-maestra#1354 and is pulled by nothing. Pushing to us-west-2 instead -- drop the awsRegion override from the calling workflow."
+          region="us-west-2"
+        fi
+        echo "value=${region}" >> "$GITHUB_OUTPUT"
+
     - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v2
       with:
         aws-access-key-id: ${{ inputs.awsAccessKey }}
         aws-secret-access-key: ${{ inputs.awsSecretKey }}
-        aws-region: ${{ inputs.awsRegion }}
+        aws-region: ${{ steps.region.outputs.value }}
 
     - name: Login to Amazon ECR Private
       id: login-ecr
@@ -118,7 +142,7 @@ runs:
       working-directory: ${{ github.action_path }}
       env:
         REGISTRY_PRIMARY: ${{ steps.login-ecr.outputs.registry }}
-        AWS_REGION_PRIMARY: ${{ inputs.awsRegion }}
+        AWS_REGION_PRIMARY: ${{ steps.region.outputs.value }}
         AWS_REGION_SECONDARY: ${{ inputs.awsRegionSecondary }}
         CRANE_VERSION: ${{ inputs.craneVersion }}
         REPOSITORIES: ${{ inputs.repositories }}
