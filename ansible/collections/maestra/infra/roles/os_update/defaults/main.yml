@@ -69,7 +69,23 @@ os_update_boot_free_floor_mb: 150
 # left drained by a previous run" from "this host is healthy and in rotation".
 os_update_marker_dir: /var/lib/os-update
 os_update_marker_file: /var/lib/os-update/drained.json
-node_exporter_textfile_dir: /var/lib/node_exporter
+# Where node_exporter's textfile collector reads .prom files, for the
+# os_update_drained gauge marker.yml writes.
+#
+# `node_exporter_textfile_dir` (unprefixed) is a FLEET-WIDE convention, not an
+# os_update knob: every consumer repo already declares it in
+# ansible/inventory/group_vars/all.yml and feeds it to its own node-exporter
+# tasks and templates, and maestra-io/kubernetes-clusters overrides it per run
+# (/var/run/node-exporter-textfile on a Deckhouse node). A role default may not
+# carry that bare name — ansible-lint var-naming[no-role-prefix] rejects it, and
+# rightly: an unprefixed role default silently claims a fleet-wide name.
+#
+# So the KEY is prefixed and the fleet convention is read through it. Role
+# defaults are the lowest precedence and this template is evaluated lazily at
+# use time, so anything a consumer sets (group_vars, a set_fact in its
+# os-update/vars.yml hook, -e) still wins, exactly as before. Referencing an
+# unprefixed variable inside the expression is fine — the rule looks at the key.
+os_update_node_exporter_textfile_dir: "{{ node_exporter_textfile_dir | default('/var/lib/node_exporter') }}"
 
 # Run URL, injected by the reusable workflow for the silence comment + marker.
 os_update_run_url: manual

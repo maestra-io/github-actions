@@ -1,0 +1,78 @@
+---
+# Lint gate for the maestra.infra collection this repo OWNS.
+#
+# Why it exists: ansible-lint 26.8.0 (ansible/ansible-lint#5145,
+# `_ensure_cache_collections_first`) installs a project's requirements.yml into
+# that project's own `.ansible/` and puts it FIRST in collections_paths — so from
+# 26.8.0 on, every consumer repo lints THIS collection as part of its own tree.
+# One unprefixed role default here (`node_exporter_textfile_dir`) therefore turned
+# up as a red pipeline in maestra-io/haproxy-maestra, in code that repo does not
+# own and cannot fix. Consumers exclude the download from their gate on purpose
+# (the `.ansible/` entry in maestra-io/kubernetes-clusters ansible/.ansible-lint:
+# "install it, do not judge it — a repo's lint gate answers for its own tree").
+# This is the other half of that sentence.
+#
+# `production` profile, not the consumers' `moderate`: a finding in a shared
+# library is four repos' CI at once, so this gate is deliberately stricter than
+# any single consumer's.
+name: collection lint
+
+on:
+  pull_request:
+    paths:
+      - "ansible/collections/**"
+      - "ansible/.ansible-lint"
+      - "ansible/.yamllint"
+      - "ansible/requirements-lint.txt"
+      - ".github/workflows/collection-lint.yml"
+  push:
+    branches: [main]
+    paths:
+      - "ansible/collections/**"
+      - "ansible/.ansible-lint"
+      - "ansible/.yamllint"
+      - "ansible/requirements-lint.txt"
+      - ".github/workflows/collection-lint.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: yamllint + ansible-lint (maestra.infra)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Both actions are pinned to full-length commit SHAs, not to the `@v6` tag the
+      # rest of this repo still uses. A tag is mutable — re-pointing it runs new code
+      # here with this job's token — and the `# TODO: SHA-pin via Renovate on landing`
+      # comments on the other 38 external `uses:` in .github/workflows/ are not a mechanism:
+      # there is no Renovate configuration in this repo at all. The trailing `# vX.Y.Z`
+      # is the form Renovate/Dependabot read, so the pins stay updatable once there is.
+      # Sweeping the other workflows is a separate change, not this PR's subject.
+      #
+      # persist-credentials: false — nothing here pushes, so the token has no job
+      # to do past the clone, and the steps after it execute code from the PR branch.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+
+      # `ansible` alongside the pinned linters: ansible-lint resolves modules
+      # against a real installation, and without it every FQCN reads as unknown.
+      - name: Install lint deps
+        run: pip install --disable-pip-version-check ansible -r ansible/requirements-lint.txt
+
+      - name: yamllint
+        working-directory: ansible
+        run: yamllint -c .yamllint .
+
+      # Explicit path rather than `.`: ansible/tests/ is shell, and pointing
+      # ansible-lint at the collection root is what makes it apply the collection
+      # rules (galaxy, meta-runtime) instead of treating the files as loose YAML.
+      - name: ansible-lint
+        working-directory: ansible
+        run: ansible-lint -c .ansible-lint collections/maestra/infra

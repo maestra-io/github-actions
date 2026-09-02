@@ -69,7 +69,7 @@
       # way last_over_time() can mean what the alert needs it to mean. The run URL
       # lives in the marker file, which is where the reconcile path reads it from.
       ansible.builtin.copy:
-        dest: "{{ node_exporter_textfile_dir }}/os_update.prom"
+        dest: "{{ os_update_node_exporter_textfile_dir }}/os_update.prom"
         mode: "0644"
         content: |
           # HELP os_update_drained 1 while an os-update run holds this host out of rotation.
@@ -87,7 +87,7 @@
     - name: Zero the metric (deleting the file would leave the last scrape stale)
       # Same series as the write — no labels. See the comment there for why.
       ansible.builtin.copy:
-        dest: "{{ node_exporter_textfile_dir }}/os_update.prom"
+        dest: "{{ os_update_node_exporter_textfile_dir }}/os_update.prom"
         mode: "0644"
         content: |
           # HELP os_update_drained 1 while an os-update run holds this host out of rotation.

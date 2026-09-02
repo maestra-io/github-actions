@@ -1,0 +1,15 @@
+---
+# This repo OWNS maestra.infra, so it is the repo that answers for it. Consumer
+# repos install the collection and deliberately exclude it from their own gate
+# (see the `.ansible/` entry in maestra-io/kubernetes-clusters ansible/.ansible-lint) —
+# a repo's lint gate answers for its own tree.
+#
+# `production` rather than the consumers' `moderate`: this is a shared library.
+# A finding here is not one repo's paper cut, it is four repos' CI at once, which
+# is exactly how ansible-lint 26.8.0 turned an unprefixed role default into a red
+# pipeline in maestra-io/haproxy-maestra (26.8.0 lints the collection it installs
+# into the project's own .ansible/, ansible/ansible-lint#5145).
+profile: production
+
+exclude_paths:
+  - tests/
