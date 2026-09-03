@@ -318,11 +318,12 @@ runs:
         # external-vault-agent 4.3.1. A lower pin renders the frozen host
         # unless the HelmRelease sets containerRegistryName itself — warn only.
         check_registry_floor() {
+          # Keep to POSIX/BusyBox grep flags (mirrors the GitLab component).
           # grep exits 1 when the tree has no HelmRelease on this chart — the
           # normal case for a terraform bundle or an in-repo chart, not an error;
           # under `set -eo pipefail` that status would otherwise kill the bake.
           local hits
-          hits=$(grep -rh -A2 -E "^[[:space:]]*chart: $1\$" --include='*.yaml' "$BAKE_PATH" || true)
+          hits=$(grep -rh -A2 -E "^[[:space:]]*chart: $1\$" "$BAKE_PATH" || true)
           printf '%s\n' "$hits" \
             | sed -e 's/[[:space:]]*#.*$//' \
                   -n -e 's/^[[:space:]]*version:[[:space:]]*"\{0,1\}\(.*[^" ]\)"\{0,1\}[[:space:]]*$/\1/p' \
