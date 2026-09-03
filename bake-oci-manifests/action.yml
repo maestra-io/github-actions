@@ -297,9 +297,21 @@ runs:
         BAKE_PATH: ${{ inputs.bake-path }}
       run: |
         FROZEN_REGISTRY="515260921971.dkr.ecr.eu-central-1.amazonaws.com"
-        if grep -rnF "$FROZEN_REGISTRY" "$BAKE_PATH"; then
-          echo "::error::frozen registry host ${FROZEN_REGISTRY} in ${BAKE_PATH} — reference \${CONTAINER_REGISTRY} (Flux substitutes it per cluster) or the us-west-2 host"
+        frozen_hits=$(grep -rnF "$FROZEN_REGISTRY" "$BAKE_PATH" || true)
+        # Hard failure only where the literal COMPOSES an image reference at
+        # release time — chart templates / helpers packed into the artifact
+        # (`charts/<name>/templates/`). A literal in a HelmRelease value is a
+        # pinned tag that already exists in the frozen registry and keeps
+        # pulling; it breaks on its next bump, not on this release, so it is
+        # reported and left to the phase-7 sweep.
+        frozen_chart_hits=$(printf '%s\n' "$frozen_hits" | grep -E '/templates/' || true)
+        if [ -n "$frozen_chart_hits" ]; then
+          printf '%s\n' "$frozen_chart_hits"
+          echo "::error::frozen registry host ${FROZEN_REGISTRY} in a chart template under ${BAKE_PATH} — honour .Values.containerRegistryName (Flux substitutes \${CONTAINER_REGISTRY} into it per cluster) and default to the us-west-2 host"
           exit 1
+        elif [ -n "$frozen_hits" ]; then
+          printf '%s\n' "$frozen_hits"
+          echo "::warning::frozen registry host ${FROZEN_REGISTRY} pinned under ${BAKE_PATH} — the tag still pulls, but its next bump will not; move it to \${CONTAINER_REGISTRY} (issues-maestra#1354 phase 7)"
         fi
         # helm-charts charts whose DEFAULT for the maestra contours was the
         # frozen host until commons-app 18.1.1 / commons-app-init 7.5.1 /
