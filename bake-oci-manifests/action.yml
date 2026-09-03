@@ -278,6 +278,58 @@ runs:
         echo "--- packageVersion after substitution (if any) ---"
         grep -rn packageVersion "$BAKE_PATH" || true
 
+    # ── Guard: no frozen-registry host in the tree ────────────────────────
+    # ECR eu-central-1 stopped receiving tags on 2026-09-02 16:50 UTC (phase 6
+    # of https://github.com/maestra-io/issues-maestra/issues/1354). A host
+    # literal in the tree — an in-repo chart helper, a HelmRelease
+    # `image.registry`, a CNPG `imageName` — renders a pull path that cannot
+    # resolve any post-freeze tag, and the bake is the only place that sees
+    # the tree before Flux does: postBuild substitution touches the kustomize
+    # OUTPUT, never the chart templates packed into the artifact. Live
+    # example: personalization-workers-manifests:1.0.2267 (a
+    # `container.registry.name` helper literal) → 49 ImagePullBackOff pods on
+    # us-omega, 2026-09-03. Registry hosts only — `s3.eu-central-1` endpoints
+    # are data, not pull paths, and stay allowed. Same guard as
+    # system/components/maestra-bake-oci-manifests 1.0.8.
+    - name: guard against the frozen eu-central-1 registry host
+      shell: bash
+      env:
+        BAKE_PATH: ${{ inputs.bake-path }}
+      run: |
+        FROZEN_REGISTRY="515260921971.dkr.ecr.eu-central-1.amazonaws.com"
+        if grep -rnF "$FROZEN_REGISTRY" "$BAKE_PATH"; then
+          echo "::error::frozen registry host ${FROZEN_REGISTRY} in ${BAKE_PATH} — reference \${CONTAINER_REGISTRY} (Flux substitutes it per cluster) or the us-west-2 host"
+          exit 1
+        fi
+        # helm-charts charts whose DEFAULT for the maestra contours was the
+        # frozen host until commons-app 18.1.1 / commons-app-init 7.5.1 /
+        # external-vault-agent 4.3.1. A lower pin renders the frozen host
+        # unless the HelmRelease sets containerRegistryName itself — warn only.
+        check_registry_floor() {
+          # grep exits 1 when the tree has no HelmRelease on this chart — the
+          # normal case for a terraform bundle or an in-repo chart, not an error;
+          # under `set -eo pipefail` that status would otherwise kill the bake.
+          local hits
+          hits=$(grep -rh -A2 -E "^[[:space:]]*chart: $1\$" --include='*.yaml' "$BAKE_PATH" || true)
+          printf '%s\n' "$hits" \
+            | sed -e 's/[[:space:]]*#.*$//' \
+                  -n -e 's/^[[:space:]]*version:[[:space:]]*"\{0,1\}\(.*[^" ]\)"\{0,1\}[[:space:]]*$/\1/p' \
+            | sort -u \
+            | while read -r v; do
+                if printf '%s' "$v" | grep -Eq '^[0-9]+(\.[0-9]+){2}$'; then
+                  if [ "$(printf '%s\n%s\n' "$2" "$v" | sort -V | head -n1)" != "$2" ]; then
+                    echo "::warning::$1 pinned at $v (< $2) resolves the frozen eu-central-1 host unless the HelmRelease overrides containerRegistryName"
+                  fi
+                else
+                  # A semver range / wildcard may admit a version below the floor.
+                  echo "::warning::$1 version '$v' is not an exact pin — cannot prove it is >= $2; the frozen eu-central-1 host may still be rendered"
+                fi
+              done
+        }
+        check_registry_floor commons-app 18.1.1
+        check_registry_floor commons-app-init 7.5.1
+        check_registry_floor external-vault-agent 4.3.1
+
     # ── Bake the OCI artifact ─────────────────────────────────────────────
     - name: flux push artifact
       id: push
