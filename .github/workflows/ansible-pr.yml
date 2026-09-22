@@ -119,12 +119,16 @@ jobs:
     runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: ${{ inputs.python_version }}
+      # uv-managed Python instead of actions/setup-python: on the bare slim
+      # image setup-python downloads + copies a toolcache Python (~21s); uv
+      # fetches a standalone build in ~2s. The venv lives in runner.temp, NOT
+      # the workspace, so yamllint/ansible-lint over `lint_paths` never see it.
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           enable-cache: true
+          python-version: ${{ inputs.python_version }}
+          activate-environment: true
+          venv-path: ${{ runner.temp }}/lint-venv
       # Inputs reach the shell through `env:`, never through ${{ }} in the script
       # body: GitHub substitutes the expression BEFORE bash parses the line, so a
       # quote or a `;` in a caller-supplied value would execute here. Same rule as
@@ -132,7 +136,7 @@ jobs:
       - name: Install lint deps
         env:
           REQUIREMENTS_LINT: ${{ inputs.requirements_lint }}
-        run: uv pip install --system ansible -r "$REQUIREMENTS_LINT"
+        run: uv pip install ansible -r "$REQUIREMENTS_LINT"
       - name: Cache Ansible Galaxy collections
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
