@@ -18,8 +18,8 @@
 # `runs_on` IS per-row, and must be: rows target different environments whose
 # runners must not cross (omicron rows -> us-omicron-lw-runners, omega rows ->
 # us-omega-lw-runners), and rows whose environment has no ARC scale set (eu)
-# stay GitHub-hosted. Same shape as ansible-pr.yml. fmt and the commenter stay
-# on ubuntu-latest — neither touches infrastructure.
+# stay GitHub-hosted. Same shape as ansible-pr.yml. fmt and the commenter run
+# on ubuntu-slim — neither touches infrastructure.
 #
 # Commenter: FLAT plan-*.txt artifacts + merge-multiple:true, single sticky
 # comment, marker <!-- terraform-plan-diff -->. Row labels are filename-derived
@@ -59,7 +59,7 @@ on:
         type: boolean
         default: false
       runs_on:
-        description: "Default runner label for the plan-matrix jobs; a per-row runs_on in `envs` wins. fmt and the comment job stay on ubuntu-latest."
+        description: "Default runner label for the plan-matrix jobs; a per-row runs_on in `envs` wins. fmt and the comment job run on ubuntu-slim."
         required: false
         type: string
         default: "ubuntu-latest"
@@ -106,7 +106,10 @@ jobs:
   # ── Format check (no infra access needed) ─────────────────────────────
   fmt:
     name: Format check
-    runs-on: ubuntu-latest
+    # ubuntu-slim: seconds of work, billed a full minute; 1/3 the price of
+    # ubuntu-latest (Sept 2026 billing: these jobs ran on every PR push of every
+    # consumer repos). Proven on a real consumer PR before the release.
+    runs-on: ubuntu-slim
     permissions:
       contents: read
     steps:
@@ -161,7 +164,7 @@ jobs:
     name: Update PR comment
     needs: [fmt, plan]
     if: ${{ always() && github.event_name == 'pull_request' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim # see `fmt`
     # NO job-level permissions block here: a CALLED workflow may not request
     # permissions the caller didn't grant (the source repos' standalone
     # terraform-pr had `actions: read` here -> as a reusable this made GitHub
