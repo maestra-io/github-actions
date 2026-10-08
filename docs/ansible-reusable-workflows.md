@@ -144,7 +144,7 @@ Every caller is `uses: maestra-io/github-actions/.github/workflows/<x>.yml@<sha>
     `teleport_app=vault-omicron`, `vault_role=mssql-maestra-deploy-github-ci`.
   - omega → `vault_mode=public`, `vault_addr=https://vault.maestra.io`, `teleport_app=""`,
     `vault_role=mssql-maestra-github-ci`.
-- 11-key AD/SQL `vault_secrets` map + `extra_env: OP_CONNECT_HOST=https://onepassword-connect.mindbox.cloud`.
+- 11-key AD/SQL `vault_secrets` map + `extra_env: OP_CONNECT_HOST=https://onepassword-connect.maestra.io`.
 - `teleport-register-run.yml` pre-stage stays in the repo `deploy.yml`.
 
 ### 6. active-directory-maestra — **dual vault (tunnel/public)**, windows, `_dc`
