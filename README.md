@@ -114,15 +114,23 @@ This action pushes multiple Docker images to AWS ECR repositories.
 ### Usage
 
 ```yaml
-# job: permissions: { id-token: write }
-- name: Push to ECR
-  uses: ./push-to-aws-ecr-repository
-  with:
-    awsRegion: us-west-2
-    awsOrganizationId: o-example123456
-    repositories: 'repo1,repo2,repo3'
-    localTag: 'latest'
-    targetTag: 'v1.0.0'
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # keyless mode: GitHub OIDC -> Teleport image-push bot
+    steps:
+      - uses: actions/checkout@v4
+      # ... build local/repo1:latest, local/repo2:latest, local/repo3:latest
+      - name: Push to ECR
+        uses: maestra-io/github-actions/push-to-aws-ecr-repository@main
+        with:
+          awsRegion: us-west-2
+          awsOrganizationId: o-example123456
+          repositories: 'repo1,repo2,repo3'
+          localTag: 'latest'
+          targetTag: 'v1.0.0'
 ```
 
 ### Inputs
@@ -165,9 +173,9 @@ If you have three services: `api`, `frontend`, and `worker`, you would:
    docker build -t local/worker:latest ./worker
    ```
 
-2. Use the action:
+2. Use the action (job `permissions` as in [Usage](#usage): `id-token: write`):
    ```yaml
-   - uses: ./push-to-aws-ecr-repository
+   - uses: maestra-io/github-actions/push-to-aws-ecr-repository@main
      with:
        awsRegion: us-west-2
        awsOrganizationId: o-example123456
