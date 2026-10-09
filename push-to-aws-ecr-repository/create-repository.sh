@@ -10,9 +10,9 @@
 #
 # Re-pushing the IDENTICAL image to an existing tag still succeeds (ECR answers
 # 201, verified on a throwaway repository); a DIFFERENT image is rejected with
-# TAG_INVALID. The moving tags below stay overwritable — the same exclusion set
-# the live repositories carry: `latest`, cosign's `sha256-*` signature and
-# attestation tags, `stable`, `staging`, `buildcache` (5 is the ECR maximum).
+# TAG_INVALID. Only `latest` stays overwritable: it is the one moving tag the
+# callers push (or mirror) today. These actions do not cosign-sign, so the
+# `sha256-*` exclusion the live repositories also carry is not needed here.
 #
 # A runner whose aws-cli predates the exclusion filters (an old self-hosted
 # image) gets a plain create plus a workflow WARNING that the repository stayed
@@ -26,12 +26,7 @@ shift
 
 if err=$(aws ecr create-repository --repository-name "$repo" "$@" \
       --image-tag-mutability IMMUTABLE_WITH_EXCLUSION \
-      --image-tag-mutability-exclusion-filters \
-        'filterType=WILDCARD,filter=latest' \
-        'filterType=WILDCARD,filter=sha256-*' \
-        'filterType=WILDCARD,filter=stable' \
-        'filterType=WILDCARD,filter=staging' \
-        'filterType=WILDCARD,filter=buildcache' \
+      --image-tag-mutability-exclusion-filters 'filterType=WILDCARD,filter=latest' \
       2>&1 >/dev/null); then
   echo "Created ECR repository ${repo} (IMMUTABLE_WITH_EXCLUSION)"
   exit 0

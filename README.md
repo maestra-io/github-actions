@@ -167,9 +167,10 @@ Before running this action, ensure that:
 A repository the action has to create is created `IMMUTABLE_WITH_EXCLUSION`
 ([`create-repository.sh`](push-to-aws-ecr-repository/create-repository.sh)): a release tag can
 never be overwritten with a different image (`TAG_INVALID`), while re-pushing the identical image
-still succeeds. The moving tags `latest`, `sha256-*` (cosign), `stable`, `staging` and `buildcache`
-stay overwritable — the same set every app repository in `515260921971` / `us-west-2` carries since
-2026-10-09, when a re-minted release number silently overwrote already-released images. Existing
+still succeeds. Only `latest` stays overwritable — the one moving tag callers push or mirror. Every
+app repository in `515260921971` / `us-west-2` is immutable since 2026-10-09, when a re-minted
+release number silently overwrote already-released images (live default exclusions there: `latest`
+and cosign's `sha256-*`; these actions do not sign, so they skip the latter). Existing
 repositories are not touched. A runner whose aws-cli predates the exclusion filters creates the
 repository `MUTABLE` with a workflow warning. No extra IAM: `ecr:CreateRepository` covers the flags.
 
