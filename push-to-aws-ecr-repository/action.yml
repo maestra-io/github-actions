@@ -174,8 +174,9 @@ runs:
         IFS=',' read -ra REPOS <<< "${REPOSITORIES}"
         for repo in "${REPOS[@]}"; do
           repo=$(echo "$repo" | xargs)  # trim whitespace
+          # Release tags immutable, moving tags excluded: see create-repository.sh.
           aws ecr describe-repositories --repository-names "$repo" || {
-            aws ecr create-repository --repository-name "$repo"
+            bash ./create-repository.sh "$repo"
             aws ecr set-repository-policy --repository-name "$repo" --policy-text file://ecr-policy.json
           }
         done
@@ -310,10 +311,10 @@ runs:
 
           # ECR never auto-creates a repository on push, and the pull-through
           # cache rule only materialises one on a PULL — so the mirror target
-          # has to be created here, with the same org-wide policy the primary
-          # repository gets.
+          # has to be created here, with the same org-wide policy and the same
+          # tag immutability (create-repository.sh) the primary repository gets.
           aws ecr describe-repositories --region "$AWS_REGION_SECONDARY" --repository-names "$repo" >/dev/null 2>&1 || {
-            aws ecr create-repository --region "$AWS_REGION_SECONDARY" --repository-name "$repo" >/dev/null
+            bash ./create-repository.sh "$repo" --region "$AWS_REGION_SECONDARY"
             aws ecr set-repository-policy --region "$AWS_REGION_SECONDARY" --repository-name "$repo" --policy-text file://ecr-policy.json >/dev/null
           }
 
