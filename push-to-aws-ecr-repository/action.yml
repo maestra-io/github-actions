@@ -2,11 +2,33 @@ name: 'Push to AWS ECR repositories'
 description: 'Push multiple images to AWS ECR repositories'
 inputs:
   awsAccessKey:
-    description: 'AWS Access Key ID'
-    required: true
-  awsSecretKey: 
-    description: 'AWS Secret Access Key'
-    required: true
+    description: >-
+      AWS Access Key ID. Leave EMPTY (default) to authenticate through Teleport
+      workload identity instead: the job then needs `id-token: write`, and the
+      repository needs a Teleport GitHub join token for the image-push bot
+      (see teleportToken). Static keys are being retired (issues-maestra#1455).
+    required: false
+    default: ''
+  awsSecretKey:
+    description: 'AWS Secret Access Key. Only with awsAccessKey.'
+    required: false
+    default: ''
+  teleportToken:
+    description: >-
+      Teleport GitHub join token of the image-push bot, used when awsAccessKey
+      is empty. Default: image-push-github-actions-<repository name>, the name
+      every token in fluxcd iota/us-iota-lw-kube-infra/teleport-maestra/
+      operator-crs/image-push-tokens.yaml carries (same as bake-oci-manifests).
+    required: false
+    default: ''
+  teleportFqdn:
+    description: 'Teleport proxy host:port.'
+    required: false
+    default: 'teleport.maestra.io:443'
+  awsRoleArn:
+    description: 'IAM role assumed with the Teleport workload-identity JWT.'
+    required: false
+    default: 'arn:aws:iam::515260921971:role/teleport-image-push'
   awsRegion: 
     description: 'AWS Region'
     required: true  
@@ -65,11 +87,75 @@ runs:
         echo "value=${region}" >> "$GITHUB_OUTPUT"
 
     - name: Configure AWS Credentials
+      if: ${{ inputs.awsAccessKey != '' }}
       uses: aws-actions/configure-aws-credentials@5fd3084fc36e372ff1fff382a39b10d03659f355 # v2.2.0
       with:
         aws-access-key-id: ${{ inputs.awsAccessKey }}
         aws-secret-access-key: ${{ inputs.awsSecretKey }}
         aws-region: ${{ steps.region.outputs.value }}
+
+    # ── No static key: Teleport workload identity -> AWS STS ─────────────
+    # Same chain as bake-oci-manifests: GitHub OIDC joins the image-push bot,
+    # which mints a JWT SVID for spiffe://teleport.maestra.io/svc/image-push,
+    # federated into role/teleport-image-push (aws-infra
+    # terraform/main/eu/teleport-workload-identity.tf).
+    - name: Get Teleport version
+      if: ${{ inputs.awsAccessKey == '' }}
+      id: tp-version
+      shell: bash
+      env:
+        TELEPORT_FQDN: ${{ inputs.teleportFqdn }}
+      run: |
+        version=$(curl -sf "https://${TELEPORT_FQDN}/webapi/find" \
+          | jq -r '.auto_update.tools_version // .server_version')
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+    - if: ${{ inputs.awsAccessKey == '' }}
+      uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
+      with:
+        version: ${{ steps.tp-version.outputs.version }}
+        proxy: ${{ inputs.teleportFqdn }}
+
+    - name: Mint Teleport workload-identity JWT for AWS
+      if: ${{ inputs.awsAccessKey == '' }}
+      shell: bash
+      env:
+        TELEPORT_FQDN: ${{ inputs.teleportFqdn }}
+        TELEPORT_TOKEN: ${{ inputs.teleportToken }}
+        REPO_NAME: ${{ github.event.repository.name }}
+      run: |
+        token="${TELEPORT_TOKEN:-image-push-github-actions-${REPO_NAME}}"
+        out="$(mktemp -d)"
+        cat > "$out/tbot.yaml" <<EOF
+        version: v2
+        proxy_server: ${TELEPORT_FQDN}
+        onboarding:
+          join_method: github
+          token: ${token}
+        oneshot: true
+        storage:
+          type: memory
+        services:
+          - type: workload-identity-jwt
+            destination:
+              type: directory
+              path: ${out}/svid
+            selector:
+              name: image-push
+            audiences: ["sts.amazonaws.com"]
+        EOF
+        mkdir -p "$out/svid"
+        tbot start -c "$out/tbot.yaml" || true
+        test -s "$out/svid/jwt_svid" || { echo "::error::tbot minted no JWT SVID with token ${token}: does it exist in image-push-tokens.yaml, and does the job have id-token: write?"; exit 1; }
+        echo "PUSH_ECR_JWT_SVID=$out/svid/jwt_svid" >> "$GITHUB_ENV"
+
+    - name: Configure AWS Credentials (workload identity)
+      if: ${{ inputs.awsAccessKey == '' }}
+      uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+      with:
+        role-to-assume: ${{ inputs.awsRoleArn }}
+        aws-region: ${{ steps.region.outputs.value }}
+        web-identity-token-file: ${{ env.PUSH_ECR_JWT_SVID }}
 
     - name: Login to Amazon ECR Private
       id: login-ecr

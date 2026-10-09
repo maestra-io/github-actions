@@ -114,22 +114,36 @@ This action pushes multiple Docker images to AWS ECR repositories.
 ### Usage
 
 ```yaml
-- name: Push to ECR
-  uses: ./push-to-aws-ecr-repository
-  with:
-    awsAccessKey: ${{ secrets.AWS_ACCESS_KEY_ID }}
-    awsSecretKey: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-    awsRegion: us-east-1
-    awsOrganizationId: o-example123456
-    repositories: 'repo1,repo2,repo3'
-    localTag: 'latest'
-    targetTag: 'v1.0.0'
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # keyless mode: GitHub OIDC -> Teleport image-push bot
+    steps:
+      - uses: actions/checkout@v4
+      # ... build local/repo1:latest, local/repo2:latest, local/repo3:latest
+      - name: Push to ECR
+        uses: maestra-io/github-actions/push-to-aws-ecr-repository@main
+        with:
+          awsRegion: us-west-2
+          awsOrganizationId: o-example123456
+          repositories: 'repo1,repo2,repo3'
+          localTag: 'latest'
+          targetTag: 'v1.0.0'
 ```
 
 ### Inputs
 
-- `awsAccessKey`: AWS Access Key ID (required)
-- `awsSecretKey`: AWS Secret Access Key (required)
+- `awsAccessKey` / `awsSecretKey`: static IAM keys. Leave both **empty** (preferred, default) to
+  authenticate through Teleport workload identity instead: GitHub OIDC joins the `image-push` bot,
+  whose JWT SVID assumes `role/teleport-image-push` (same chain as `bake-oci-manifests`). The job
+  needs `permissions: id-token: write`, and the repository needs a token in fluxcd
+  `iota/us-iota-lw-kube-infra/teleport-maestra/operator-crs/image-push-tokens.yaml`. Static keys are
+  being retired ([issues-maestra#1455](https://github.com/maestra-io/issues-maestra/issues/1455)).
+- `teleportToken`: join token for the keyless mode. Default `image-push-github-actions-<repository name>`.
+- `teleportFqdn`: Teleport proxy, default `teleport.maestra.io:443`.
+- `awsRoleArn`: role assumed in the keyless mode, default `arn:aws:iam::515260921971:role/teleport-image-push`.
 - `awsRegion`: AWS Region (required). Since phase 6 of the ECR migration
   ([issues-maestra#1354](https://github.com/maestra-io/issues-maestra/issues/1354)) a stale
   `eu-central-1` is normalised to `us-west-2` with a workflow warning — the EU registry is frozen
@@ -159,13 +173,11 @@ If you have three services: `api`, `frontend`, and `worker`, you would:
    docker build -t local/worker:latest ./worker
    ```
 
-2. Use the action:
+2. Use the action (job `permissions` as in [Usage](#usage): `id-token: write`):
    ```yaml
-   - uses: ./push-to-aws-ecr-repository
+   - uses: maestra-io/github-actions/push-to-aws-ecr-repository@main
      with:
-       awsAccessKey: ${{ secrets.AWS_ACCESS_KEY_ID }}
-       awsSecretKey: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-       awsRegion: us-east-1
+       awsRegion: us-west-2
        awsOrganizationId: o-example123456
        repositories: 'api,frontend,worker'
        localTag: 'latest'
