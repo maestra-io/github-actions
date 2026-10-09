@@ -162,6 +162,17 @@ Before running this action, ensure that:
 2. Images should be tagged as `local/{repository-name}:{localTag}`
 3. AWS credentials have appropriate ECR permissions
 
+### Tag immutability
+
+A repository the action has to create is created `IMMUTABLE_WITH_EXCLUSION`
+([`create-repository.sh`](push-to-aws-ecr-repository/create-repository.sh)): a release tag can
+never be overwritten with a different image (`TAG_INVALID`), while re-pushing the identical image
+still succeeds. The moving tags `latest`, `sha256-*` (cosign), `stable`, `staging` and `buildcache`
+stay overwritable — the same set every app repository in `515260921971` / `us-west-2` carries since
+2026-10-09, when a re-minted release number silently overwrote already-released images. Existing
+repositories are not touched. A runner whose aws-cli predates the exclusion filters creates the
+repository `MUTABLE` with a workflow warning. No extra IAM: `ecr:CreateRepository` covers the flags.
+
 ### Example
 
 If you have three services: `api`, `frontend`, and `worker`, you would:
@@ -326,6 +337,10 @@ a multi-arch image), wait on `describe-images` in the secondary region for real 
 assert both regions. It nowhere uses `crane copy` or `crane digest`.
 
 The action assumes AWS credentials are **already** usable — it does not log in on its own.
+
+A secondary repository it has to create gets the same tag immutability as
+[`push-to-aws-ecr-repository`](#tag-immutability), so `crane tag` can move `latest` but not a
+release tag that already points at another digest.
 
 ### Usage
 
