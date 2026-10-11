@@ -31,6 +31,13 @@
 #                       usually `tests`). Set = `test` builds and runs that stage
 #                       instead of setup-dotnet + dotnet test.
 #   warn-as-error       /warnaserror on dotnet test (default true, GitLab parity).
+#   test-env            Extra environment for the tests, KEY=VALUE per line (GitLab
+#                       job `variables:` of the test job, e.g. a Testcontainers image
+#                       override). Exported to the dotnet test step, passed with
+#                       --env-file to the docker-test-target container. Values are
+#                       single-line and not secret (they show in the log). Images on
+#                       this account's ECR are pulled after an ECR login (see
+#                       mirror-test-images.yml for test-images/*).
 #   push                Push images and run release/bake/kargo-refresh (default
 #                       true). Never on pull_request. false = build-only dry run.
 #   bake                Bake kustomization/ into <service>-manifests:<release> (default false).
@@ -102,6 +109,9 @@ on:
       warn-as-error:
         type: boolean
         default: true
+      test-env:
+        type: string
+        default: ""
       push:
         type: boolean
         default: true
@@ -237,6 +247,29 @@ jobs:
             core.setSecret(t);
             core.setOutput('token', t);
 
+      - name: test-env
+        env:
+          TEST_ENV: ${{ inputs.test-env }}
+          ECR_REGISTRY: ${{ env.ECR_REGISTRY }}
+        run: |
+          : > "$RUNNER_TEMP/test.env"
+          while IFS= read -r line; do
+            line="${line%$'\r'}"
+            case "$line" in ''|'#'*) continue ;; esac
+            key="${line%%=*}"
+            [[ "$line" == *=* && "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
+              || { echo "::error::test-env line is not KEY=VALUE: '$line'"; exit 1; }
+            printf '%s\n' "$line" >> "$RUNNER_TEMP/test.env"
+            printf '%s\n' "$line" >> "$GITHUB_ENV"
+            echo "test env: ${key}"
+          done <<< "$TEST_ENV"
+          # Testcontainers pulls with ~/.docker/config.json; log in to this
+          # account's ECR when a value names it (instance role, read only).
+          if grep -qF "$ECR_REGISTRY" "$RUNNER_TEMP/test.env"; then
+            aws ecr get-login-password --region "$(cut -d. -f4 <<< "$ECR_REGISTRY")" \
+              | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+          fi
+
       # ── Dockerfile stage (GitLab .run-docker-test) ───────────────────────
       - if: ${{ inputs.docker-test-target != '' }}
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -257,7 +290,7 @@ jobs:
       - if: ${{ inputs.docker-test-target != '' }}
         env:
           TARGET: ${{ inputs.docker-test-target }}
-        run: docker run --rm "local/${TARGET}:latest"
+        run: docker run --rm --env-file "$RUNNER_TEMP/test.env" "local/${TARGET}:latest"
 
       # ── dotnet test (GitLab .update-source-and-test) ─────────────────────
       - if: ${{ inputs.docker-test-target == '' }}
