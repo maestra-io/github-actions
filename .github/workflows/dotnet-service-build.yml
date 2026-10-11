@@ -209,6 +209,12 @@ jobs:
     needs: version
     runs-on: runs-on=${{ github.run_id }}/pool=build
     timeout-minutes: 45
+    # The RunsOn image exports DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 although
+    # libicu is installed; the GitLab sdk images ran with ICU. Invariant mode turns
+    # satellite-resource locales into NETSDK1188 (an error under /warnaserror) and
+    # changes culture-dependent test results.
+    env:
+      DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: "false"
     permissions:
       contents: read
       id-token: write # nora OIDC token
