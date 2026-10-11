@@ -12,6 +12,7 @@ on:
       - ".github/workflows/selftest.yml"
       - "ansible/tests/**"
       - "ci/**"
+      - "scripts/**"
   push:
     branches: [main]
     paths:
@@ -19,6 +20,7 @@ on:
       - ".github/workflows/selftest.yml"
       - "ansible/tests/**"
       - "ci/**"
+      - "scripts/**"
 
 permissions:
   contents: read
@@ -40,6 +42,9 @@ jobs:
       # number, which consumers then pin. The cases build real throwaway repos.
       - name: next release version
         run: bash ci/tests/test-next-version.sh
+
+      - name: dockerfile-from-fix (rewrite, keep, idempotence)
+        run: bash scripts/test-dockerfile-from-fix.sh
 
       # `mode: stage` is only safe BECAUSE it disrupts nothing — that is why it is
       # allowed to skip preflight. This checks the property structurally, so the

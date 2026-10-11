@@ -1,0 +1,161 @@
+# Reusable npm package test + release to packages.maestra.io (nora): the GitHub
+# port of frontend-ci-components templates/lib (npm-registry-auth,
+# install-node-modules, checks, release), issues-maestra#1442 wave W0c.
+#
+# Usage (caller, on push to the default branch and on pull_request):
+#
+#   jobs:
+#     package:
+#       uses: maestra-io/github-actions/.github/workflows/npm-package-publish.yml@<sha> # vX.Y.Z
+#       permissions: { contents: write, id-token: write, issues: write, pull-requests: write }
+#
+# Version source: semantic-release, exactly as on GitLab: the job runs the
+# package's own `npm run release`, which reads the commits since the last vX.Y.Z
+# tag, publishes and tags. The package's release config must use
+# @semantic-release/github (not /gitlab) and needs the GitLab-era tags in the
+# GitHub repository, or it restarts from 1.0.0.
+#
+# Inputs:
+#   node-version      setup-node syntax. Empty = node-version-file.
+#   node-version-file Default .nvmrc (used only when node-version is empty).
+#   scope             npm scope served by nora (default @mindbox-cloud).
+#   packages-url      Default https://packages.maestra.io (npm at /npm/).
+#   packages-audience `aud` of the GitHub OIDC token nora accepts (default packages.maestra.io).
+#   test-script       npm script run after install, --if-present (default test).
+#   build-script      npm script run before release, --if-present (default build:npm-package).
+#   release-script    npm script that runs semantic-release (default release).
+#   release           Run the release on push (default true). Never on pull_request.
+#
+# Auth: `.npmrc` sends the GitHub OIDC token as `_authToken` (a Bearer header,
+# which is the path nora verifies OIDC on). The repo's .npmrc keeps its own
+# settings; only its registry/auth lines are replaced. The token is read from
+# NPM_TOKEN at run time and never stored. `replace-registry-host=always` makes
+# lockfiles that still resolve to the legacy Artifactory host download from nora.
+
+name: npm-package-publish
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        type: string
+        default: ""
+      node-version-file:
+        type: string
+        default: .nvmrc
+      scope:
+        type: string
+        default: "@mindbox-cloud"
+      packages-url:
+        type: string
+        default: https://packages.maestra.io
+      packages-audience:
+        type: string
+        default: packages.maestra.io
+      test-script:
+        type: string
+        default: test
+      build-script:
+        type: string
+        default: build:npm-package
+      release-script:
+        type: string
+        default: release
+      release:
+        type: boolean
+        default: true
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('npm-{0}-{1}', github.repository, github.ref) || format('npm-{0}', github.repository) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: runs-on=${{ github.run_id }}/pool=small
+    timeout-minutes: 30
+    permissions:
+      contents: write      # semantic-release tags and GitHub release
+      issues: write        # @semantic-release/github success/fail comments
+      pull-requests: write
+      id-token: write      # nora OIDC token
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # semantic-release walks the history to the last tag
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          node-version-file: ${{ inputs.node-version == '' && inputs.node-version-file || '' }}
+
+      - name: write .npmrc
+        env:
+          URL: ${{ inputs.packages-url }}
+          SCOPE: ${{ inputs.scope }}
+        run: |
+          registry="${URL%/}/npm/"
+          # Keep the project's own settings (legacy-peer-deps, install-links...),
+          # replace only the registry/auth lines.
+          kept=""
+          [ -f .npmrc ] && kept=$(grep -vE '^[[:space:]]*(registry|@[^:]+:registry|//[^=]*:_authToken|replace-registry-host|always-auth)[[:space:]]*=' .npmrc || true)
+          {
+            [ -z "$kept" ] || printf '%s\n' "$kept"
+            echo "registry=${registry}"
+            echo "${SCOPE}:registry=${registry}"
+            echo "//${registry#https://}:_authToken=\${NPM_TOKEN}"
+            echo "replace-registry-host=always"
+          } > "$RUNNER_TEMP/npmrc"
+          mv "$RUNNER_TEMP/npmrc" .npmrc
+          echo "registry ${registry}, scope ${SCOPE}"
+
+      - name: mint packages token
+        id: token
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          AUDIENCE: ${{ inputs.packages-audience }}
+        with:
+          script: |
+            const t = await core.getIDToken(process.env.AUDIENCE);
+            core.setSecret(t);
+            core.setOutput('token', t);
+
+      - name: install
+        env:
+          NPM_TOKEN: ${{ steps.token.outputs.token }}
+        run: npm ci --prefer-offline --ignore-scripts
+
+      - name: test
+        if: ${{ inputs.test-script != '' }}
+        env:
+          SCRIPT: ${{ inputs.test-script }}
+        run: npm run --if-present "$SCRIPT"
+
+      # Fresh token: tests may outlive the first one.
+      - name: mint release token
+        id: release-token
+        if: ${{ inputs.release && github.event_name != 'pull_request' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          AUDIENCE: ${{ inputs.packages-audience }}
+        with:
+          script: |
+            const t = await core.getIDToken(process.env.AUDIENCE);
+            core.setSecret(t);
+            core.setOutput('token', t);
+
+      - name: release (semantic-release)
+        if: ${{ inputs.release && github.event_name != 'pull_request' }}
+        env:
+          NPM_TOKEN: ${{ steps.release-token.outputs.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          HUSKY: "0"
+          LEFTHOOK: "0"
+          BUILD_SCRIPT: ${{ inputs.build-script }}
+          RELEASE_SCRIPT: ${{ inputs.release-script }}
+        run: |
+          [ -z "$BUILD_SCRIPT" ] || npm run --if-present "$BUILD_SCRIPT"
+          npm run "$RELEASE_SCRIPT"
