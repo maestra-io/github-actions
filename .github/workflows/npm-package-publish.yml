@@ -27,8 +27,8 @@
 #   release           Run the release on push (default true). Never on pull_request.
 #
 # Auth: `.npmrc` sends the GitHub OIDC token as `_authToken` (a Bearer header,
-# which is the path nora verifies OIDC on). It is written like the GitLab
-# npm-registry-auth job (replacing the repo's .npmrc), with the token read from
+# which is the path nora verifies OIDC on). The repo's .npmrc keeps its own
+# settings; only its registry/auth lines are replaced. The token is read from
 # NPM_TOKEN at run time and never stored. `replace-registry-host=always` makes
 # lockfiles that still resolve to the legacy Artifactory host download from nora.
 
@@ -85,6 +85,7 @@ jobs:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
+          persist-credentials: false
           fetch-depth: 0 # semantic-release walks the history to the last tag
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -97,12 +98,18 @@ jobs:
           SCOPE: ${{ inputs.scope }}
         run: |
           registry="${URL%/}/npm/"
+          # Keep the project's own settings (legacy-peer-deps, install-links...),
+          # replace only the registry/auth lines.
+          kept=""
+          [ -f .npmrc ] && kept=$(grep -vE '^[[:space:]]*(registry|@[^:]+:registry|//[^=]*:_authToken|replace-registry-host|always-auth)[[:space:]]*=' .npmrc || true)
           {
+            [ -z "$kept" ] || printf '%s\n' "$kept"
             echo "registry=${registry}"
             echo "${SCOPE}:registry=${registry}"
             echo "//${registry#https://}:_authToken=\${NPM_TOKEN}"
             echo "replace-registry-host=always"
-          } > .npmrc
+          } > "$RUNNER_TEMP/npmrc"
+          mv "$RUNNER_TEMP/npmrc" .npmrc
           echo "registry ${registry}, scope ${SCOPE}"
 
       - name: mint packages token
