@@ -188,7 +188,8 @@ on:
       # --- misc ----------------------------------------------------------
       runs_on:
         description: >-
-          Runner label for the job. Default is GitHub-hosted ubuntu-latest;
+          Runner label for the job. Default is RunsOn t3a-small (AWS,
+          issues-maestra#1556; formerly GitHub-hosted ubuntu-latest);
           pass a self-hosted ARC scale-set name (e.g. us-omicron-lw-runners)
           to run in-cluster. The ARC runner image is minimal but carries
           everything this workflow needs (jq/curl/git/python3/docker); note
@@ -196,7 +197,7 @@ on:
           install system packages.
         required: false
         type: string
-        default: "ubuntu-latest"
+        default: "runs-on=${{ github.run_id }}/runner=t3a-small"
       extra_env:
         description: "Extra KEY=VALUE lines injected into the Execute step env (may reference secrets already exported to \\$GITHUB_ENV)."
         required: false
@@ -288,6 +289,8 @@ jobs:
       ANSIBLE_HOST_KEY_CHECKING: "False"
       ANSIBLE_STRATEGY: ${{ (inputs.use_mitogen && !inputs.windows_mode) && 'mitogen_linear' || 'linear' }}
     steps:
+      # No-op off RunsOn (exits when RUNS_ON_RUNNER_NAME is unset), so ARC rows are unaffected.
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
@@ -311,7 +314,8 @@ jobs:
       # only "job level" options are a third-party action (still step-scoped) or
       # `gh run rerun --failed`, which reruns the REAL failures too.
       #
-      # Which rows this is for: the ones with no `runs_on`, i.e. GitHub-hosted.
+      # Which rows this is for: the ones with no `runs_on` (GitHub-hosted until
+      # issues-maestra#1556, RunsOn in AWS since; same public path either way).
       # They reach every host over the PUBLIC Teleport proxy and pull tools from
       # the public internet; the in-cluster ARC rows do neither. Across the
       # AWS-LC campaign (~40 runs, maestra-io/haproxy-maestra) every CI flake was
