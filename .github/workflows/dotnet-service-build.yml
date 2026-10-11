@@ -1,0 +1,470 @@
+# Reusable build-and-release workflow for a .NET service: the GitHub port of
+# the GitLab release pipeline (dotnet-service-cicd-components release-template
+# + create-release-number + docker-push-to-all + maestra-bake-oci-manifests +
+# create-gitlab-release), issues-maestra#1442 wave W0c.
+#
+#   version ─► test ─► images (matrix) ─► release ─► bake ─► kargo-refresh
+#
+# Job names are a contract (required checks, `needs:` in callers): keep them.
+#
+# Usage (caller, on push to the default branch and on pull_request):
+#
+#   jobs:
+#     build:
+#       uses: maestra-io/github-actions/.github/workflows/dotnet-service-build.yml@<sha> # vX.Y.Z
+#       permissions: { contents: write, id-token: write }
+#       with:
+#         image-targets: processing_debugger_services=services,processing_debugger_chmigrator=chmigrator
+#         docker-test-target: tests
+#         bake: true
+#
+# Inputs:
+#   image-targets       REQUIRED. `image=target` pairs, comma or newline
+#                       separated, as IMAGE_TARGETS_PAIRS in GitLab .build-docker:
+#                       <image> is the ECR repository, <target> the Dockerfile stage.
+#   dockerfile          Dockerfile path (default Dockerfile, context = repo root).
+#   dotnet-version      SDK for the `test` job (setup-dotnet syntax, e.g. 10.0.x).
+#                       Empty = global.json.
+#   solution-file       Solution/project for restore+test. Empty = dotnet discovers.
+#   test-filter         dotnet test --filter (default TestCategory!=IntegrationTest).
+#   docker-test-target  Dockerfile stage that runs the tests (GitLab .run-docker-test,
+#                       usually `tests`). Set = `test` builds and runs that stage
+#                       instead of setup-dotnet + dotnet test.
+#   warn-as-error       /warnaserror on dotnet test (default true, GitLab parity).
+#   push                Push images and run release/bake/kargo-refresh (default
+#                       true). Never on pull_request. false = build-only dry run.
+#   bake                Bake kustomization/ into <service>-manifests:<release> (default false).
+#   service             Service name for bake and Kargo. Default: repository name.
+#   bake-path           Passed to bake-oci-manifests (default ./kustomization).
+#   kargo-refresh       Refresh the Kargo Warehouse after bake (default true; only with bake).
+#   kargo-project       Kargo project. Default kargo-<service>.
+#   kargo-warehouse     Warehouse to refresh. Default <service>.
+#   teleport-token      Teleport GitHub join token of the image-push bot, for the
+#                       image push and the bake. Default: the org-wide
+#                       image-push-github-actions-maestra-io (fluxcd
+#                       teleport-maestra/operator-crs/image-push-tokens.yaml: any
+#                       maestra-io repository, refs/heads/main|master only).
+#                       Empty = the per-repo image-push-github-actions-<repo name>.
+#   kargo-teleport-token  Join token of the kargo-refresh bot
+#                       (default kargo-refresh-github-actions-maestra-io).
+#   nuget-source-name   nuget.config source the packages token is set on (default private).
+#   packages-url        Package registry (default https://packages.maestra.io, nora).
+#   packages-audience   `aud` of the GitHub OIDC token nora accepts (default packages.maestra.io).
+# Secrets:
+#   private-packages-token  Optional. Overrides the nora OIDC token passed as the
+#                       PRIVATE_PACKAGES_TOKEN build secret and used for restore
+#                       (e.g. GITHUB_TOKEN for a repo still on GitHub Packages).
+# Outputs:
+#   release             The release number 1.1.N.
+#
+# Release number: `${vars.RELEASE_PREFIX:-1.1}.${github.run_number}`: always above
+# the GitLab 1.0.N, inside Kargo's `^1`. run_number belongs to the CALLER workflow
+# file: renaming that file restarts it at 1 and collides with existing (immutable)
+# tags, so set RELEASE_PREFIX (e.g. 1.2) when that happens.
+#
+# Registry token: nora accepts the GitHub Actions OIDC token. It is minted per job
+# (audience packages-audience) and handed to the Dockerfile under the secret id the
+# Dockerfiles already use (`--mount=type=secret,id=PRIVATE_PACKAGES_TOKEN`), so no
+# Dockerfile changes for auth. The nuget.config source URL still has to point at
+# packages.maestra.io (migration wave).
+#
+# Base images: Dockerfiles use `FROM mcr.microsoft.com/...` directly (MCR has no pull
+# limits); `docker.io/...` is mirrored transparently by RunsOn's ECR pull-through
+# cache (extras ecr-pull-through, aws-infra terraform/main/eu/runs-on.tf), which
+# also covers BuildKit's docker-container builder. The yandex mirror prefix
+# `cr.yandex/crp2cvbrp76d7dmfegco/` is removed with scripts/dockerfile-from-fix.sh.
+#
+# Cache: buildx `type=gha` per image scope; RunsOn Magic Cache stores it in S3.
+
+name: dotnet-service-build
+
+on:
+  workflow_call:
+    inputs:
+      image-targets:
+        type: string
+        required: true
+      dockerfile:
+        type: string
+        default: Dockerfile
+      dotnet-version:
+        type: string
+        default: ""
+      solution-file:
+        type: string
+        default: ""
+      test-filter:
+        type: string
+        default: "TestCategory!=IntegrationTest"
+      docker-test-target:
+        type: string
+        default: ""
+      warn-as-error:
+        type: boolean
+        default: true
+      push:
+        type: boolean
+        default: true
+      bake:
+        type: boolean
+        default: false
+      service:
+        type: string
+        default: ""
+      bake-path:
+        type: string
+        default: ./kustomization
+      kargo-refresh:
+        type: boolean
+        default: true
+      kargo-project:
+        type: string
+        default: ""
+      kargo-warehouse:
+        type: string
+        default: ""
+      teleport-token:
+        type: string
+        default: image-push-github-actions-maestra-io
+      kargo-teleport-token:
+        type: string
+        default: kargo-refresh-github-actions-maestra-io
+      nuget-source-name:
+        type: string
+        default: private
+      packages-url:
+        type: string
+        default: https://packages.maestra.io
+      packages-audience:
+        type: string
+        default: packages.maestra.io
+    secrets:
+      private-packages-token:
+        required: false
+    outputs:
+      release:
+        value: ${{ jobs.version.outputs.release }}
+
+# One release pipeline per repository at a time; pull requests get their own group
+# and cancel superseded runs. Callers must not reuse the `release-<repo>` group
+# name in their own workflow (same name in caller and callee deadlocks).
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('build-{0}-{1}', github.repository, github.ref) || format('release-{0}', github.repository) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  ECR_REGISTRY: 515260921971.dkr.ecr.us-west-2.amazonaws.com
+  TELEPORT_FQDN: teleport.maestra.io:443
+
+jobs:
+  version:
+    runs-on: runs-on=${{ github.run_id }}/pool=small
+    timeout-minutes: 5
+    outputs:
+      release: ${{ steps.v.outputs.release }}
+      matrix: ${{ steps.v.outputs.matrix }}
+      images: ${{ steps.v.outputs.images }}
+      service: ${{ steps.v.outputs.service }}
+      publish: ${{ steps.v.outputs.publish }}
+      teleport-token: ${{ steps.v.outputs.teleport-token }}
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - id: v
+        env:
+          PREFIX: ${{ vars.RELEASE_PREFIX }}
+          RUN_NUMBER: ${{ github.run_number }}
+          IMAGE_TARGETS: ${{ inputs.image-targets }}
+          SERVICE: ${{ inputs.service }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          PUSH: ${{ inputs.push && github.event_name != 'pull_request' }}
+          TELEPORT_TOKEN: ${{ inputs.teleport-token }}
+        run: |
+          prefix="${PREFIX:-1.1}"
+          case "$prefix" in
+            [0-9]*.[0-9]*) ;;
+            *) echo "::error::vars.RELEASE_PREFIX '$prefix' is not MAJOR.MINOR"; exit 1 ;;
+          esac
+          release="${prefix}.${RUN_NUMBER}"
+          # `image=target` pairs, comma or newline separated -> matrix JSON.
+          matrix=$(printf '%s' "$IMAGE_TARGETS" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . \
+            | jq -Rnc '[inputs | split("=") | {image: .[0], target: .[1]}]')
+          if [ "$(jq 'length' <<<"$matrix")" -eq 0 ] \
+             || jq -e 'any(.[]; (.image // "") == "" or (.target // "") == "")' <<<"$matrix" >/dev/null; then
+            echo "::error::image-targets must be image=target pairs, got '$IMAGE_TARGETS'"; exit 1
+          fi
+          {
+            echo "release=$release"
+            echo "matrix=$matrix"
+            echo "images=$(jq -r 'map(.image) | join(",")' <<<"$matrix")"
+            echo "service=${SERVICE:-$REPO_NAME}"
+            echo "publish=$PUSH"
+            echo "teleport-token=${TELEPORT_TOKEN:-image-push-github-actions-${REPO_NAME}}"
+          } >> "$GITHUB_OUTPUT"
+          echo "release $release, images $(jq -c 'map(.image)' <<<"$matrix"), publish=$PUSH"
+
+  test:
+    needs: version
+    runs-on: runs-on=${{ github.run_id }}/pool=build
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write # nora OIDC token
+      packages: read  # only for a private-packages-token: GITHUB_TOKEN override (GitHub Packages)
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: mint packages token
+        id: token
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          OVERRIDE: ${{ secrets.private-packages-token }}
+          AUDIENCE: ${{ inputs.packages-audience }}
+        with:
+          script: |
+            const t = process.env.OVERRIDE || await core.getIDToken(process.env.AUDIENCE);
+            core.setSecret(t);
+            core.setOutput('token', t);
+
+      # ── Dockerfile stage (GitLab .run-docker-test) ───────────────────────
+      - if: ${{ inputs.docker-test-target != '' }}
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - if: ${{ inputs.docker-test-target != '' }}
+        # GitLab Dockerfiles bind-mount the CI NuGet cache dir; it must exist.
+        run: mkdir -p .nuget
+      - if: ${{ inputs.docker-test-target != '' }}
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ${{ inputs.dockerfile }}
+          target: ${{ inputs.docker-test-target }}
+          load: true
+          tags: local/${{ inputs.docker-test-target }}:latest
+          secrets: PRIVATE_PACKAGES_TOKEN=${{ steps.token.outputs.token }}
+          cache-from: type=gha,scope=${{ inputs.docker-test-target }}
+          cache-to: type=gha,mode=max,scope=${{ inputs.docker-test-target }}
+      - if: ${{ inputs.docker-test-target != '' }}
+        env:
+          TARGET: ${{ inputs.docker-test-target }}
+        run: docker run --rm "local/${TARGET}:latest"
+
+      # ── dotnet test (GitLab .update-source-and-test) ─────────────────────
+      - if: ${{ inputs.docker-test-target == '' }}
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: ${{ inputs.dotnet-version }}
+          global-json-file: ${{ inputs.dotnet-version == '' && 'global.json' || '' }}
+      - if: ${{ inputs.docker-test-target == '' }}
+        env:
+          TOKEN: ${{ steps.token.outputs.token }}
+          SOURCE: ${{ inputs.nuget-source-name }}
+          SOLUTION: ${{ inputs.solution-file }}
+          FILTER: ${{ inputs.test-filter }}
+          WARN_AS_ERROR: ${{ inputs.warn-as-error }}
+        run: |
+          # Same credential shape as GitLab (`dotnet nuget update source private`).
+          dotnet nuget update source "$SOURCE" --username ci --password "$TOKEN" \
+            --store-password-in-clear-text || echo "::warning::no nuget source '$SOURCE' to authenticate"
+          sln=(); [ -n "$SOLUTION" ] && sln=("$SOLUTION")
+          wae=(); [ "$WARN_AS_ERROR" = "true" ] && wae=(/warnaserror)
+          dotnet restore "${sln[@]}" --locked-mode
+          dotnet test --no-restore "${sln[@]}" --configuration Release --filter "$FILTER" "${wae[@]}"
+
+  images:
+    needs: [version, test]
+    runs-on: runs-on=${{ github.run_id }}/pool=build
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write # nora OIDC token + Teleport join
+      packages: read  # see `test`
+    strategy:
+      fail-fast: true
+      matrix:
+        include: ${{ fromJSON(needs.version.outputs.matrix) }}
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: mint packages token
+        id: token
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          OVERRIDE: ${{ secrets.private-packages-token }}
+          AUDIENCE: ${{ inputs.packages-audience }}
+        with:
+          script: |
+            const t = process.env.OVERRIDE || await core.getIDToken(process.env.AUDIENCE);
+            core.setSecret(t);
+            core.setOutput('token', t);
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - run: mkdir -p .nuget # bind-mount source of the GitLab-era Dockerfiles
+
+      # Built into the local daemon as local/<image>:<release>, then pushed by the
+      # shared push-to-aws-ecr-repository action: it creates the repository
+      # IMMUTABLE_WITH_EXCLUSION with the org pull policy and logs in through the
+      # Teleport image-push bot (no static AWS keys).
+      - name: build ${{ matrix.image }} (${{ matrix.target }})
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ${{ inputs.dockerfile }}
+          target: ${{ matrix.target }}
+          load: true
+          push: false
+          tags: local/${{ matrix.image }}:${{ needs.version.outputs.release }}
+          build-args: |
+            revision=${{ needs.version.outputs.release }} (${{ github.sha }})
+            release=${{ needs.version.outputs.release }} (${{ github.sha }})
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.version.outputs.release }}
+          secrets: PRIVATE_PACKAGES_TOKEN=${{ steps.token.outputs.token }}
+          cache-from: |
+            type=gha,scope=${{ matrix.image }}
+            ${{ inputs.docker-test-target != '' && format('type=gha,scope={0}', inputs.docker-test-target) || '' }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+      - name: push ${{ matrix.image }}:${{ needs.version.outputs.release }}
+        if: ${{ needs.version.outputs.publish == 'true' }}
+        uses: maestra-io/github-actions/push-to-aws-ecr-repository@v1
+        with:
+          awsRegion: us-west-2
+          repositories: ${{ matrix.image }}
+          localTag: ${{ needs.version.outputs.release }}
+          targetTag: ${{ needs.version.outputs.release }}
+          teleportToken: ${{ needs.version.outputs.teleport-token }}
+
+  # Git tag + GitHub Release BEFORE the bake: bake-oci-manifests checks out the
+  # release tag. Bare `1.1.N`, same shape as create-gitlab-release.
+  release:
+    needs: [version, images]
+    if: ${{ needs.version.outputs.publish == 'true' }}
+    runs-on: runs-on=${{ github.run_id }}/pool=small
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ needs.version.outputs.release }}
+        run: |
+          # Idempotent for a re-run of failed jobs (same run_number, same release).
+          if gh release view "$RELEASE" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $RELEASE already exists"; exit 0
+          fi
+          gh release create "$RELEASE" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "$RELEASE" --generate-notes
+
+  bake:
+    needs: [version, release]
+    if: ${{ inputs.bake && needs.version.outputs.publish == 'true' }}
+    runs-on: runs-on=${{ github.run_id }}/pool=small
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write # Teleport join + cosign keyless
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: maestra-io/github-actions/bake-oci-manifests@v1
+        with:
+          service: ${{ needs.version.outputs.service }}
+          images: ${{ needs.version.outputs.images }}
+          tag: ${{ needs.version.outputs.release }}
+          bake-path: ${{ inputs.bake-path }}
+          teleport-token: ${{ needs.version.outputs.teleport-token }}
+
+  # Instant freight: POST /v1beta1/projects/<p>/warehouses/<w>/refresh on Kargo
+  # (us-iota-lw-kube-infra) instead of the Warehouse's 5m poll. Reached from the
+  # AWS runner through Teleport, nothing on iota runs for it:
+  #   1. tbot (github join, bot github-actions-kargo-refresh) writes a kubeconfig
+  #      for us-iota-lw-kube-infra and a client certificate for the Teleport app
+  #      `kargo` (kargo.teleport.maestra.io), in one oneshot run;
+  #   2. kubectl mints a 10-minute token of ServiceAccount kargo/kargo-ci-github
+  #      (the bot may do nothing else on the cluster);
+  #   3. curl with the app certificate + that bearer. The refresh only needs an
+  #      authenticated caller: Kargo applies the annotation with its own client.
+  # Best effort: the bake is done, a failure here only delays freight by <=5m.
+  kargo-refresh:
+    needs: [version, bake]
+    if: ${{ inputs.bake && inputs.kargo-refresh && needs.version.outputs.publish == 'true' }}
+    runs-on: runs-on=${{ github.run_id }}/pool=small
+    timeout-minutes: 5
+    continue-on-error: true
+    permissions:
+      contents: read
+      id-token: write # Teleport join
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - id: tp-version
+        run: |
+          v=$(curl -sf "https://${TELEPORT_FQDN}/webapi/find" | jq -r '.auto_update.tools_version // .server_version')
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
+        with:
+          version: ${{ steps.tp-version.outputs.version }}
+          proxy: ${{ env.TELEPORT_FQDN }}
+      - env:
+          TOKEN_NAME: ${{ inputs.kargo-teleport-token }}
+          SERVICE: ${{ needs.version.outputs.service }}
+          PROJECT: ${{ inputs.kargo-project }}
+          WAREHOUSE: ${{ inputs.kargo-warehouse }}
+        run: |
+          out="$(mktemp -d)"
+          cat > "$out/tbot.yaml" <<EOF
+          version: v2
+          proxy_server: ${TELEPORT_FQDN}
+          onboarding:
+            join_method: github
+            token: ${TOKEN_NAME}
+          oneshot: true
+          storage:
+            type: memory
+          services:
+            - type: kubernetes/v2
+              destination:
+                type: directory
+                path: ${out}/kube
+              selectors:
+                - name: us-iota-lw-kube-infra
+            - type: application
+              app_name: kargo
+              destination:
+                type: directory
+                path: ${out}/app
+          EOF
+          mkdir -p "$out/kube" "$out/app"
+          # tbot's heartbeat can hang minutes after the outputs land (see
+          # fluxcd setup-flux-ecr): poll for the files, then stop it.
+          tbot start -c "$out/tbot.yaml" & pid=$!
+          for _ in $(seq 1 30); do
+            [ -s "$out/kube/kubeconfig.yaml" ] && [ -s "$out/app/tlscert" ] && break
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 1
+          done
+          kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
+          [ -s "$out/kube/kubeconfig.yaml" ] && [ -s "$out/app/tlscert" ] \
+            || { echo "::warning::tbot (${TOKEN_NAME}) produced no credentials; freight appears on the next Warehouse poll"; exit 1; }
+
+          bearer=$(kubectl --kubeconfig "$out/kube/kubeconfig.yaml" \
+            --context "teleport.maestra.io-us-iota-lw-kube-infra" \
+            -n kargo create token kargo-ci-github --duration 10m)
+          echo "::add-mask::$bearer"
+          project="${PROJECT:-kargo-${SERVICE}}"
+          warehouse="${WAREHOUSE:-${SERVICE}}"
+          http=$(curl -sS -o "$out/resp" -w '%{http_code}' -X POST \
+            --cert "$out/app/tlscert" --key "$out/app/key" \
+            -H "Authorization: Bearer ${bearer}" \
+            "https://kargo.teleport.maestra.io/v1beta1/projects/${project}/warehouses/${warehouse}/refresh") || http=000
+          if [ "$http" = "200" ]; then
+            echo "Kargo warehouse ${project}/${warehouse} refreshed"
+          else
+            echo "::warning::Kargo warehouse ${project}/${warehouse} refresh failed (HTTP ${http}): $(head -c 300 "$out/resp" 2>/dev/null)"
+            exit 1
+          fi

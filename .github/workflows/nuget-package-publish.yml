@@ -1,0 +1,169 @@
+# Reusable NuGet package build + publish to packages.maestra.io (nora): the GitHub
+# port of dotnet-nuget-cicd-components build-nuget-package + publish
+# (issues-maestra#1442 wave W0c).
+#
+# Usage (caller, on push to the default branch and on pull_request):
+#
+#   jobs:
+#     package:
+#       uses: maestra-io/github-actions/.github/workflows/nuget-package-publish.yml@<sha> # vX.Y.Z
+#       permissions: { contents: read, id-token: write }
+#       with:
+#         solution-file: Mindbox.Validation.sln
+#         build-number-offset: 3200   # last GitLab CI_PIPELINE_IID, see below
+#
+# Inputs:
+#   solution-file        Solution/project to restore, build, test, pack. Empty = discovered.
+#   dotnet-version       setup-dotnet syntax (e.g. 10.0.x). Empty = global.json.
+#   version              Explicit package version (-p:PackageVersion). Empty = the
+#                        repo's own scheme, $(VersionMajor).$(VersionMinor).$(BuildNumber)$(VersionTag)
+#                        in Directory.Build.props, fed BuildNumber below (GitLab parity).
+#   build-number-offset  BuildNumber = github.run_number + this. GitLab passed
+#                        CI_PIPELINE_IID; set the offset to the last GitLab IID so
+#                        GitHub versions continue above the imported ones (nora answers
+#                        409 to an existing id+version).
+#   prerelease-on-pr     On pull_request publish <version>-pr.<number> (default false:
+#                        PRs only build and test).
+#   run-tests            dotnet test before pack (default true).
+#   test-filter          dotnet test --filter (default empty = all tests, GitLab parity).
+#   warn-as-error        /warnaserror on build (default true).
+#   nuget-source-name    nuget.config source the OIDC token is set on for restore (default private).
+#   packages-url         Default https://packages.maestra.io.
+#   packages-audience    `aud` of the GitHub OIDC token nora accepts (default packages.maestra.io).
+#
+# Auth: nora verifies the GitHub Actions OIDC token passed as the NuGet API key
+# (X-NuGet-ApiKey, maestra-io/nora#1), so no stored secret. --skip-duplicate makes a
+# re-run of the same run (same BuildNumber) a no-op.
+
+name: nuget-package-publish
+
+on:
+  workflow_call:
+    inputs:
+      solution-file:
+        type: string
+        default: ""
+      dotnet-version:
+        type: string
+        default: ""
+      version:
+        type: string
+        default: ""
+      build-number-offset:
+        type: number
+        default: 0
+      prerelease-on-pr:
+        type: boolean
+        default: false
+      run-tests:
+        type: boolean
+        default: true
+      test-filter:
+        type: string
+        default: ""
+      warn-as-error:
+        type: boolean
+        default: true
+      nuget-source-name:
+        type: string
+        default: private
+      packages-url:
+        type: string
+        default: https://packages.maestra.io
+      packages-audience:
+        type: string
+        default: packages.maestra.io
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('nuget-{0}-{1}', github.repository, github.ref) || format('nuget-{0}', github.repository) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: runs-on=${{ github.run_id }}/pool=build
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write # nora OIDC token
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: ${{ inputs.dotnet-version }}
+          global-json-file: ${{ inputs.dotnet-version == '' && 'global.json' || '' }}
+
+      - name: mint packages token
+        id: token
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          AUDIENCE: ${{ inputs.packages-audience }}
+        with:
+          script: |
+            const t = await core.getIDToken(process.env.AUDIENCE);
+            core.setSecret(t);
+            core.setOutput('token', t);
+
+      - name: build, test, pack
+        env:
+          TOKEN: ${{ steps.token.outputs.token }}
+          SOURCE: ${{ inputs.nuget-source-name }}
+          SOLUTION: ${{ inputs.solution-file }}
+          VERSION: ${{ inputs.version }}
+          RUN_NUMBER: ${{ github.run_number }}
+          OFFSET: ${{ inputs.build-number-offset }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_TESTS: ${{ inputs.run-tests }}
+          FILTER: ${{ inputs.test-filter }}
+          WARN_AS_ERROR: ${{ inputs.warn-as-error }}
+        run: |
+          dotnet nuget update source "$SOURCE" --username ci --password "$TOKEN" \
+            --store-password-in-clear-text || echo "::warning::no nuget source '$SOURCE' to authenticate"
+          sln=(); [ -n "$SOLUTION" ] && sln=("$SOLUTION")
+          ver=("-p:BuildNumber=$((RUN_NUMBER + OFFSET))")
+          suffix=""; [ -n "$PR_NUMBER" ] && suffix="-pr.${PR_NUMBER}"
+          if [ -n "$VERSION" ]; then
+            ver+=("-p:PackageVersion=${VERSION}${suffix}")
+          elif [ -n "$suffix" ]; then
+            ver+=("-p:VersionTag=${suffix}")
+          fi
+          wae=(); [ "$WARN_AS_ERROR" = "true" ] && wae=(/warnaserror)
+          # SECOPS-948 parity: credential-free repository metadata in the package.
+          repo=("-p:RepositoryUrl=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" "-p:RepositoryCommit=${GITHUB_SHA}" "-p:RepositoryType=git")
+
+          dotnet restore "${sln[@]}" --locked-mode
+          dotnet build "${sln[@]}" --configuration Release --no-restore "${ver[@]}" "${wae[@]}"
+          if [ "$RUN_TESTS" = "true" ]; then
+            filter=(); [ -n "$FILTER" ] && filter=(--filter "$FILTER")
+            dotnet test "${sln[@]}" --configuration Release --no-build --no-restore "${filter[@]}"
+          fi
+          dotnet pack "${sln[@]}" --no-build --configuration Release --output "$RUNNER_TEMP/nupkg" "${ver[@]}" "${repo[@]}"
+          ls -1 "$RUNNER_TEMP/nupkg"
+
+      # Fresh token: the build may outlive the first one.
+      - name: mint push token
+        if: ${{ github.event_name != 'pull_request' || inputs.prerelease-on-pr }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        id: push-token
+        env:
+          AUDIENCE: ${{ inputs.packages-audience }}
+        with:
+          script: |
+            const t = await core.getIDToken(process.env.AUDIENCE);
+            core.setSecret(t);
+            core.setOutput('token', t);
+      - name: push to packages.maestra.io
+        if: ${{ github.event_name != 'pull_request' || inputs.prerelease-on-pr }}
+        env:
+          TOKEN: ${{ steps.push-token.outputs.token }}
+          FEED: ${{ inputs.packages-url }}/nuget/v3/index.json
+        run: |
+          shopt -s nullglob
+          pkgs=("$RUNNER_TEMP"/nupkg/*.nupkg)
+          [ "${#pkgs[@]}" -gt 0 ] || { echo "::error::dotnet pack produced no .nupkg"; exit 1; }
+          for p in "${pkgs[@]}"; do
+            dotnet nuget push "$p" -s "$FEED" -k "$TOKEN" --skip-duplicate -t 600
+          done

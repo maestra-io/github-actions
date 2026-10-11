@@ -86,6 +86,14 @@ inputs:
     description: 'Teleport proxy host:port.'
     required: false
     default: 'teleport.maestra.io:443'
+  teleport-token:
+    description: >-
+      Teleport GitHub join token of the image-push bot. Empty (default) keeps
+      the per-repo image-push-github-actions-<service>; the reusable
+      dotnet-service-build workflow passes the org-wide token
+      (issues-maestra#1442 W0d).
+    required: false
+    default: ''
   aws-role-arn:
     description: 'IAM role assumed via Teleport workload-identity OIDC.'
     required: false
@@ -154,13 +162,14 @@ runs:
       env:
         TELEPORT_FQDN: ${{ inputs.teleport-fqdn }}
         SERVICE: ${{ inputs.service }}
+        TELEPORT_TOKEN: ${{ inputs.teleport-token }}
       run: |
         cat > /tmp/tbot.yaml <<EOF
         version: v2
         proxy_server: ${TELEPORT_FQDN}
         onboarding:
           join_method: github
-          token: image-push-github-actions-${SERVICE}
+          token: ${TELEPORT_TOKEN:-image-push-github-actions-${SERVICE}}
         oneshot: true
         storage:
           type: memory

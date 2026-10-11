@@ -310,6 +310,7 @@ jobs:
 - `ecr-registry-secondary`: ECR registry host in that region. Default `515260921971.dkr.ecr.us-west-2.amazonaws.com`.
 - `crane-version`: crane CLI version used by the mirror step, no `v-` prefix. Default `0.22.0`.
 - `teleport-fqdn`: Teleport proxy. Default `teleport.maestra.io:443`.
+- `teleport-token`: Teleport GitHub join token of the image-push bot. Default `''` = `image-push-github-actions-<service>`; `dotnet-service-build.yml` passes the org-wide `image-push-github-actions-maestra-io`.
 - `aws-role-arn`: IAM role assumed via Teleport workload-identity. Default `arn:aws:iam::515260921971:role/teleport-image-push`.
 
 ### Outputs
@@ -399,3 +400,25 @@ the layer/manifest read verbs — `teleport-image-push` has them from `TeleportI
 import) comes from the `us-west-2` **registry** policy, which grants it org-wide — note that
 `aws iam simulate-principal-policy` does not evaluate registry policies and will report
 `implicitDeny` for it.
+
+## Build and publish workflows (packages.maestra.io, ECR, Kargo)
+
+Reusable workflows for repositories built on GitHub Actions instead of GitLab
+([issues-maestra#1442](https://github.com/maestra-io/issues-maestra/issues/1442)).
+They run on the RunsOn pools (`pool=build` 8 vCPU/32 GiB, `pool=small`), cache
+through the Magic Cache (`type=gha` lands in S3) and need no stored secret except
+the PyPI token: packages go to nora with the GitHub OIDC token, images to ECR
+through the Teleport image-push bot. Inputs, jobs and auth are documented at the
+top of each file.
+
+| workflow | does | GitLab original |
+| --- | --- | --- |
+| [`dotnet-service-build.yml`](.github/workflows/dotnet-service-build.yml) | `version` → `test` → `images` (matrix) → `release` → `bake` → `kargo-refresh` | dotnet-service-cicd-components release-template, create-release-number, docker-push-to-all, maestra-bake-oci-manifests |
+| [`nuget-package-publish.yml`](.github/workflows/nuget-package-publish.yml) | restore, build, test, pack, `dotnet nuget push` | dotnet-nuget-cicd-components |
+| [`npm-package-publish.yml`](.github/workflows/npm-package-publish.yml) | `npm ci`, test, `npm run release` (semantic-release) | frontend-ci-components `templates/lib` |
+| [`python-package-publish.yml`](.github/workflows/python-package-publish.yml) | poetry/uv build, test, `twine upload` | — |
+
+[`scripts/dockerfile-from-fix.sh`](scripts/dockerfile-from-fix.sh) drops the
+`cr.yandex/crp2cvbrp76d7dmfegco/` mirror prefix from `FROM` lines (idempotent);
+base images then come from `mcr.microsoft.com` directly and from `docker.io`
+through RunsOn's ECR pull-through cache.

@@ -1,0 +1,101 @@
+# Reusable Python package build + upload to packages.maestra.io (nora),
+# issues-maestra#1442 wave W0c.
+#
+# Usage (caller, on push to the default branch and on pull_request):
+#
+#   jobs:
+#     package:
+#       uses: maestra-io/github-actions/.github/workflows/python-package-publish.yml@<sha> # vX.Y.Z
+#       with:
+#         build-tool: poetry
+#       secrets:
+#         packages-token: ${{ secrets.NORA_PYPI_TOKEN }}
+#
+# Version source: the package's own pyproject.toml (poetry/uv build read it).
+#
+# Auth: a nora API token (`nra_...`) from a secret, NOT the GitHub OIDC token.
+# twine only speaks HTTP Basic, and nora verifies OIDC JWTs on the Bearer path
+# only (nora COMPAT.md "OIDC authentication transport", #853); Basic accepts an
+# htpasswd password or an `nra_` API token as the password.
+#
+# Inputs:
+#   python-version    Default 3.12.
+#   build-tool        poetry | uv (default poetry).
+#   test-command      Shell command run after the build (default empty = none);
+#                     installing the package's deps is up to the command.
+#   repository-url    twine upload target (default https://packages.maestra.io/pypi/).
+#   publish           Upload on push (default true). Never on pull_request.
+# Secrets:
+#   packages-token    nora `nra_` API token with write access (required to publish).
+
+name: python-package-publish
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        type: string
+        default: "3.12"
+      build-tool:
+        type: string
+        default: poetry
+      test-command:
+        type: string
+        default: ""
+      repository-url:
+        type: string
+        default: https://packages.maestra.io/pypi/
+      publish:
+        type: boolean
+        default: true
+    secrets:
+      packages-token:
+        required: false
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('pypi-{0}-{1}', github.repository, github.ref) || format('pypi-{0}', github.repository) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: runs-on=${{ github.run_id }}/pool=small
+    timeout-minutes: 20
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ inputs.python-version }}
+      - if: ${{ inputs.build-tool == 'uv' }}
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+
+      - name: build
+        env:
+          TOOL: ${{ inputs.build-tool }}
+        run: |
+          case "$TOOL" in
+            poetry) pipx install poetry && poetry build ;;
+            uv) uv build ;;
+            *) echo "::error::build-tool must be poetry or uv, got '$TOOL'"; exit 1 ;;
+          esac
+          ls -1 dist
+
+      - name: test
+        if: ${{ inputs.test-command != '' }}
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: bash -c "$TEST_COMMAND"
+
+      - name: upload
+        if: ${{ inputs.publish && github.event_name != 'pull_request' }}
+        env:
+          TWINE_USERNAME: ci
+          TWINE_PASSWORD: ${{ secrets.packages-token }}
+          TWINE_REPOSITORY_URL: ${{ inputs.repository-url }}
+        run: |
+          [ -n "$TWINE_PASSWORD" ] || { echo "::error::secret packages-token (nra_ API token) is required to publish"; exit 1; }
+          # --skip-existing: a re-run of the same version is a no-op, not a failure.
+          pipx run twine upload --non-interactive --skip-existing dist/*
