@@ -23,7 +23,11 @@
 #   build-tool        poetry | uv (default poetry).
 #   test-command      Shell command run after the build (default empty = none);
 #                     installing the package's deps is up to the command.
-#   repository-url    twine upload target (default https://packages.maestra.io/pypi/).
+#   repository-url    twine upload target (default https://packages.maestra.io/simple/).
+#                     nora serves PyPI at /simple/ only: twine POSTs the upload
+#                     to /simple/, pip/uv/poetry read the index from the same
+#                     URL (--index-url https://packages.maestra.io/simple/).
+#                     /pypi/ is 404 (verified against a local nora 1.3.3 run).
 #   publish           Upload on push (default true). Never on pull_request.
 # Secrets:
 #   packages-token    nora `nra_` API token with write access (required to publish).
@@ -44,7 +48,7 @@ on:
         default: ""
       repository-url:
         type: string
-        default: https://packages.maestra.io/pypi/
+        default: https://packages.maestra.io/simple/
       publish:
         type: boolean
         default: true
