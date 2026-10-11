@@ -1,0 +1,114 @@
+# Third-party images that integration tests pull with Testcontainers, rebuilt
+# from upstream release binaries into ECR us-west-2 under test-images/<name>
+# (issues-maestra#1442, W1: quay.io/minio/minio now refuses anonymous pulls and
+# the GitLab pipelines pulled it from the Yandex mirror, which GitHub builds must
+# not depend on).
+#
+# Add an image: one `include` entry: repository, tag, url and sha256 of the
+# release binary, `asset` (the file name it is saved as) and a Dockerfile under
+# test-images/ that COPYs that file. The sha256 is pinned here and also checked against the
+# upstream `.sha256sum` asset when `sha256sum-url` is given.
+#
+# Runs on dispatch and weekly; an entry whose tag already exists in ECR is
+# skipped (release tags are immutable), so the cron only builds new entries.
+# Push identity: the org-wide Teleport image-push token, valid on main only.
+#
+# Consumers: <account>.dkr.ecr.us-west-2.amazonaws.com/test-images/<name>:<tag>,
+# e.g. via dotnet-service-build `test-env`.
+
+name: mirror-test-images
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
+
+concurrency:
+  group: mirror-test-images
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: us-west-2
+
+jobs:
+  image:
+    runs-on: runs-on=${{ github.run_id }}/pool=build
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write # Teleport join for the ECR push
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - repository: test-images/minio
+            tag: RELEASE.2025-09-07T16-13-09Z
+            url: https://github.com/minio/minio/releases/download/RELEASE.2025-09-07T16-13-09Z/minio.linux-amd64.RELEASE.2025-09-07T16-13-09Z
+            sha256sum-url: https://github.com/minio/minio/releases/download/RELEASE.2025-09-07T16-13-09Z/minio.linux-amd64.RELEASE.2025-09-07T16-13-09Z.sha256sum
+            sha256: 7c5bd8512c6e966455b1d198209358b2d191c77a83ab377c4073281065fb855f
+            dockerfile: test-images/minio.Dockerfile
+            asset: minio
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      # The runner's instance role reads ECR (pull-through cache), enough for a
+      # describe-images; any other answer than "found" means build.
+      - name: already in ECR?
+        id: exists
+        env:
+          REPOSITORY: ${{ matrix.repository }}
+          TAG: ${{ matrix.tag }}
+        run: |
+          if aws ecr describe-images --region "$AWS_REGION" --repository-name "$REPOSITORY" \
+               --image-ids imageTag="$TAG" >/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "${REPOSITORY}:${TAG} already in ECR, skipping"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: download and verify
+        if: ${{ steps.exists.outputs.found != 'true' }}
+        env:
+          URL: ${{ matrix.url }}
+          SUM_URL: ${{ matrix.sha256sum-url }}
+          SHA256: ${{ matrix.sha256 }}
+          ASSET: ${{ matrix.asset }}
+          DOCKERFILE: ${{ matrix.dockerfile }}
+        run: |
+          ctx="$RUNNER_TEMP/ctx"; mkdir -p "$ctx"
+          curl -sfL --retry 3 -o "$ctx/$ASSET" "$URL"
+          echo "${SHA256}  $ctx/$ASSET" | sha256sum -c -
+          if [ -n "$SUM_URL" ]; then
+            upstream=$(curl -sfL --retry 3 "$SUM_URL" | awk '{print $1}')
+            [ "$upstream" = "$SHA256" ] || { echo "::error::upstream sha256 ${upstream} != pinned ${SHA256}"; exit 1; }
+          fi
+          chmod 0755 "$ctx/$ASSET"
+          cp "$DOCKERFILE" "$ctx/Dockerfile"
+
+      - name: build
+        if: ${{ steps.exists.outputs.found != 'true' }}
+        env:
+          REPOSITORY: ${{ matrix.repository }}
+          TAG: ${{ matrix.tag }}
+        run: |
+          docker build --pull -t "local/${REPOSITORY}:${TAG}" \
+            --label org.opencontainers.image.source="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --label org.opencontainers.image.revision="${GITHUB_SHA}" \
+            "$RUNNER_TEMP/ctx"
+
+      - name: push ${{ matrix.repository }}:${{ matrix.tag }}
+        if: ${{ steps.exists.outputs.found != 'true' }}
+        uses: maestra-io/github-actions/push-to-aws-ecr-repository@v1
+        with:
+          awsRegion: us-west-2
+          repositories: ${{ matrix.repository }}
+          localTag: ${{ matrix.tag }}
+          targetTag: ${{ matrix.tag }}
+          teleportToken: image-push-github-actions-maestra-io
