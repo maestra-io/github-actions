@@ -29,8 +29,16 @@
 # Auth: `.npmrc` sends the GitHub OIDC token as `_authToken` (a Bearer header,
 # which is the path nora verifies OIDC on). The repo's .npmrc keeps its own
 # settings; only its registry/auth lines are replaced. The token is read from
-# NPM_TOKEN at run time and never stored. `replace-registry-host=always` makes
-# lockfiles that still resolve to the legacy Artifactory host download from nora.
+# NPM_TOKEN at run time and never stored.
+#
+# Lockfiles: `resolved` URLs of the legacy Artifactory registry are rewritten to
+# nora before `npm ci` (scripts/npm-lockfile-to-nora.sh, inlined below: a reusable
+# workflow cannot read files of its own repository). `replace-registry-host=always`
+# alone breaks them: npm keeps the Artifactory path (/artifactory/api/npm/npm/...)
+# under nora's /npm/, and Artifactory's scoped tarball layout /-/@scope/name-ver.tgz
+# is not nora's /-/name-ver.tgz. It stays for registry.npmjs.org URLs, which it
+# routes through nora. The rewrite is reverted after install, so a release commit
+# (@semantic-release/git) carries the repository's own lockfile.
 
 name: npm-package-publish
 
@@ -126,7 +134,22 @@ jobs:
       - name: install
         env:
           NPM_TOKEN: ${{ steps.token.outputs.token }}
-        run: npm ci --prefer-offline --ignore-scripts
+          URL: ${{ inputs.packages-url }}
+        run: |
+          # Same program as scripts/npm-lockfile-to-nora.sh (keep in sync; selftest covers the script).
+          nora="${URL%/}/npm/"
+          nora_re=$(printf '%s' "$nora" | sed 's/[.[\*^$/]/\\&/g')
+          locks=()
+          for f in package-lock.json npm-shrinkwrap.json; do [ -f "$f" ] && locks+=("$f"); done
+          for f in "${locks[@]}"; do
+            sed -i.bak -E \
+              -e "s#(\"resolved\": *\")https://artifactory\.mindbox\.ru/artifactory/api/npm/[^/\"]+/#\1${nora}#g" \
+              -e "s#(\"resolved\": *\"${nora_re}@[^/\"]+/[^/\"]+/-/)@[^/\"]+/#\1#g" \
+              "$f"
+            rm -f "$f.bak"
+          done
+          npm ci --prefer-offline --ignore-scripts
+          [ "${#locks[@]}" -eq 0 ] || git checkout -- "${locks[@]}"
 
       - name: test
         if: ${{ inputs.test-script != '' }}

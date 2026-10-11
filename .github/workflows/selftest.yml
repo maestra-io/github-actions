@@ -9,6 +9,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/ansible-os-update.yml"
+      - ".github/workflows/npm-package-publish.yml"
       - ".github/workflows/selftest.yml"
       - "ansible/tests/**"
       - "ci/**"
@@ -17,6 +18,7 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/ansible-os-update.yml"
+      - ".github/workflows/npm-package-publish.yml"
       - ".github/workflows/selftest.yml"
       - "ansible/tests/**"
       - "ci/**"
@@ -45,6 +47,9 @@ jobs:
 
       - name: dockerfile-from-fix (rewrite, keep, idempotence)
         run: bash scripts/test-dockerfile-from-fix.sh
+
+      - name: npm-lockfile-to-nora (rewrite, keep, idempotence, workflow copy)
+        run: bash scripts/test-npm-lockfile-to-nora.sh
 
       # `mode: stage` is only safe BECAUSE it disrupts nothing — that is why it is
       # allowed to skip preflight. This checks the property structurally, so the
