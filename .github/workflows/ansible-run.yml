@@ -66,6 +66,11 @@ on:
         required: false
         type: boolean
         default: false
+      checkout_ref:
+        description: "Git ref to check out and run instead of the caller's commit (empty = the caller's commit). Lets a caller run a check-mode plan of an older commit, e.g. a drift check of github.event.before before an apply."
+        required: false
+        type: string
+        default: ""
       # --- execution mode ------------------------------------------------
       use_mitogen:
         description: "Enable Mitogen linear strategy (Linux). Set false for Windows/PowerShell-over-SSH."
@@ -293,6 +298,9 @@ jobs:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          # Empty = actions/checkout's default (the caller's commit).
+          ref: ${{ inputs.checkout_ref }}
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0

@@ -39,6 +39,7 @@ Never prefix them with `ansible/`. Only `requirements_pip` / `requirements_galax
 | `tags` | string | no | `""` | ansible `--tags` |
 | `verbosity` | string | no | `normal` | `normal` / `-v` / `-vv` / `-vvv` |
 | `check_mode` | boolean | no | `false` | `--check --diff` |
+| `checkout_ref` | string | no | `""` | ref to check out instead of the caller's commit (e.g. a drift check of `github.event.before`) |
 | `use_mitogen` | boolean | no | `true` | Linux Mitogen linear strategy + runtime plugin-path step |
 | `windows_mode` | boolean | no | `false` | forces `linear` + `ANSIBLE_HOST_KEY_CHECKING=False` for PowerShell-over-SSH |
 | `vault_mode` | string | no | `none` | `none` / `public` / `tunnel` |
