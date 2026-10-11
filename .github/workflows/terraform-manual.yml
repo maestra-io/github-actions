@@ -129,10 +129,10 @@ on:
         type: string
         default: "teleport.maestra.io:443"
       runs_on:
-        description: "Runner label passed straight to terraform-run (default ubuntu-latest; an ARC scale-set name runs the job in-cluster)."
+        description: "Runner label passed straight to terraform-run (default RunsOn t3a-small, issues-maestra#1556; an ARC scale-set name runs the job in-cluster)."
         required: false
         type: string
-        default: "ubuntu-latest"
+        default: "runs-on=${{ github.run_id }}/runner=t3a-small"
 
 permissions:
   contents: read

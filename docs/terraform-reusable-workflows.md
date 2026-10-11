@@ -104,7 +104,7 @@ order.
 | `api_tunnel` | boolean | `true` (local port = `.api_tunnel_port // 8006`, remote fixed `8006`; TCP + unauth `/api2/json/version` readiness, fail-fast) |
 | `node_ssh_tunnels` | boolean | `false` |
 | `node_ssh_direct` | boolean | `false` — forward node + API ports with plain `ssh -L` to each node's nodes.json `address` instead of `tsh ssh -L`. Provider contract unchanged (still `127.0.0.1:<ssh_tunnel_port>`); requires `runs_on` on an in-network ARC set, `node_ssh_tunnels: true`, and an `address` key on every node |
-| `runs_on` | string | `ubuntu-latest` — or an ARC scale set (`us-omega-lw-runners`, `us-omicron-lw-runners`) |
+| `runs_on` | string | `runs-on=${{ github.run_id }}/runner=t3a-small` (RunsOn, issues-maestra#1556) — or an ARC scale set (`us-omega-lw-runners`, `us-omicron-lw-runners`) |
 | `mask_sensitive_jq_path` | string | `''` |
 | `rolling` / `rolling_interval` / `rolling_module_prefix` | bool/number/string | `false` / `180` / `module.haproxy` |
 | `extra_workload_identities` | string | `''` (`selector=ENV_VAR=/dest/dir` lines) |
@@ -130,7 +130,7 @@ Per-row overrides: `env_dir`, `proxmox_host`, `proxmox_token_prefix`,
 (`node_ssh_tunnels`, `api_tunnel`, `node_ssh_direct`) are workflow-wide
 only. `runs_on` is per-row on purpose: an omicron row must not execute on
 an omega runner, and rows in a region with no ARC set (eu) stay hosted.
-`fmt` and `comment` stay on `ubuntu-latest` — neither touches infra. Jobs: `fmt`
+`fmt` and `comment` run on RunsOn t3a-small — neither touches infra. Jobs: `fmt`
 (`terraform fmt -check -recursive terraform/`) ∥ `plan` matrix (fail-fast
 false, artifacts `tf-plan-<r>-<e>-<s>`) → `comment` (always()): sticky
 comment, marker `<!-- terraform-plan-diff -->`, `comment_max_chars` default

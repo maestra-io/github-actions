@@ -117,6 +117,14 @@ on:
         required: false
         type: string
         default: ""
+      runs_on:
+        description: >-
+          Runner label for every job here (enumerate, plan, the per-host apply,
+          soc-rescan). Default: RunsOn t3a-small (issues-maestra#1556) — the
+          jobs mostly wait on hosts. An ARC scale-set name works too.
+        required: false
+        type: string
+        default: "runs-on=${{ github.run_id }}/runner=t3a-small"
     secrets:
       VECTOR_SIEM_BASIC_AUTH_USER:
         required: false
@@ -131,10 +139,11 @@ permissions:
 
 jobs:
   enumerate:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     outputs:
       hosts: ${{ steps.list.outputs.hosts }}
     steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
@@ -338,6 +347,7 @@ jobs:
       use_mitogen: false
       no_hosts_fail_on_apply: true
       certificate_ttl: 30m
+      runs_on: ${{ inputs.runs_on }}
       # The plan is read-only, but it deliberately does NOT use --check (command /
       # shell / apt are skipped there, which would leave every probe register
       # undefined). So it cannot be recognised as read-only from inside ansible-run,
@@ -393,6 +403,7 @@ jobs:
       use_mitogen: false
       no_hosts_fail_on_apply: true
       certificate_ttl: ${{ inputs.certificate_ttl }}
+      runs_on: ${{ inputs.runs_on }}
       # Every MUTATING mode routes through this job — apply, binary-update and
       # undrain-only — and all three move a weighted Route53 record (withdraw or
       # restore). The plan job never does, which is why it is not forwarded there.
@@ -437,8 +448,9 @@ jobs:
     # reads. Dispatching a scan there would burn the scanner on an unchanged host
     # every time a binary track is bumped.
     if: ${{ inputs.mode == 'apply' && !cancelled() && contains(fromJSON('["success","failure"]'), needs.apply.result) }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       # A 15-min installation token of the App maestra-vault-github, scoped to
       # actions:write on maestra-io/soc only, minted by the central Vault
       # (github-app/token/soc-vulnscan-dispatcher; jwt-github role

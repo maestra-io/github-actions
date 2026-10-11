@@ -45,12 +45,13 @@ concurrency:
 jobs:
   release:
     name: Tag and release
-    runs-on: ubuntu-latest
+    runs-on: runs-on=${{ github.run_id }}/runner=t3a-small
     timeout-minutes: 10
     permissions:
       # Push the tag and publish the release. Everything else stays read-only.
       contents: write
     steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           # The version is computed from tags and from the commit range since

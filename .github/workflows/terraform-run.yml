@@ -23,7 +23,7 @@
 # background tunnel, hence --no-resume on the API tunnel) -> terraform.
 # Cleanup (always()) removes the token, the temp key, and every tunnel PID.
 #
-# Runner: `runs_on` (default ubuntu-latest). A self-hosted ARC scale set name
+# Runner: `runs_on` (default RunsOn t3a-small, issues-maestra#1556). A self-hosted ARC scale set name
 # (us-omega-lw-runners / us-omicron-lw-runners) puts the job on the same
 # internal network as the Proxmox hosts. That alone does NOT remove Teleport
 # from the path — every leg still dials teleport.maestra.io:443 — it only
@@ -192,7 +192,8 @@ on:
         default: "teleport.maestra.io:443"
       runs_on:
         description: >-
-          Runner label for the job. Default is GitHub-hosted ubuntu-latest;
+          Runner label for the job. Default is RunsOn t3a-small (AWS,
+          issues-maestra#1556; formerly GitHub-hosted ubuntu-latest);
           pass a self-hosted ARC scale-set name (e.g. us-omega-lw-runners) to
           run in-cluster, on the same internal network as the Proxmox hosts.
           Same convention and same scale sets as ansible-run.yml. The ARC image
@@ -203,7 +204,7 @@ on:
           the tool cache by an action.
         required: false
         type: string
-        default: "ubuntu-latest"
+        default: "runs-on=${{ github.run_id }}/runner=t3a-small"
 
 permissions:
   contents: read
@@ -219,6 +220,8 @@ jobs:
       TF_INPUT: "false"
       TELEPORT_FQDN: ${{ inputs.teleport_fqdn }}
     steps:
+      # No-op off RunsOn (exits when RUNS_ON_RUNNER_NAME is unset), so ARC rows are unaffected.
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       # persist-credentials: false — nothing in this job uses the git credential
       # actions/checkout leaves in .git/config. Verified, not assumed: no `git
       # push|fetch|pull|clone|commit|tag` and no `github.token`/`GITHUB_TOKEN`
@@ -269,7 +272,8 @@ jobs:
       # (GitHub has no job-level retry; `gh run rerun --failed` would rerun the
       # REAL failures too).
       #
-      # Who this is for: rows with no `runs_on`, i.e. GitHub-hosted, which reach
+      # Who this is for: rows with no `runs_on` (GitHub-hosted until
+      # issues-maestra#1556, RunsOn in AWS since), which reach
       # the hosts over the PUBLIC Teleport proxy. On 2026-08-31 four plan jobs on
       # maestra-io/haproxy-maestra PRs 445/447 died inside 40 minutes on that hop
       # (`proxy returned non-JSON to a MachineID join`, `DeadlineExceeded` dialing

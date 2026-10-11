@@ -40,9 +40,10 @@ permissions:
 jobs:
   lint:
     name: yamllint + ansible-lint (maestra.infra)
-    runs-on: ubuntu-latest
+    runs-on: runs-on=${{ github.run_id }}/runner=t3a-small
     timeout-minutes: 10
     steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       # Pinned to full-length commit SHAs, like every other external `uses:` in this
       # repo since the Renovate landing. A tag is mutable — re-pointing it runs new
       # code here with this job's token. The trailing `# vX.Y.Z` is the form
