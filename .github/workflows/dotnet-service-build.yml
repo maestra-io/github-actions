@@ -127,9 +127,9 @@
 #   NUGET_CREDENTIALS       `Username=ci;Password=<token>`, the value format of NuGet's
 #                           NuGetPackageSourceCredentials_<source> variable, which
 #                           wins over nuget.config credentials.
-# Dockerfile pattern: mount the token on EVERY RUN that may reach the feed (restore,
-# build/publish/test without --no-restore: `publish -r <rid>` restores runtime packs),
-# never write it into a file:
+# Dockerfile pattern: mount the token on EVERY `dotnet` RUN (restore; `publish -r <rid>`
+# restores runtime packs; even a --no-restore build can run a target that reaches the
+# feed, e.g. `dotnet tool install`), never write it into a file:
 #   RUN --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private \
 #       dotnet restore
 #   FROM build AS publish

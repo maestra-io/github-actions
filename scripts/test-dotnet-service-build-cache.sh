@@ -48,7 +48,8 @@ cache_for() {
 }
 "$here/nuget-secret-mount-fix.sh" "$(cp "$fx/Dockerfile.gitlab" "$work/Dockerfile.fixed" && echo "$work/Dockerfile.fixed")" >/dev/null
 grep -q 'id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private dotnet publish' "$work/Dockerfile.fixed" \
-  || { cat "$work/Dockerfile.fixed"; echo "FAIL nuget-secret-mount-fix did not mount the publish RUN"; exit 1; }
+  && grep -q 'id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private dotnet build App.csproj -c Release --no-restore' "$work/Dockerfile.fixed" \
+  || { cat "$work/Dockerfile.fixed"; echo "FAIL nuget-secret-mount-fix did not mount the publish and the --no-restore build RUN"; exit 1; }
 eq "$("$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.fixed")" "unchanged: $work/Dockerfile.fixed" "nuget-secret-mount-fix idempotent"
 printf 'FROM sdk\r\nRUN --mount=type=secret,id=PRIVATE_PACKAGES_TOKEN dotnet nuget update source maestra --username ci --password $(cat /run/secrets/PRIVATE_PACKAGES_TOKEN) --store-password-in-clear-text\r\nRUN dotnet restore && dotnet test --no-build\r\n' > "$work/Dockerfile.crlf"
 "$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.crlf" >/dev/null
