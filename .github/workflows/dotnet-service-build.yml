@@ -49,6 +49,9 @@
 #                       as -p:MSBuildTreatWarningsAsErrors=true: same effect as
 #                       /warnaserror, but works on both runners (MTP hands a bare
 #                       /warnaserror to the test app: "Zero tests ran", exit 5).
+#   test-timeout-minutes  timeout-minutes of the `test` job (default 45). Raise it for
+#                       suites that exceed it on RunsOn (mailings-runtime: ~50 min of
+#                       Testcontainers projects, cancelled at 45).
 #   test-env            Extra environment for the tests, KEY=VALUE per line (GitLab
 #                       job `variables:` of the test job, e.g. a Testcontainers image
 #                       override). Exported to the dotnet test step, passed with
@@ -154,6 +157,9 @@ on:
       warn-as-error:
         type: boolean
         default: true
+      test-timeout-minutes:
+        type: number
+        default: 45
       test-env:
         type: string
         default: ""
@@ -316,7 +322,7 @@ jobs:
   test:
     needs: version
     runs-on: runs-on=${{ github.run_id }}/pool=build
-    timeout-minutes: 45
+    timeout-minutes: ${{ inputs.test-timeout-minutes }}
     # The RunsOn image exports DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 although
     # libicu is installed; the GitLab sdk images ran with ICU. Invariant mode turns
     # satellite-resource locales into NETSDK1188 (an error under /warnaserror) and
