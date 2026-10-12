@@ -6,19 +6,10 @@
 name: selftest
 
 on:
+  # Every PR, no path filter: `shell` is a required check on main
+  # (maestra-io/iam github/rulesets.tf); a filtered-out run would leave it
+  # pending forever and block the PR.
   pull_request:
-    paths:
-      - ".github/workflows/ansible-os-update.yml"
-      - ".github/workflows/dotnet-service-build.yml"
-      - ".github/workflows/npm-package-publish.yml"
-      - ".github/workflows/nuget-package-publish.yml"
-      - ".github/workflows/python-package-publish.yml"
-      - ".github/workflows/service-build.yml"
-      - ".github/workflows/selftest.yml"
-      - "ansible/tests/**"
-      - "ci/**"
-      - "scripts/**"
-      - "push-helm-chart-to-aws-ecr/**"
   push:
     branches: [main]
     paths:
@@ -126,7 +117,7 @@ jobs:
   # RollForward), so a missing 8.0 runtime fails here the way Mindbox.Tenants
   # PR #2 failed. PR-only: on a push to main the workflow would publish.
   nuget-mixed-tfm:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     uses: ./.github/workflows/nuget-package-publish.yml
     permissions:
       contents: read
@@ -144,7 +135,7 @@ jobs:
   # reusable workflow's concurrency group (repo + ref) cancels a parallel call.
   nuget-net8:
     needs: nuget-mixed-tfm
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     uses: ./.github/workflows/nuget-package-publish.yml
     permissions:
       contents: read
