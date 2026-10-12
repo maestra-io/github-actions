@@ -31,7 +31,8 @@
 #                     skips both.
 #   report-coverage   On pull_request, run `test` with vitest coverage and keep a
 #                     sticky "Coverage summary" comment on the PR (lib@3
-#                     report-coverage). Needs `checks` (not a custom test-script).
+#                     report-coverage). `test` must be vitest (the flags are
+#                     vitest's, as in lib@3). Needs `checks` (not a custom test-script).
 #   build-script      npm script run before release, --if-present (default build:npm-package).
 #   release-script    npm script that runs semantic-release (default release).
 #   release           Run the release on push (default true). Never on pull_request.
