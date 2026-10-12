@@ -107,8 +107,10 @@ jobs:
 
   # No global.json and only net8.0: the runner's preinstalled SDK 10 must not
   # build it (its analyzers broke /warnaserror builds, W2). The test asserts the
-  # SDK recorded in the assembly is 8.x. PR-only, as above.
+  # SDK recorded in the assembly is 8.x. PR-only, as above. Sequential: the
+  # reusable workflow's concurrency group (repo + ref) cancels a parallel call.
   nuget-net8:
+    needs: nuget-mixed-tfm
     if: github.event_name == 'pull_request'
     uses: ./.github/workflows/nuget-package-publish.yml
     permissions:
