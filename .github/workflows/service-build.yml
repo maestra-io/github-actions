@@ -336,8 +336,9 @@ jobs:
         run: echo "::notice::no test-command and no docker-test-target, tests skipped"
 
   images:
-    # Explicit: the matrix carries `dockerfile`/`context` too; the check name stays.
-    name: images (${{ matrix.image }}, ${{ matrix.target }})
+    # Explicit: the matrix carries `dockerfile`/`context` too; the check name stays the
+    # default one (`images (<image>, <target>)`, `images (<image>)` for a last-stage build).
+    name: ${{ matrix.target != '' && format('images ({0}, {1})', matrix.image, matrix.target) || format('images ({0})', matrix.image) }}
     needs: [version, test]
     runs-on: runs-on=${{ github.run_id }}/pool=build
     timeout-minutes: 45
