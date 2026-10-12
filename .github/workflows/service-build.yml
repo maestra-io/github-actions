@@ -47,9 +47,7 @@
 #   build-secret-ids    Comma-separated BuildKit secret ids the packages token is
 #                       passed under (the Dockerfile's `--mount=type=secret,id=...`).
 #                       Default PRIVATE_PACKAGES_TOKEN.
-#   build-args          Extra `--build-arg`s, KEY=VALUE per line (not secret). Always
-#                       passed: `release`/`revision` = `<release> (<sha>)`, RELEASE_NUMBER
-#                       = bare `<release>` (GitLab create-release-number).
+#   build-args          Extra `--build-arg`s, KEY=VALUE per line (not secret).
 #   push                Push images and run release/bake/kargo-refresh (default
 #                       true). Never on pull_request. false = build-only dry run.
 #   bake                Bake kustomization/ into <service>-manifests:<release> (default false).
@@ -388,7 +386,6 @@ jobs:
           build-args: |
             revision=${{ needs.version.outputs.release }} (${{ github.sha }})
             release=${{ needs.version.outputs.release }} (${{ github.sha }})
-            RELEASE_NUMBER=${{ needs.version.outputs.release }}
             ${{ inputs.build-args }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
