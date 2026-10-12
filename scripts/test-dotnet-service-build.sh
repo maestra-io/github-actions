@@ -108,3 +108,37 @@ eq "$(aws_run 3)" "4 3 0" "NoCredentials 3x, then credentials"
 eq "$(aws_run 9)" "5 4 0" "never: 5 tries, then the AWS steps report it"
 grep -q '::warning::no AWS credentials' "$work/out" || { cat "$work/out"; echo "FAIL aws-credentials: no warning"; exit 1; }
 echo "dotnet-service-build aws-credentials: OK"
+
+# images-in-one-job: one leg carrying every target; the matrix leg list otherwise.
+im=$(sed -n '/# >>> images-matrix/,/# <<< images-matrix/p' "$wf" | sed 's/^          //')
+[ -n "$im" ] || { echo "images-matrix block not found in $wf"; exit 1; }
+m2='[{"image":"a","dockerfile":"Dockerfile","target":"x","context":"."},{"image":"b","dockerfile":"Dockerfile","target":"y","context":"sub"}]'
+im_run() { matrix="$1" ONE_JOB="$2" bash -c "set -eo pipefail; $im"$'\n''echo "$images_matrix"'; }
+eq "$(im_run "$m2" false)" "$m2" "one-job off: matrix legs"
+eq "$(im_run "$m2" true)" "[{\"image\":\"all\",\"target\":\"bake\",\"dockerfile\":\"Dockerfile\",\"context\":\".\",\"targets\":$m2}]" "one-job: one leg"
+if im_run '[{"image":"a","dockerfile":"Dockerfile","target":"x","context":"."},{"image":"b","dockerfile":"Other","target":"y","context":"."}]' true >/dev/null 2>&1; then
+  echo "FAIL one-job with two Dockerfiles: accepted"; exit 1
+fi
+
+# bake definition: per-target tags/args/labels/secrets/cache scope, base context.
+bk=$(sed -n '/# >>> bake-definition/,/# <<< bake-definition/p' "$wf" | sed 's/^          //')
+[ -n "$bk" ] || { echo "bake-definition block not found in $wf"; exit 1; }
+bk_run() { # <cache-from> <cache-to> <base-context>
+  : > "$work/gho"
+  TARGETS="$m2" RELEASE=1.1.7 SHA=abc SOURCE=https://github.com/o/r CACHE_FROM="$1" CACHE_TO="$2" BASE_CONTEXT="$3" \
+  RUNNER_TEMP="$work" GITHUB_WORKSPACE=/ws GITHUB_OUTPUT="$work/gho" bash -c "set -eo pipefail; $bk"
+  cat "$work/images.bake.json"
+}
+d=$(bk_run $'type=gha,scope=a\ntype=gha,scope=b\ntype=gha,scope=tests' "type=gha,mode=max,compression=zstd,compression-level=3,scope=a" "")
+eq "$(jq -c '.group.default.targets' <<<"$d")" '["a","b"]' "bake group"
+eq "$(jq -c '.target.b | {context, dockerfile, target, tags, args, output}' <<<"$d")" \
+   '{"context":"sub","dockerfile":"/ws/Dockerfile","target":"y","tags":["local/b:1.1.7"],"args":{"revision":"1.1.7 (abc)","release":"1.1.7 (abc)"},"output":["type=docker"]}' "bake target"
+eq "$(jq -c '.target.b.labels["org.opencontainers.image.source"]' <<<"$d")" '"https://github.com/o/r"' "bake label"
+eq "$(jq -c '.target.a.secret' <<<"$d")" "[\"id=PRIVATE_PACKAGES_TOKEN,src=$work/packages-token/PRIVATE_PACKAGES_TOKEN\",\"id=NUGET_CREDENTIALS,src=$work/packages-token/NUGET_CREDENTIALS\"]" "bake secrets"
+eq "$(jq -c '.target.b["cache-from"]' <<<"$d")" '["type=gha,scope=a","type=gha,scope=b","type=gha,scope=tests"]' "bake cache-from"
+eq "$(jq -c '[.target.a["cache-to"], .target.b["cache-to"]]' <<<"$d")" '[["type=gha,mode=max,compression=zstd,compression-level=3,scope=a"],["type=gha,mode=max,compression=zstd,compression-level=3,scope=b"]]' "bake cache-to per target"
+eq "$(jq -c '.target.a.contexts // null' <<<"$d")" 'null' "bake no base context"
+grep -q "^file=$work/images.bake.json$" "$work/gho" || { echo "FAIL bake: no file output"; exit 1; }
+d=$(bk_run "" "" "local/base:latest=oci-layout:///t/base-image")
+eq "$(jq -c '[.target.a["cache-from"], .target.a["cache-to"], .target.a.contexts]' <<<"$d")" '[[],[],{"local/base:latest":"oci-layout:///t/base-image"}]' "bake without cache, base context"
+echo "dotnet-service-build images-in-one-job: OK"

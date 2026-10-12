@@ -3,7 +3,7 @@
 # + create-release-number + docker-push-to-all + maestra-bake-oci-manifests +
 # create-gitlab-release), issues-maestra#1442 wave W0c.
 #
-#   version ─► test ─► images (matrix) ─► release ─► bake ─► kargo-refresh
+#   version ─► test ─► images (matrix, or one bake job) ─► release ─► bake ─► kargo-refresh
 #
 # Job names are a contract (required checks, `needs:` in callers): keep them.
 #
@@ -71,6 +71,11 @@
 #   pr-images           Build the images on pull_request too (default false: a PR runs
 #                       tests only; a broken Dockerfile surfaces in the release on the
 #                       default branch, before anything is pushed).
+#   images-in-one-job   Build every image target in ONE `images` job with docker
+#                       buildx bake (default false: one job per image). The targets
+#                       share one BuildKit, so stages they have in common (restore,
+#                       build) run once; each target keeps its own cache scope. Needs
+#                       one Dockerfile for all image-targets (contexts may differ).
 #   push                Push images and run release/bake/kargo-refresh (default
 #                       true). Never on pull_request. false = build-only dry run.
 #   bake                Bake kustomization/ into <service>-manifests:<release> (default false).
@@ -202,6 +207,9 @@ on:
       pr-images:
         type: boolean
         default: false
+      images-in-one-job:
+        type: boolean
+        default: false
       push:
         type: boolean
         default: true
@@ -269,6 +277,7 @@ jobs:
     outputs:
       release: ${{ steps.v.outputs.release }}
       matrix: ${{ steps.v.outputs.matrix }}
+      images-matrix: ${{ steps.v.outputs.images-matrix }}
       images: ${{ steps.v.outputs.images }}
       service: ${{ steps.v.outputs.service }}
       bakes: ${{ steps.v.outputs.bakes }}
@@ -291,6 +300,7 @@ jobs:
           BAKE_PATH: ${{ inputs.bake-path }}
           BAKES: ${{ inputs.bakes }}
           BASE_IMAGE: ${{ inputs.base-image }}
+          ONE_JOB: ${{ inputs.images-in-one-job }}
           KARGO_PROJECT: ${{ inputs.kargo-project }}
           KARGO_WAREHOUSE: ${{ inputs.kargo-warehouse }}
           REPO_NAME: ${{ github.event.repository.name }}
@@ -359,9 +369,21 @@ jobs:
             fi
           fi
           # <<< targets-and-bakes
+          # >>> images-matrix (scripts/test-dotnet-service-build.sh runs this block)
+          # images-in-one-job: one `images` leg that bakes every target (`targets`).
+          if [ "$ONE_JOB" = "true" ]; then
+            if [ "$(jq '[.[].dockerfile] | unique | length' <<<"$matrix")" -ne 1 ]; then
+              echo "::error::images-in-one-job needs one Dockerfile for all image-targets, got $(jq -c '[.[].dockerfile] | unique' <<<"$matrix")"; exit 1
+            fi
+            images_matrix=$(jq -c '[{image: "all", target: "bake", dockerfile: .[0].dockerfile, context: ".", targets: .}]' <<<"$matrix")
+          else
+            images_matrix=$matrix
+          fi
+          # <<< images-matrix
           {
             echo "release=$release"
             echo "matrix=$matrix"
+            echo "images-matrix=$images_matrix"
             echo "images=$images"
             echo "service=$(jq -r '.[0].service' <<<"$bakes")"
             echo "bakes=$bakes"
@@ -649,7 +671,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        include: ${{ fromJSON(needs.version.outputs.matrix) }}
+        include: ${{ fromJSON(needs.version.outputs.images-matrix) }}
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -692,7 +714,7 @@ jobs:
         env:
           DOCKERFILE: ${{ matrix.dockerfile }}
           SCOPES: |
-            ${{ matrix.image }}
+            ${{ matrix.image != 'all' && matrix.image || join(matrix.targets.*.image, ',') }}
             ${{ inputs.docker-test-target }}
         run: |
           # >>> layer-cache (scripts/test-dotnet-service-build-cache.sh runs this block)
@@ -785,6 +807,7 @@ jobs:
       # IMMUTABLE_WITH_EXCLUSION with the org pull policy and logs in through the
       # Teleport image-push bot (no static AWS keys).
       - name: build ${{ matrix.image }} (${{ matrix.target }})
+        if: ${{ matrix.image != 'all' }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ${{ matrix.context }}
@@ -807,6 +830,59 @@ jobs:
           cache-from: ${{ steps.cache.outputs.from }}
           cache-to: ${{ steps.cache.outputs.to }}
 
+      # images-in-one-job: every image target in one bake on one BuildKit, so the
+      # stages they share (restore, build) run once and the rest in parallel. Same
+      # tags/args/labels/secrets as the per-image build above. Each target exports
+      # its own cache scope: a shared scope would keep only the last export.
+      - name: bake definition
+        id: bakefile
+        if: ${{ matrix.image == 'all' }}
+        env:
+          TARGETS: ${{ toJSON(matrix.targets) }}
+          RELEASE: ${{ needs.version.outputs.release }}
+          SHA: ${{ github.sha }}
+          SOURCE: ${{ github.server_url }}/${{ github.repository }}
+          BASE_CONTEXT: ${{ steps.base.outputs.context }}
+          CACHE_FROM: ${{ steps.cache.outputs.from }}
+          CACHE_TO: ${{ steps.cache.outputs.to }}
+        run: |
+          # >>> bake-definition (scripts/test-dotnet-service-build.sh runs this block)
+          f="$RUNNER_TEMP/images.bake.json"
+          jq -n --argjson t "$TARGETS" --arg rel "$RELEASE" --arg sha "$SHA" --arg src "$SOURCE" \
+                --arg base "$BASE_CONTEXT" --arg from "$CACHE_FROM" --arg to "$CACHE_TO" \
+                --arg tmp "$RUNNER_TEMP" --arg ws "$GITHUB_WORKSPACE" '
+            ($from | split("\n") | map(select(. != ""))) as $from
+            | {group: {default: {targets: [$t[].image]}},
+               target: ($t | map(.image as $img | {key: $img, value: ({
+                 context: .context,
+                 # bake resolves dockerfile against the context, build-push-action against the workspace
+                 dockerfile: ($ws + "/" + .dockerfile),
+                 target: .target,
+                 tags: ["local/\($img):\($rel)"],
+                 args: {revision: "\($rel) (\($sha))", release: "\($rel) (\($sha))"},
+                 labels: {"org.opencontainers.image.revision": $sha,
+                          "org.opencontainers.image.source": $src,
+                          "org.opencontainers.image.version": $rel},
+                 secret: ["id=PRIVATE_PACKAGES_TOKEN,src=\($tmp)/packages-token/PRIVATE_PACKAGES_TOKEN",
+                          "id=NUGET_CREDENTIALS,src=\($tmp)/packages-token/NUGET_CREDENTIALS"],
+                 "cache-from": $from,
+                 "cache-to": (if $to == "" then [] else [$to | sub("scope=[^,]*"; "scope=\($img)")] end),
+                 output: ["type=docker"]}
+                 + (if $base == "" then {} else {contexts: {($base | split("=")[0]): ($base | split("=")[1:] | join("="))}} end))})
+                 | from_entries)}' > "$f"
+          echo "file=$f" >> "$GITHUB_OUTPUT"
+          # <<< bake-definition
+          jq -c '.target | map_values({context, target, "cache-to"})' "$f"
+      - name: build all images (bake)
+        if: ${{ matrix.image == 'all' }}
+        uses: docker/bake-action@018cb6412ab401ebaa809aa5f85966b74628600f # v7.4.0
+        with:
+          source: .
+          files: ${{ steps.bakefile.outputs.file }}
+          # the secret files and the base-image OCI layout live in runner.temp,
+          # outside the working directory: bake refuses to read them otherwise
+          allow: fs.read=${{ runner.temp }}
+
       # Idempotent re-run: the tag may already be in ECR (immutable) from an
       # earlier attempt of this run. Same layers (rootfs diff_ids of the ECR
       # image config = those of the image just built, i.e. a cache-hit rebuild
@@ -818,7 +894,7 @@ jobs:
         id: existing
         if: ${{ needs.version.outputs.publish == 'true' }}
         env:
-          IMAGE: ${{ matrix.image }}
+          IMAGES: ${{ matrix.image != 'all' && matrix.image || needs.version.outputs.images }}
           RELEASE: ${{ needs.version.outputs.release }}
           # Instance-role credentials come from IMDS; the CLI default (1 s, one
           # attempt) answered NoCredentials after a long build on a busy t3a.
@@ -826,39 +902,42 @@ jobs:
           AWS_METADATA_SERVICE_NUM_ATTEMPTS: "5"
         run: |
           region="$(cut -d. -f4 <<< "$ECR_REGISTRY")"
-          if ! out=$(aws ecr batch-get-image --region "$region" --repository-name "$IMAGE" \
-                --image-ids imageTag="$RELEASE" \
-                --accepted-media-types application/vnd.docker.distribution.manifest.v2+json application/vnd.oci.image.manifest.v1+json \
-                --output json 2>&1); then
-            if grep -q RepositoryNotFoundException <<<"$out"; then echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0; fi
-            echo "::error::cannot read ${IMAGE}:${RELEASE} from ECR: $out"; exit 1
-          fi
-          if [ "$(jq '.images | length' <<<"$out")" -eq 0 ]; then
-            echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          digest=$(jq -r '.images[0].imageId.imageDigest' <<<"$out")
-          config=$(jq -r '.images[0].imageManifest | fromjson | .config.digest // empty' <<<"$out")
-          remote=""
-          if [ -n "$config" ]; then
-            url=$(aws ecr get-download-url-for-layer --region "$region" --repository-name "$IMAGE" \
-              --layer-digest "$config" --query downloadUrl --output text)
-            remote=$(curl -sfL --retry 3 "$url" | jq -c '.rootfs.diff_ids') || remote=""
-          fi
-          local=$(docker image inspect --format '{{json .RootFS.Layers}}' "local/${IMAGE}:${RELEASE}" | jq -c .)
-          if [ -n "$remote" ] && [ "$remote" = "$local" ]; then
-            echo "${IMAGE}:${RELEASE} is already in ECR (${digest}) with the layers just built: push skipped"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::error::${IMAGE}:${RELEASE} already exists in ECR (${digest}) with other layers than the image built now; tags are immutable. Dispatch the release workflow again: it takes the next release number."
-            exit 1
-          fi
+          push=()
+          for IMAGE in ${IMAGES//,/ }; do
+            if ! out=$(aws ecr batch-get-image --region "$region" --repository-name "$IMAGE" \
+                  --image-ids imageTag="$RELEASE" \
+                  --accepted-media-types application/vnd.docker.distribution.manifest.v2+json application/vnd.oci.image.manifest.v1+json \
+                  --output json 2>&1); then
+              if grep -q RepositoryNotFoundException <<<"$out"; then push+=("$IMAGE"); continue; fi
+              echo "::error::cannot read ${IMAGE}:${RELEASE} from ECR: $out"; exit 1
+            fi
+            if [ "$(jq '.images | length' <<<"$out")" -eq 0 ]; then
+              push+=("$IMAGE"); continue
+            fi
+            digest=$(jq -r '.images[0].imageId.imageDigest' <<<"$out")
+            config=$(jq -r '.images[0].imageManifest | fromjson | .config.digest // empty' <<<"$out")
+            remote=""
+            if [ -n "$config" ]; then
+              url=$(aws ecr get-download-url-for-layer --region "$region" --repository-name "$IMAGE" \
+                --layer-digest "$config" --query downloadUrl --output text)
+              remote=$(curl -sfL --retry 3 "$url" | jq -c '.rootfs.diff_ids') || remote=""
+            fi
+            local=$(docker image inspect --format '{{json .RootFS.Layers}}' "local/${IMAGE}:${RELEASE}" | jq -c .)
+            if [ -n "$remote" ] && [ "$remote" = "$local" ]; then
+              echo "${IMAGE}:${RELEASE} is already in ECR (${digest}) with the layers just built: push skipped"
+            else
+              echo "::error::${IMAGE}:${RELEASE} already exists in ECR (${digest}) with other layers than the image built now; tags are immutable. Dispatch the release workflow again: it takes the next release number."
+              exit 1
+            fi
+          done
+          echo "push=$(IFS=,; echo "${push[*]}")" >> "$GITHUB_OUTPUT"
 
       - name: push ${{ matrix.image }}:${{ needs.version.outputs.release }}
-        if: ${{ needs.version.outputs.publish == 'true' && steps.existing.outputs.skip != 'true' }}
+        if: ${{ needs.version.outputs.publish == 'true' && steps.existing.outputs.push != '' }}
         uses: maestra-io/github-actions/push-to-aws-ecr-repository@v1
         with:
           awsRegion: us-west-2
-          repositories: ${{ matrix.image }}
+          repositories: ${{ steps.existing.outputs.push }}
           localTag: ${{ needs.version.outputs.release }}
           targetTag: ${{ needs.version.outputs.release }}
           teleportToken: ${{ needs.version.outputs.teleport-token }}
