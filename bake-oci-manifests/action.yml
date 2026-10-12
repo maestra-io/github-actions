@@ -440,7 +440,9 @@ runs:
         flux pull artifact \
           "oci://${ECR_REGISTRY}/${IMAGE_MANIFESTS}:${TAG}" \
           --output /tmp/verify
-        ls -R /tmp/verify | head -30
+        # sed, not head: the step runs under pipefail, and `ls` dies of EPIPE once
+        # head stops reading a large tree (metrics-manifests-sla bakes all of .flux).
+        ls -R /tmp/verify | sed -n 1,30p
         # Match the placeholder form `${APP_PACKAGE_VERSION_TO_BE_REPLACED}` —
         # base/helm-release-{app,init}.yaml legitimately mention the variable
         # name in comments without the ${...} braces; those are safe.
