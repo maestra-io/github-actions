@@ -541,7 +541,11 @@ jobs:
                 --accepted-media-types application/vnd.docker.distribution.manifest.v2+json application/vnd.oci.image.manifest.v1+json \
                 --output json 2>&1); then
             if grep -q RepositoryNotFoundException <<<"$out"; then echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0; fi
-            echo "::error::cannot read ${IMAGE}:${RELEASE} from ECR: $out"; exit 1
+            # The runner has no AWS credentials before the push action logs in
+            # through Teleport (NoCredentials): the check cannot run, push. An
+            # existing tag still fails the push (immutable), nothing is overwritten.
+            echo "::warning::cannot read ${IMAGE}:${RELEASE} from ECR, pushing without the re-run check: $out"
+            echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
           if [ "$(jq '.images | length' <<<"$out")" -eq 0 ]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0
