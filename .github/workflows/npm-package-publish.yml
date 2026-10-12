@@ -25,6 +25,9 @@
 #   build-script      npm script run before release, --if-present (default build:npm-package).
 #   release-script    npm script that runs semantic-release (default release).
 #   release           Run the release on push (default true). Never on pull_request.
+#   pool              RunsOn pool of the job: `small` (default, 2 vCPU) or `build`
+#                     (for test suites that time out on small, e.g. jsdom). Any
+#                     other value falls back to `small`.
 #
 # Auth: `.npmrc` sends the GitHub OIDC token as `_authToken` (a Bearer header,
 # which is the path nora verifies OIDC on). The repo's .npmrc keeps its own
@@ -78,6 +81,9 @@ on:
       release:
         type: boolean
         default: true
+      pool:
+        type: string
+        default: small
 
 concurrency:
   group: ${{ github.event_name == 'pull_request' && format('npm-{0}-{1}', github.repository, github.ref) || format('npm-{0}', github.repository) }}
@@ -88,7 +94,7 @@ permissions:
 
 jobs:
   package:
-    runs-on: runs-on=${{ github.run_id }}/pool=small
+    runs-on: runs-on=${{ github.run_id }}/pool=${{ inputs.pool == 'build' && 'build' || 'small' }}
     timeout-minutes: 30
     permissions:
       contents: write      # semantic-release tags and GitHub release
