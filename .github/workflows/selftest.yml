@@ -6,19 +6,10 @@
 name: selftest
 
 on:
+  # Every PR, no path filter: `shell` is a required check on main
+  # (maestra-io/iam github/rulesets.tf); a filtered-out run would leave it
+  # pending forever and block the PR.
   pull_request:
-    paths:
-      - ".github/workflows/ansible-os-update.yml"
-      - ".github/workflows/dotnet-service-build.yml"
-      - ".github/workflows/npm-package-publish.yml"
-      - ".github/workflows/nuget-package-publish.yml"
-      - ".github/workflows/python-package-publish.yml"
-      - ".github/workflows/service-build.yml"
-      - ".github/workflows/selftest.yml"
-      - "ansible/tests/**"
-      - "ci/**"
-      - "scripts/**"
-      - "push-helm-chart-to-aws-ecr/**"
   push:
     branches: [main]
     paths:
