@@ -87,7 +87,7 @@ permissions:
 
 jobs:
   package:
-    runs-on: runs-on=${{ github.run_id }}/pool=small
+    runs-on: runs-on=${{ github.run_id }}-package/pool=small
     timeout-minutes: 20
     permissions:
       contents: read

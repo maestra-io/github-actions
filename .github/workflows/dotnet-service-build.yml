@@ -228,7 +228,7 @@ env:
 
 jobs:
   version:
-    runs-on: runs-on=${{ github.run_id }}/pool=small
+    runs-on: runs-on=${{ github.run_id }}-version/pool=small
     timeout-minutes: 5
     outputs:
       release: ${{ steps.v.outputs.release }}
@@ -321,7 +321,7 @@ jobs:
 
   test:
     needs: version
-    runs-on: runs-on=${{ github.run_id }}/pool=build
+    runs-on: runs-on=${{ github.run_id }}-test/pool=build
     timeout-minutes: ${{ inputs.test-timeout-minutes }}
     # The RunsOn image exports DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 although
     # libicu is installed; the GitLab sdk images ran with ICU. Invariant mode turns
@@ -453,7 +453,10 @@ jobs:
     # Explicit: the matrix carries `dockerfile` too, the check name stays
     # `images (<image>, <target>)` as before.
     name: images (${{ matrix.image }}, ${{ matrix.target }})
-    runs-on: runs-on=${{ github.run_id }}/pool=build
+    # One label per leg: legs sharing `runs-on=<run_id>/pool=build` claim each
+    # other's runners, and the robbed leg waits out RunsOn's retry backoff
+    # (up to 42 min on 12.10, issues-maestra#1556).
+    runs-on: runs-on=${{ github.run_id }}-images-${{ strategy.job-index }}/pool=build
     timeout-minutes: 45
     permissions:
       contents: read
@@ -578,7 +581,7 @@ jobs:
   release:
     needs: [version, images]
     if: ${{ needs.version.outputs.publish == 'true' }}
-    runs-on: runs-on=${{ github.run_id }}/pool=small
+    runs-on: runs-on=${{ github.run_id }}-release/pool=small
     timeout-minutes: 5
     permissions:
       contents: write
@@ -598,7 +601,7 @@ jobs:
   bake:
     needs: [version, release]
     if: ${{ inputs.bake && needs.version.outputs.publish == 'true' && needs.version.outputs.multi-bake != 'true' }}
-    runs-on: runs-on=${{ github.run_id }}/pool=small
+    runs-on: runs-on=${{ github.run_id }}-bake/pool=small
     timeout-minutes: 15
     permissions:
       contents: read
@@ -618,7 +621,7 @@ jobs:
   bakes:
     needs: [version, release]
     if: ${{ inputs.bake && needs.version.outputs.publish == 'true' && needs.version.outputs.multi-bake == 'true' }}
-    runs-on: runs-on=${{ github.run_id }}/pool=small
+    runs-on: runs-on=${{ github.run_id }}-bakes-${{ strategy.job-index }}/pool=small
     timeout-minutes: 15
     permissions:
       contents: read
@@ -655,7 +658,7 @@ jobs:
     if: >-
       ${{ !cancelled() && inputs.bake && inputs.kargo-refresh && needs.version.outputs.publish == 'true'
           && (needs.bake.result == 'success' || needs.bakes.result == 'success') }}
-    runs-on: runs-on=${{ github.run_id }}/pool=small
+    runs-on: runs-on=${{ github.run_id }}-kargo-refresh/pool=small
     timeout-minutes: 5
     continue-on-error: true
     permissions:

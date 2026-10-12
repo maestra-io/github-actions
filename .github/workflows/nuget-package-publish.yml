@@ -104,7 +104,7 @@ permissions:
 
 jobs:
   package:
-    runs-on: runs-on=${{ github.run_id }}/pool=build
+    runs-on: runs-on=${{ github.run_id }}-package/pool=build
     timeout-minutes: 30
     # The RunsOn image exports DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 although
     # libicu is installed; the GitLab sdk images ran with ICU. Invariant mode turns

@@ -45,7 +45,7 @@ concurrency:
 jobs:
   release:
     name: Tag and release
-    runs-on: runs-on=${{ github.run_id }}/runner=t3a-small
+    runs-on: runs-on=${{ github.run_id }}-release/runner=t3a-small
     timeout-minutes: 10
     permissions:
       # Push the tag and publish the release. Everything else stays read-only.

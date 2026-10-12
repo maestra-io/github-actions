@@ -40,7 +40,7 @@ permissions:
 jobs:
   lint:
     name: yamllint + ansible-lint (maestra.infra)
-    runs-on: runs-on=${{ github.run_id }}/runner=t3a-small
+    runs-on: runs-on=${{ github.run_id }}-lint/runner=t3a-small
     timeout-minutes: 10
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0

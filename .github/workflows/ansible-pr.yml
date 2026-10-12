@@ -80,10 +80,10 @@ on:
         type: string
         default: ""
       runs_on:
-        description: "Default runner label for the check-matrix jobs; a per-row runs_on in `envs` wins. Rows target different environments whose runners must not cross (omicron rows -> us-omicron-lw-runners; omega rows -> omega's own set). Lint and the comment job run on RunsOn t3a-small."
+        description: "Default runner label for the check-matrix jobs; a per-row runs_on in `envs` wins. Empty = RunsOn t3a-small under a per-leg label: legs sharing one label steal each other's runners (issues-maestra#1556). Rows target different environments whose runners must not cross (omicron rows -> us-omicron-lw-runners; omega rows -> omega's own set). Lint and the comment job run on RunsOn t3a-small."
         required: false
         type: string
-        default: "runs-on=${{ github.run_id }}/runner=t3a-small"
+        default: ""
       extra_run_args:
         description: "Extra ansible-playbook args (workflow-wide default; per-row extra_run_args in `envs` wins)"
         required: false
@@ -115,7 +115,7 @@ jobs:
   lint:
     # RunsOn t3a-small (issues-maestra#1556): ~50 s of work on every PR push of
     # nine consumer repos; was ubuntu-slim.
-    runs-on: runs-on=${{ github.run_id }}/runner=t3a-small
+    runs-on: runs-on=${{ github.run_id }}-lint/runner=t3a-small
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -208,13 +208,13 @@ jobs:
       requirements_pip: ${{ inputs.requirements_pip }}
       requirements_galaxy: ${{ inputs.requirements_galaxy }}
       python_version: ${{ inputs.python_version }}
-      runs_on: ${{ matrix.env.runs_on || inputs.runs_on }}
+      runs_on: ${{ matrix.env.runs_on || inputs.runs_on || format('runs-on={0}-check-{1}/runner=t3a-small', github.run_id, strategy.job-index) }}
       artifact_name: ansible-check-${{ matrix.env.region }}-${{ matrix.env.environment }}-${{ matrix.env.site }}${{ matrix.env.inventory_group_suffix || '' }}
 
   comment:
     needs: check
     if: ${{ always() && github.event_name == 'pull_request' }}
-    runs-on: runs-on=${{ github.run_id }}/runner=t3a-small # see `lint`
+    runs-on: runs-on=${{ github.run_id }}-comment/runner=t3a-small # see `lint`
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - name: Download all check logs (flat)
