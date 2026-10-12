@@ -23,9 +23,15 @@
 #         build-secret-ids: ARTIFACTORY_ACCESS_TOKEN
 #         bake: true
 #
+#   Bake-only repo (no image of its own; GitLab `images: ""`): omit image-targets,
+#   keep `bake: true` (and `bake-path` when not ./kustomization).
+#
 # Inputs:
-#   image-targets       REQUIRED. `image=target` pairs, comma or newline separated
-#                       (GitLab IMAGE_TARGETS_PAIRS). <image> is the ECR repository,
+#   image-targets       `image=target` pairs, comma or newline separated
+#                       (GitLab IMAGE_TARGETS_PAIRS). Empty only with `bake: true`:
+#                       a bake-only repo (GitLab `images: ""`, e.g. a kustomize or
+#                       terraform tree with no image of its own) runs version -> test
+#                       -> release -> bake -> kargo-refresh, no `images` job. <image> is the ECR repository,
 #                       <target> the Dockerfile stage; `image=` (or bare `image`)
 #                       builds the Dockerfile's last stage. As in dotnet-service-build:
 #                       `image=<dockerfile>:<target>` builds from another Dockerfile
@@ -84,7 +90,7 @@ on:
     inputs:
       image-targets:
         type: string
-        required: true
+        default: ""
       dockerfile:
         type: string
         default: Dockerfile
@@ -184,6 +190,7 @@ jobs:
           PREFIX: ${{ vars.RELEASE_PREFIX }}
           RUN_NUMBER: ${{ github.run_number }}
           IMAGE_TARGETS: ${{ inputs.image-targets }}
+          BAKE: ${{ inputs.bake }}
           DOCKERFILE: ${{ inputs.dockerfile }}
           SERVICE: ${{ inputs.service }}
           REPO_NAME: ${{ github.event.repository.name }}
@@ -198,19 +205,24 @@ jobs:
           release="${prefix}.${RUN_NUMBER}"
           # >>> image-targets (scripts/test-service-build.sh runs this block)
           # `image[=target]` / `image=<dockerfile>:<target>[:<context>]`, comma or newline
-          # separated -> images matrix. Empty target = last stage.
-          matrix=$(printf '%s' "$IMAGE_TARGETS" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . \
-            | jq -Rnc --arg df "$DOCKERFILE" '[inputs | {image: (split("=")[0]), spec: (split("=")[1] // "")}
-                | (.spec | split(":")) as $f
-                | {image, dockerfile: (if ($f | length) > 1 then $f[0] else $df end),
-                   target: (if ($f | length) > 1 then $f[1] else .spec end),
-                   context: (if ($f | length) > 2 and $f[2] != "" then $f[2] else "." end),
-                   fields: ($f | length)}]') || matrix='[]'
-          if [ "$(jq 'length' <<<"$matrix")" -eq 0 ] \
-             || jq -e 'any(.[]; .image == "" or .dockerfile == "" or .fields > 3)' <<<"$matrix" >/dev/null; then
-            echo "::error::image-targets must be image=target or image=<dockerfile>:<target>[:<context>] pairs, got '$IMAGE_TARGETS'"; exit 1
+          # separated -> images matrix. Empty target = last stage. Nothing at all is
+          # a bake-only repo (allowed with bake only): empty matrix, no images job.
+          if [ -z "$(printf '%s' "$IMAGE_TARGETS" | tr -d ',[:space:]')" ] && [ "$BAKE" = true ]; then
+            matrix='[]'
+          else
+            matrix=$(printf '%s' "$IMAGE_TARGETS" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . \
+              | jq -Rnc --arg df "$DOCKERFILE" '[inputs | {image: (split("=")[0]), spec: (split("=")[1] // "")}
+                  | (.spec | split(":")) as $f
+                  | {image, dockerfile: (if ($f | length) > 1 then $f[0] else $df end),
+                     target: (if ($f | length) > 1 then $f[1] else .spec end),
+                     context: (if ($f | length) > 2 and $f[2] != "" then $f[2] else "." end),
+                     fields: ($f | length)}]') || matrix='[]'
+            if [ "$(jq 'length' <<<"$matrix")" -eq 0 ] \
+               || jq -e 'any(.[]; .image == "" or .dockerfile == "" or .fields > 3)' <<<"$matrix" >/dev/null; then
+              echo "::error::image-targets must be image=target or image=<dockerfile>:<target>[:<context>] pairs (empty only with bake: true), got '$IMAGE_TARGETS'"; exit 1
+            fi
+            matrix=$(jq -c 'map(del(.fields))' <<<"$matrix")
           fi
-          matrix=$(jq -c 'map(del(.fields))' <<<"$matrix")
           # <<< image-targets
           {
             echo "release=$release"
@@ -348,7 +360,7 @@ jobs:
     needs: [version, test]
     # Not on pull_request unless pr-images: images are built (and checked) by the
     # release on the default branch and by the workflow_dispatch dry run.
-    if: ${{ github.event_name != 'pull_request' || inputs.pr-images }}
+    if: ${{ needs.version.outputs.images != '' && (github.event_name != 'pull_request' || inputs.pr-images) }}
     runs-on: runs-on=${{ github.run_id }}/pool=build
     timeout-minutes: 45
     permissions:
@@ -432,9 +444,12 @@ jobs:
 
   # Git tag + GitHub Release BEFORE the bake: bake-oci-manifests checks out the
   # release tag. Bare `1.1.N`, same shape as create-gitlab-release.
+  # Bake-only (no image-targets): `images` is skipped, so the gate is explicit.
   release:
-    needs: [version, images]
-    if: ${{ needs.version.outputs.publish == 'true' }}
+    needs: [version, test, images]
+    if: >-
+      ${{ !cancelled() && needs.version.outputs.publish == 'true' && needs.test.result == 'success'
+          && (needs.images.result == 'success' || (needs.images.result == 'skipped' && needs.version.outputs.images == '')) }}
     runs-on: runs-on=${{ github.run_id }}/pool=small
     timeout-minutes: 5
     permissions:
@@ -454,7 +469,8 @@ jobs:
 
   bake:
     needs: [version, release]
-    if: ${{ inputs.bake && needs.version.outputs.publish == 'true' }}
+    # !cancelled(): a skipped `images` (bake-only) would otherwise skip every job after it.
+    if: ${{ !cancelled() && inputs.bake && needs.version.outputs.publish == 'true' && needs.release.result == 'success' }}
     runs-on: runs-on=${{ github.run_id }}/pool=small
     timeout-minutes: 15
     permissions:
@@ -484,7 +500,7 @@ jobs:
   # Best effort: the bake is done, a failure here only delays freight by <=5m.
   kargo-refresh:
     needs: [version, bake]
-    if: ${{ inputs.bake && inputs.kargo-refresh && needs.version.outputs.publish == 'true' }}
+    if: ${{ !cancelled() && inputs.bake && inputs.kargo-refresh && needs.version.outputs.publish == 'true' && needs.bake.result == 'success' }}
     runs-on: runs-on=${{ github.run_id }}/pool=small
     timeout-minutes: 5
     continue-on-error: true
