@@ -25,6 +25,9 @@
 #                       `image=<dockerfile>:<target>` builds from another Dockerfile
 #                       (repos with several, e.g. Dockerfile-celery); an empty
 #                       target (`image=` or `image=<dockerfile>:`) builds the last stage.
+#                       `image=<dockerfile>:<target>:<context>` also sets the build
+#                       context (default the repo root), for Dockerfiles that GitLab
+#                       built with a subdirectory context (`docker build ./email`).
 #   dockerfile          Default Dockerfile path (default Dockerfile, context = repo root).
 #   dotnet-version      SDK for the `test` job (setup-dotnet syntax, e.g. 10.0.x).
 #                       Empty = global.json.
@@ -246,16 +249,19 @@ jobs:
           esac
           release="${prefix}.${RUN_NUMBER}"
           # >>> targets-and-bakes (scripts/test-dotnet-service-build.sh runs this block)
-          # `image=target` / `image=<dockerfile>:<target>` pairs, comma or newline
+          # `image=target` / `image=<dockerfile>:<target>[:<context>]` pairs, comma or newline
           # separated -> images matrix. Empty target = last stage.
           matrix=$(printf '%s' "$IMAGE_TARGETS" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . \
             | jq -Rnc --arg df "$DOCKERFILE" '[inputs | {image: (split("=")[0]), spec: (split("=")[1])}
                 | {image, dockerfile: (if (.spec // "") | contains(":") then (.spec | split(":")[0]) else $df end),
-                   target: (if (.spec // "") | contains(":") then (.spec | split(":")[1]) else .spec end)}]') || matrix='[]'
+                   target: (if (.spec // "") | contains(":") then (.spec | split(":")[1]) else .spec end),
+                   context: (if (.spec // "") | contains(":") then ((.spec | split(":")[2]) // "" | if . == "" then "." else . end) else "." end),
+                   fields: ((.spec // "") | split(":") | length)}]') || matrix='[]'
           if [ "$(jq 'length' <<<"$matrix")" -eq 0 ] \
-             || jq -e 'any(.[]; (.image // "") == "" or .target == null or (.dockerfile // "") == "")' <<<"$matrix" >/dev/null; then
-            echo "::error::image-targets must be image=target or image=<dockerfile>:<target> pairs, got '$IMAGE_TARGETS'"; exit 1
+             || jq -e 'any(.[]; (.image // "") == "" or .target == null or (.dockerfile // "") == "" or .fields > 3)' <<<"$matrix" >/dev/null; then
+            echo "::error::image-targets must be image=target or image=<dockerfile>:<target>[:<context>] pairs, got '$IMAGE_TARGETS'"; exit 1
           fi
+          matrix=$(jq -c 'map(del(.fields))' <<<"$matrix")
           images=$(jq -r 'map(.image) | join(",")' <<<"$matrix")
           # One bake (service, bake-path, Kargo project/warehouse inputs) or one per
           # `bakes` line: `<service> <bake-path> [images]`.
@@ -473,7 +479,7 @@ jobs:
       - name: build ${{ matrix.image }} (${{ matrix.target }})
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: .
+          context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           target: ${{ matrix.target }}
           load: true
