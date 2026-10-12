@@ -417,6 +417,7 @@ top of each file.
 | [`nuget-package-publish.yml`](.github/workflows/nuget-package-publish.yml) | restore, build, test, pack, `dotnet nuget push` | dotnet-nuget-cicd-components |
 | [`npm-package-publish.yml`](.github/workflows/npm-package-publish.yml) | `npm ci`, test, `npm run release` (semantic-release) | frontend-ci-components `templates/lib` |
 | [`python-package-publish.yml`](.github/workflows/python-package-publish.yml) | poetry/uv build, test, `twine upload` | — |
+| [`helm-chart.yml`](.github/workflows/helm-chart.yml) | PR: `check` (version bump, CHANGELOG, lint, helm-unittest); main: `release` → ECR `helm-charts/<name>` ([`push-helm-chart-to-aws-ecr`](push-helm-chart-to-aws-ecr/action.yml)) | system/components/helm-ci helm-merge-request + helm-release |
 
 [`scripts/dockerfile-from-fix.sh`](scripts/dockerfile-from-fix.sh) drops the
 `cr.yandex/crp2cvbrp76d7dmfegco/` mirror prefix from `FROM` lines (idempotent);
