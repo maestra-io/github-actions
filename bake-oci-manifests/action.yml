@@ -426,7 +426,14 @@ runs:
         ECR_REGISTRY: ${{ inputs.ecr-registry }}
         IMAGE_MANIFESTS: ${{ inputs.service }}-manifests
         DIGEST: ${{ steps.push.outputs.digest }}
-      run: cosign sign --yes "${ECR_REGISTRY}/${IMAGE_MANIFESTS}@${DIGEST}"
+      # A re-run after a later step failed finds this digest already signed, and the
+      # .sig tag is immutable (TAG_INVALID): skip it rather than fail the re-run.
+      run: |
+        if aws ecr describe-images --repository-name "$IMAGE_MANIFESTS" \
+             --image-ids "imageTag=sha256-${DIGEST#sha256:}.sig" >/dev/null 2>&1; then
+          echo "${IMAGE_MANIFESTS}@${DIGEST} already signed: sign skipped"; exit 0
+        fi
+        cosign sign --yes "${ECR_REGISTRY}/${IMAGE_MANIFESTS}@${DIGEST}"
 
     # ── Sanity: pull the artifact back and verify it contains what we sent
     - name: verify artifact pullable
