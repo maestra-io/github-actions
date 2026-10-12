@@ -340,7 +340,7 @@ jobs:
         run: |
           logs="$RUNNER_TEMP/checks"; mkdir -p "$logs"
           names=(); advisory=" unused-code localization-keys "
-          start() { local n=$1; shift; names+=("$n"); ( "$@" > "$logs/$n.log" 2>&1; echo $? > "$logs/$n.rc" ) & }
+          start() { local n=$1; shift; names+=("$n"); ( rc=0; "$@" > "$logs/$n.log" 2>&1 || rc=$?; echo "$rc" > "$logs/$n.rc" ) & }
           has() { jq -e --arg s "$1" '.scripts[$s]' package.json > /dev/null; }
           has check-types && start types npm run check-types
           has check-scripts && start lint npm run check-scripts
