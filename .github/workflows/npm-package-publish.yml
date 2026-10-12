@@ -181,4 +181,7 @@ jobs:
           RELEASE_SCRIPT: ${{ inputs.release-script }}
         run: |
           [ -z "$BUILD_SCRIPT" ] || npm run --if-present "$BUILD_SCRIPT"
-          npm run "$RELEASE_SCRIPT"
+          # semantic-release takes the git remote from package.json `repository`,
+          # which still names the GitLab project in ported repos: it would push the
+          # version commit and tag there (and fail auth). Release where we build.
+          npm run "$RELEASE_SCRIPT" -- --repository-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
