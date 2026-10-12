@@ -46,4 +46,18 @@ check "mixed TFMs" $'6.0.x\n8.0.x\n9.0.x\n10.0.x\n11.0.x' "$(run "$r" "")"
 check "solution scope" $'6.0.x\n8.0.x\n10.0.x' "$(run "$r" "" src/Lib/Lib.sln)"
 check "override" $'7.0.x\n9.0.100' "$(run "$r" $'7.0.x\n9.0.100')"
 mkdir "$d/none"; check "no projects" "" "$(run "$d/none" "")"
+gj() { grep -x 'global-json=.*' "$d/out" | cut -d= -f2; }
+
+# global.json with rollForward and a version setup-dotnet calls partial ("10.0.0"):
+# its major joins the set and the file is not handed to setup-dotnet.
+g="$d/gj"; mkdir -p "$g/src"
+echo '<Project><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>' > "$g/src/A.csproj"
+echo '{"sdk":{"version":"10.0.0","rollForward":"latestFeature"}}' > "$g/global.json"
+check "partial global.json version" $'8.0.x\n10.0.x' "$(run "$g" "")"; check "partial global.json skipped" false "$(gj)"
+echo '{"sdk":{"version":"8.0.100","rollForward":"latestMajor"}}' > "$g/global.json"
+check "full global.json version" '8.0.x' "$(run "$g" "")"; check "full global.json passed" true "$(gj)"
+echo '{"sdk":{"version":"10.0.0"}}' > "$g/global.json"
+check "no rollForward" '8.0.x' "$(run "$g" "")"; check "no rollForward passed" true "$(gj)"
+echo '{"sdk":{"version":"10.0.100-rc.1.25451.107","rollForward":"latestMajor"}}' > "$g/global.json"
+check "prerelease" '8.0.x' "$(run "$g" "")"; check "prerelease passed" true "$(gj)"
 echo "nuget-sdk-set: OK"
