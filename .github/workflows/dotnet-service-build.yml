@@ -56,6 +56,9 @@
 #                       single-line and not secret (they show in the log). Images on
 #                       this account's ECR are pulled after an ECR login (see
 #                       mirror-test-images.yml for test-images/*).
+#   pr-images           Build the images on pull_request too (default false: a PR runs
+#                       tests only; a broken Dockerfile surfaces in the release on the
+#                       default branch, before anything is pushed).
 #   push                Push images and run release/bake/kargo-refresh (default
 #                       true). Never on pull_request. false = build-only dry run.
 #   bake                Bake kustomization/ into <service>-manifests:<release> (default false).
@@ -154,6 +157,9 @@ on:
       test-env:
         type: string
         default: ""
+      pr-images:
+        type: boolean
+        default: false
       push:
         type: boolean
         default: true
@@ -435,6 +441,9 @@ jobs:
 
   images:
     needs: [version, test]
+    # Not on pull_request unless pr-images: images are built (and checked) by the
+    # release on the default branch and by the workflow_dispatch dry run.
+    if: ${{ github.event_name != 'pull_request' || inputs.pr-images }}
     # Explicit: the matrix carries `dockerfile` too, the check name stays
     # `images (<image>, <target>)` as before.
     name: images (${{ matrix.image }}, ${{ matrix.target }})
