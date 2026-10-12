@@ -431,8 +431,9 @@ jobs:
   #      `kargo` (kargo.teleport.maestra.io), in one oneshot run;
   #   2. kubectl mints a 10-minute token of ServiceAccount kargo/kargo-ci-github
   #      (the bot may do nothing else on the cluster);
-  #   3. curl with the app certificate + that bearer. The refresh only needs an
-  #      authenticated caller: Kargo applies the annotation with its own client.
+  #   3. curl with the app certificate + that bearer. Kargo checks `get` on the
+  #      Warehouse as kargo-ci-github (fluxcd ClusterRole kargo-ci-github-refresher),
+  #      then applies the annotation with its own client.
   # Best effort: the bake is done, a failure here only delays freight by <=5m.
   kargo-refresh:
     needs: [version, bake]
