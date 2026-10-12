@@ -74,6 +74,9 @@ jobs:
       - name: dotnet-service-build image-targets / bakes parsing (workflow copy)
         run: bash scripts/test-dotnet-service-build.sh
 
+      - name: service-build image-targets parsing (workflow copy)
+        run: bash scripts/test-service-build.sh
+
       # warn-as-error must keep tests running on the Microsoft.Testing.Platform
       # runner too (a bare /warnaserror ran zero tests there, exit 5).
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
