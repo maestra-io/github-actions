@@ -27,8 +27,12 @@
 #   image-targets       REQUIRED. `image=target` pairs, comma or newline separated
 #                       (GitLab IMAGE_TARGETS_PAIRS). <image> is the ECR repository,
 #                       <target> the Dockerfile stage; `image=` (or bare `image`)
-#                       builds the Dockerfile's last stage.
-#   dockerfile          Dockerfile path (default Dockerfile, context = repo root).
+#                       builds the Dockerfile's last stage. As in dotnet-service-build:
+#                       `image=<dockerfile>:<target>` builds from another Dockerfile
+#                       (repos with several), `image=<dockerfile>:<target>:<context>`
+#                       also sets the build context (default the repo root).
+#   dockerfile          Default Dockerfile path (default Dockerfile, context = repo root);
+#                       also the Dockerfile of docker-test-target.
 #   test-command        Bash run on the runner from the repo root (the GitLab test
 #                       jobs). Gets PACKAGES_TOKEN (GitHub OIDC token nora accepts as
 #                       Basic `token:<it>`), PACKAGES_URL and the test-env variables.
@@ -174,6 +178,7 @@ jobs:
           PREFIX: ${{ vars.RELEASE_PREFIX }}
           RUN_NUMBER: ${{ github.run_number }}
           IMAGE_TARGETS: ${{ inputs.image-targets }}
+          DOCKERFILE: ${{ inputs.dockerfile }}
           SERVICE: ${{ inputs.service }}
           REPO_NAME: ${{ github.event.repository.name }}
           PUSH: ${{ inputs.push && github.event_name != 'pull_request' }}
@@ -185,13 +190,22 @@ jobs:
             *) echo "::error::vars.RELEASE_PREFIX '$prefix' is not MAJOR.MINOR"; exit 1 ;;
           esac
           release="${prefix}.${RUN_NUMBER}"
-          # `image=target` pairs, comma or newline separated -> matrix JSON.
+          # >>> image-targets (scripts/test-service-build.sh runs this block)
+          # `image[=target]` / `image=<dockerfile>:<target>[:<context>]`, comma or newline
+          # separated -> images matrix. Empty target = last stage.
           matrix=$(printf '%s' "$IMAGE_TARGETS" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . \
-            | jq -Rnc '[inputs | split("=") | {image: .[0], target: (.[1] // "")}]')
+            | jq -Rnc --arg df "$DOCKERFILE" '[inputs | {image: (split("=")[0]), spec: (split("=")[1] // "")}
+                | (.spec | split(":")) as $f
+                | {image, dockerfile: (if ($f | length) > 1 then $f[0] else $df end),
+                   target: (if ($f | length) > 1 then $f[1] else .spec end),
+                   context: (if ($f | length) > 2 and $f[2] != "" then $f[2] else "." end),
+                   fields: ($f | length)}]') || matrix='[]'
           if [ "$(jq 'length' <<<"$matrix")" -eq 0 ] \
-             || jq -e 'any(.[]; (.image // "") == "")' <<<"$matrix" >/dev/null; then
-            echo "::error::image-targets must be image=target pairs (target may be empty), got '$IMAGE_TARGETS'"; exit 1
+             || jq -e 'any(.[]; .image == "" or .dockerfile == "" or .fields > 3)' <<<"$matrix" >/dev/null; then
+            echo "::error::image-targets must be image=target or image=<dockerfile>:<target>[:<context>] pairs, got '$IMAGE_TARGETS'"; exit 1
           fi
+          matrix=$(jq -c 'map(del(.fields))' <<<"$matrix")
+          # <<< image-targets
           {
             echo "release=$release"
             echo "matrix=$matrix"
@@ -322,6 +336,8 @@ jobs:
         run: echo "::notice::no test-command and no docker-test-target, tests skipped"
 
   images:
+    # Explicit: the matrix carries `dockerfile`/`context` too; the check name stays.
+    name: images (${{ matrix.image }}, ${{ matrix.target }})
     needs: [version, test]
     runs-on: runs-on=${{ github.run_id }}/pool=build
     timeout-minutes: 45
@@ -374,8 +390,8 @@ jobs:
       - name: build ${{ matrix.image }} (${{ matrix.target }})
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: .
-          file: ${{ inputs.dockerfile }}
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
           target: ${{ matrix.target }}
           load: true
           push: false
