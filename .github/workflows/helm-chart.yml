@@ -1,0 +1,122 @@
+# Reusable CI for a Helm chart repository: the GitHub port of the GitLab
+# system/components/helm-ci (helm-merge-request + helm-release) for omega.
+#
+#   pull_request:      check (version bump, CHANGELOG entry, lint, unittest)
+#   push to main:      release (package + push to ECR us-west-2 helm-charts/<name>)
+#
+# Job names are a contract (required checks): keep them.
+#
+# Usage (caller):
+#
+#   on:
+#     pull_request:
+#     push:
+#       branches: [main]
+#   jobs:
+#     chart:
+#       uses: maestra-io/github-actions/.github/workflows/helm-chart.yml@<sha> # vX.Y.Z
+#       permissions: { contents: read, id-token: write }
+#
+# Inputs:
+#   chart-path     Chart directory (default repo root).
+#   helm-version   Helm CLI (default v3.18.5, as the GitLab jobs).
+#   unittest-version  helm-unittest plugin, run when a <chart-path>/tests/*.yaml
+#                  is a helm-unittest suite (promtool tests etc. are the caller's).
+#
+# Lint/unittest values: <chart-path>/ci/values.yaml or ci/test-values.yaml, as
+# in GitLab. Not ported: helm-diff MR comment, kind `helm template --validate`,
+# metrics-validation, publish-dev label, the RU Yandex registry push.
+
+name: helm-chart
+
+on:
+  workflow_call:
+    inputs:
+      chart-path:
+        type: string
+        default: "."
+      helm-version:
+        type: string
+        default: "v3.18.5"
+      unittest-version:
+        type: string
+        default: "v1.1.0"
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('helm-check-{0}-{1}', github.repository, github.ref) || format('helm-release-{0}', github.repository) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: runs-on=${{ github.run_id }}/pool=small
+    timeout-minutes: 10
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: ${{ inputs.helm-version }}
+
+      - name: Version bump and CHANGELOG
+        env:
+          CHART_PATH: ${{ inputs.chart-path }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          version=$(yq e '.version' "${CHART_PATH}/Chart.yaml")
+          if git diff --quiet "$BASE_SHA" HEAD -- \
+               "${CHART_PATH}/Chart.yaml" "${CHART_PATH}/Chart.lock" "${CHART_PATH}/values.yaml" \
+               "${CHART_PATH}/values.schema.json" "${CHART_PATH}/templates" "${CHART_PATH}/charts" "${CHART_PATH}/crds"; then
+            echo "No chart-affecting files changed; skipping version checks"
+            exit 0
+          fi
+          base=$(git show "${BASE_SHA}:${CHART_PATH}/Chart.yaml" 2>/dev/null | yq e '.version' - || echo "0.0.0")
+          echo "version: ${base} -> ${version}"
+          if [ "$version" = "$base" ]; then
+            echo "::error::Chart version has not been changed. Please update version in ${CHART_PATH}/Chart.yaml"
+            exit 1
+          fi
+          if ! grep -q "^## Version ${version}\b" "${CHART_PATH}/CHANGELOG.md" 2>/dev/null; then
+            echo "::error::Add a '## Version ${version}' section to ${CHART_PATH}/CHANGELOG.md"
+            exit 1
+          fi
+
+      - name: Lint and unittest
+        env:
+          CHART_PATH: ${{ inputs.chart-path }}
+          UNITTEST_VERSION: ${{ inputs.unittest-version }}
+        run: |
+          set -euo pipefail
+          values=()
+          for f in ci/values.yaml ci/test-values.yaml; do
+            if [ -f "${CHART_PATH}/$f" ]; then values=(--values "${CHART_PATH}/$f"); break; fi
+          done
+          helm dependency build "$CHART_PATH"
+          helm lint "$CHART_PATH" "${values[@]}"
+          if grep -qs "^suite:" "${CHART_PATH}"/tests/*.yaml; then
+            helm plugin install https://github.com/helm-unittest/helm-unittest --version "$UNITTEST_VERSION"
+            helm unittest "$CHART_PATH"
+          fi
+
+  release:
+    if: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: runs-on=${{ github.run_id }}/pool=small
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # Teleport join -> AWS
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: ${{ inputs.helm-version }}
+      - uses: maestra-io/github-actions/push-helm-chart-to-aws-ecr@v1
+        with:
+          chartPath: ${{ inputs.chart-path }}

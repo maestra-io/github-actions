@@ -1,0 +1,147 @@
+name: 'Push a Helm chart to AWS ECR'
+description: >-
+  Package a chart and push it as OCI to <registry>/<repositoryPrefix>/<chart name>:<version>
+  in us-west-2, the GitHub port of the GitLab helm-ci helm-chart-push-aws job.
+  An already published version is skipped (release tags are immutable).
+  Auth: Teleport workload identity -> role/teleport-image-push, the job needs
+  `id-token: write`.
+inputs:
+  chartPath:
+    description: 'Chart directory.'
+    required: false
+    default: '.'
+  repositoryPrefix:
+    description: 'ECR repository prefix, the chart lands in <prefix>/<chart name>.'
+    required: false
+    default: 'helm-charts'
+  awsRegion:
+    description: 'AWS Region.'
+    required: false
+    default: 'us-west-2'
+  teleportToken:
+    description: >-
+      Teleport GitHub join token of the image-push bot. Default: the org-wide
+      image-push-github-actions-maestra-io (any maestra-io repo, main/master).
+    required: false
+    default: 'image-push-github-actions-maestra-io'
+  teleportFqdn:
+    description: 'Teleport proxy host:port.'
+    required: false
+    default: 'teleport.maestra.io:443'
+  awsRoleArn:
+    description: 'IAM role assumed with the Teleport workload-identity JWT.'
+    required: false
+    default: 'arn:aws:iam::515260921971:role/teleport-image-push'
+outputs:
+  name:
+    description: 'Chart name.'
+    value: ${{ steps.chart.outputs.name }}
+  version:
+    description: 'Chart version.'
+    value: ${{ steps.chart.outputs.version }}
+  pushed:
+    description: 'true when this run pushed the chart.'
+    value: ${{ steps.push.outputs.pushed }}
+runs:
+  using: "composite"
+  steps:
+    - name: Resolve chart name and version
+      id: chart
+      shell: bash
+      env:
+        CHART_PATH: ${{ inputs.chartPath }}
+      run: |
+        name=$(yq e '.name' "${CHART_PATH}/Chart.yaml")
+        version=$(yq e '.version' "${CHART_PATH}/Chart.yaml")
+        echo "name=$name" >> "$GITHUB_OUTPUT"
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "chart ${name}@${version}"
+
+    - name: Get Teleport version
+      if: ${{ steps.chart.outputs.version != '0.0.0' }}
+      id: tp-version
+      shell: bash
+      env:
+        TELEPORT_FQDN: ${{ inputs.teleportFqdn }}
+      run: |
+        version=$(curl -sf "https://${TELEPORT_FQDN}/webapi/find" \
+          | jq -r '.auto_update.tools_version // .server_version')
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+    - if: ${{ steps.chart.outputs.version != '0.0.0' }}
+      uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
+      with:
+        version: ${{ steps.tp-version.outputs.version }}
+        proxy: ${{ inputs.teleportFqdn }}
+
+    - name: Mint Teleport workload-identity JWT for AWS
+      if: ${{ steps.chart.outputs.version != '0.0.0' }}
+      shell: bash
+      env:
+        TELEPORT_FQDN: ${{ inputs.teleportFqdn }}
+        TELEPORT_TOKEN: ${{ inputs.teleportToken }}
+      run: |
+        out="$(mktemp -d)"
+        cat > "$out/tbot.yaml" <<EOF
+        version: v2
+        proxy_server: ${TELEPORT_FQDN}
+        onboarding:
+          join_method: github
+          token: ${TELEPORT_TOKEN}
+        oneshot: true
+        storage:
+          type: memory
+        services:
+          - type: workload-identity-jwt
+            destination:
+              type: directory
+              path: ${out}/svid
+            selector:
+              name: image-push
+            audiences: ["sts.amazonaws.com"]
+        EOF
+        mkdir -p "$out/svid"
+        tbot start -c "$out/tbot.yaml" || true
+        test -s "$out/svid/jwt_svid" || { echo "::error::tbot minted no JWT SVID with token ${TELEPORT_TOKEN}: is the ref main/master, and does the job have id-token: write?"; exit 1; }
+        echo "PUSH_ECR_JWT_SVID=$out/svid/jwt_svid" >> "$GITHUB_ENV"
+
+    - name: Configure AWS Credentials (workload identity)
+      if: ${{ steps.chart.outputs.version != '0.0.0' }}
+      uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+      with:
+        role-to-assume: ${{ inputs.awsRoleArn }}
+        aws-region: ${{ inputs.awsRegion }}
+        web-identity-token-file: ${{ env.PUSH_ECR_JWT_SVID }}
+
+    # Same repository shape as push-to-aws-ecr-repository: immutable release
+    # tags and the org-wide read policy, from that action's files.
+    - name: Package and push
+      if: ${{ steps.chart.outputs.version != '0.0.0' }}
+      id: push
+      shell: bash
+      working-directory: ${{ github.action_path }}/../push-to-aws-ecr-repository
+      env:
+        CHART_PATH: ${{ github.workspace }}/${{ inputs.chartPath }}
+        NAME: ${{ steps.chart.outputs.name }}
+        VERSION: ${{ steps.chart.outputs.version }}
+        PREFIX: ${{ inputs.repositoryPrefix }}
+        AWS_REGION: ${{ inputs.awsRegion }}
+      run: |
+        set -euo pipefail
+        repo="${PREFIX}/${NAME}"
+        registry="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${AWS_REGION}.amazonaws.com"
+        if aws ecr describe-images --repository-name "$repo" --image-ids "imageTag=${VERSION}" >/dev/null 2>&1; then
+          echo "::warning::Chart ${NAME}@${VERSION} already exists in ECR ${AWS_REGION}; skipping push. Bump version in Chart.yaml to release."
+          echo "pushed=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        aws ecr describe-repositories --repository-names "$repo" >/dev/null 2>&1 || {
+          bash ./create-repository.sh "$repo"
+          aws ecr set-repository-policy --repository-name "$repo" --policy-text file://ecr-policy.json >/dev/null
+        }
+        aws ecr get-login-password | helm registry login "$registry" --username AWS --password-stdin
+        pkg="$(mktemp -d)"
+        helm package --dependency-update "$CHART_PATH" --destination "$pkg"
+        helm push "${pkg}/${NAME}-${VERSION}.tgz" "oci://${registry}/${PREFIX}"
+        echo "pushed=true" >> "$GITHUB_OUTPUT"
+        echo "Pushed oci://${registry}/${repo}:${VERSION}"
