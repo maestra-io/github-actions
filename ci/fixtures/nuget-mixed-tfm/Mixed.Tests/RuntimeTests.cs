@@ -16,4 +16,9 @@ public class RuntimeTests
         Assert.AreEqual(8, Mixed.Lib.Runtime.Major);
 #endif
     }
+
+    // No global.json: the workflow pins the SDK of the highest target framework.
+    [TestMethod]
+    public void BuiltWithTheSdkOfTheHighestTargetFramework() =>
+        StringAssert.StartsWith(Mixed.Lib.Runtime.BuildSdk, "10.");
 }

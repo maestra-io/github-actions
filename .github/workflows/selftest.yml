@@ -58,6 +58,9 @@ jobs:
       - name: nuget SDK set (TFM scan, override, workflow copy)
         run: bash scripts/test-nuget-sdk-set.sh
 
+      - name: nuget build SDK pin (highest TFM, global.json kept/restored, workflow copy)
+        run: bash scripts/test-nuget-sdk-pin.sh
+
       - name: pypi upload (skip existing, 409, pinned twine, workflow copy)
         run: bash scripts/test-pypi-upload.sh
 
@@ -101,3 +104,15 @@ jobs:
       id-token: write # the workflow mints a nora token even when it only builds
     with:
       solution-file: ci/fixtures/nuget-mixed-tfm/Mixed.sln
+
+  # No global.json and only net8.0: the runner's preinstalled SDK 10 must not
+  # build it (its analyzers broke /warnaserror builds, W2). The test asserts the
+  # SDK recorded in the assembly is 8.x. PR-only, as above.
+  nuget-net8:
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/nuget-package-publish.yml
+    permissions:
+      contents: read
+      id-token: write # the workflow mints a nora token even when it only builds
+    with:
+      solution-file: ci/fixtures/nuget-net8/Net8.sln

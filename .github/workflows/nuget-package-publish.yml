@@ -15,8 +15,10 @@
 # Inputs:
 #   solution-file        Solution/project to restore, build, test, pack. Empty = discovered.
 #   dotnet-version       setup-dotnet syntax, one per line (e.g. 10.0.x). Empty = <N>.0.x
-#                        for every netN.M target framework in the repo's project/props
-#                        files, plus global.json when present.
+#                        for every netN.M target framework of the solution's project/props
+#                        files, plus global.json when present; the build then runs on the
+#                        SDK of the highest one (temporary global.json pin, see "pin the
+#                        build SDK"). Set = exactly these SDKs and no pin.
 #   version              Explicit package version (-p:PackageVersion). Empty = the
 #                        repo's own scheme, $(VersionMajor).$(VersionMinor).$(BuildNumber)$(VersionTag)
 #                        in Directory.Build.props, fed BuildNumber below (GitLab parity).
@@ -101,25 +103,38 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
-      # One SDK per target framework major in the repo, plus global.json. The GitLab
-      # sdk:<N> images carried the runtime the tests ran on; global.json alone is not
-      # that: with rollForward latestMajor setup-dotnet installs only the current LTS,
-      # and a net8.0 testhost fails "You must install or update .NET" (W2,
-      # Mindbox.Tenants PR #2). selftest.yml runs this program (scripts/test-nuget-sdk-set.sh).
+      # One SDK per target framework major of the solution, plus global.json. The
+      # GitLab sdk:<N> images carried the runtime the tests ran on; global.json alone
+      # is not that: with rollForward latestMajor setup-dotnet installs only the
+      # current LTS, and a net8.0 testhost fails "You must install or update .NET"
+      # (W2, Mindbox.Tenants PR #2). Scope: the solution's directory tree plus
+      # Directory.Build.* in its parent directories (all of the repo when
+      # solution-file is empty). selftest.yml runs this program (scripts/test-nuget-sdk-set.sh).
       - name: pick .NET SDKs
         id: sdk
         env:
           OVERRIDE: ${{ inputs.dotnet-version }}
+          SOLUTION: ${{ inputs.solution-file }}
         run: |
           # sdk-set: begin
           if [ -n "$OVERRIDE" ]; then
             versions="$OVERRIDE"
           else
-            # ponytail: a repo-wide scan, not the solution's project graph: a stray
-            # project outside the solution only costs one extra SDK install.
-            versions=$(find . \( -name bin -o -name obj -o -name .git \) -prune -o -type f \
-                \( -name '*.csproj' -o -name '*.fsproj' -o -name '*.vbproj' -o -name '*.props' -o -name '*.targets' \) -print0 \
-              | xargs -0 -r cat | tr '\r\n' '  ' \
+            dir=$(dirname "${SOLUTION:-./x}")
+            files=()
+            while IFS= read -r -d '' f; do files+=("$f"); done < <(
+              find "$dir" \( -name bin -o -name obj -o -name .git \) -prune -o -type f \
+                \( -name '*.csproj' -o -name '*.fsproj' -o -name '*.vbproj' -o -name '*.props' -o -name '*.targets' \) -print0)
+            up="$dir"
+            while [ "$up" != . ] && [ "$up" != / ]; do
+              up=$(dirname "$up")
+              for f in "$up"/Directory.Build.props "$up"/Directory.Build.targets; do
+                [ -f "$f" ] && files+=("$f")
+              done
+            done
+            # ponytail: a directory scan, not the solution's project graph: a stray
+            # project next to the solution only costs one extra SDK install.
+            versions=$( { [ "${#files[@]}" -eq 0 ] || cat "${files[@]}"; } | tr '\r\n' '  ' \
               | grep -oE '<TargetFrameworks?( [^>]*)?>[^<]*</TargetFrameworks?>' \
               | sed -E 's/<[^>]*>//g' | tr ';' '\n' \
               | sed -nE 's/^[[:space:]]*net([0-9]+)\.[0-9]+.*/\1/p' \
@@ -132,6 +147,53 @@ jobs:
         with:
           dotnet-version: ${{ steps.sdk.outputs.versions }}
           global-json-file: ${{ inputs.dotnet-version == '' && hashFiles('global.json') != '' && 'global.json' || '' }}
+
+      # The runner image ships the newest SDK and setup-dotnet only adds SDKs, so
+      # without a global.json pin (none, or rollForward latestMajor/major) the newest
+      # one builds. Its new analyzers and EOL-framework warnings then fail
+      # /warnaserror where the GitLab sdk:<N> image passed (DumpTool, GraphQL,
+      # PhonesDictionary, VaultSecretsLoader needed per-repo global.json, W2). So the
+      # build SDK is pinned to the newest installed SDK of the HIGHEST target framework
+      # major, in a temporary global.json in the working directory (where dotnet
+      # looks first). Other global.json keys are kept, and the repo's own file is put
+      # back after pack. An explicit sdk.version with a narrower rollForward is
+      # respected, and so is the dotnet-version override (no pin). selftest.yml runs
+      # this program (scripts/test-nuget-sdk-pin.sh).
+      - name: pin the build SDK
+        id: pin
+        if: ${{ inputs.dotnet-version == '' }}
+        env:
+          VERSIONS: ${{ steps.sdk.outputs.versions }}
+          BACKUP: ${{ runner.temp }}/global.json.repo
+        run: |
+          # sdk-pin: begin
+          major=$(printf '%s\n' "$VERSIONS" | sed -nE 's/^([0-9]+)\.0\.x$/\1/p' | sort -n | tail -1)
+          if [ -z "$major" ]; then
+            echo "no netN.M target framework: build SDK left to global.json / the newest installed"; exit 0
+          fi
+          base='{}'
+          if [ -f global.json ]; then
+            if ! base=$(jq -c . global.json 2>/dev/null); then
+              echo "::warning::global.json is not plain JSON (comments?); build SDK not pinned"; exit 0
+            fi
+            roll=$(jq -r '.sdk.rollForward // "latestPatch"' <<<"$base")
+            if jq -e '.sdk.version' <<<"$base" >/dev/null && [ "$roll" != latestMajor ] && [ "$roll" != major ]; then
+              echo "global.json pins the SDK (rollForward $roll): left as is"; exit 0
+            fi
+            # Its sdk.version stays the floor: a repo asking for >= 10 keeps 10.
+            want=$(jq -r '.sdk.version // "0" | split(".")[0]' <<<"$base")
+            [ "$want" -gt "$major" ] 2>/dev/null && major=$want
+          fi
+          sdk=$(dotnet --list-sdks | awk -v m="$major" '{ split($1, v, "."); if (v[1] == m) print $1 }' \
+            | sort -t. -k2,2n -k3,3n | tail -1)
+          if [ -z "$sdk" ]; then
+            echo "::warning::no .NET SDK $major installed; build SDK not pinned"; exit 0
+          fi
+          [ ! -f global.json ] || cp global.json "$BACKUP"
+          jq --arg v "$sdk" '.sdk = ((.sdk // {}) + {version: $v, rollForward: "latestFeature"})' <<<"$base" > global.json
+          echo "pinned=true" >> "$GITHUB_OUTPUT"
+          echo "build SDK pinned to $sdk (target framework / global.json major $major)"
+          # sdk-pin: end
 
       - name: mint packages token
         id: token
@@ -171,6 +233,7 @@ jobs:
           # SECOPS-948 parity: credential-free repository metadata in the package.
           repo=("-p:RepositoryUrl=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" "-p:RepositoryCommit=${GITHUB_SHA}" "-p:RepositoryType=git")
 
+          echo "::notice::built with .NET SDK $(dotnet --version)"
           dotnet restore "${sln[@]}" --locked-mode
           dotnet build "${sln[@]}" --configuration Release --no-restore "${ver[@]}" "${wae[@]}"
           if [ "$RUN_TESTS" = "true" ]; then
@@ -179,6 +242,15 @@ jobs:
           fi
           dotnet pack "${sln[@]}" --no-build --configuration Release --output "$RUNNER_TEMP/nupkg" "${ver[@]}" "${repo[@]}"
           ls -1 "$RUNNER_TEMP/nupkg"
+
+      # Never leave the temporary pin behind (nothing here commits, but the
+      # workspace is the caller's checkout).
+      - name: unpin the build SDK
+        if: ${{ always() && steps.pin.outputs.pinned == 'true' }}
+        env:
+          BACKUP: ${{ runner.temp }}/global.json.repo
+        run: |
+          if [ -f "$BACKUP" ]; then mv "$BACKUP" global.json; else rm -f global.json; fi
 
       # Fresh token: the build may outlive the first one.
       - name: mint push token
