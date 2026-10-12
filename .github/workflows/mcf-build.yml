@@ -24,8 +24,6 @@
 #   service             Service name for bake and Kargo. Default: repository name.
 #   kargo-project       Kargo project. Default kargo-<service>.
 #   kargo-warehouse     Warehouse to refresh. Default <service>.
-#   graphql-contour     Exported as GRAPHQL_CONTOUR to `graphql-codegen`; the MCF's
-#                       graphql.config.js picks that contour's endpoints (default omega).
 #   auth-jwt-url        auth-jwt the schema token comes from (default the omega one).
 #   auth-jwt-client     Its client (auth-jwt-terraform terraform/omega/clients.tf).
 #   teleport-token      Join token of the image-push bot (default the org-wide one).
@@ -85,9 +83,6 @@ on:
       kargo-warehouse:
         type: string
         default: ""
-      graphql-contour:
-        type: string
-        default: omega
       auth-jwt-url:
         type: string
         default: https://auth-jwt.maestra.io
@@ -290,7 +285,6 @@ jobs:
         env:
           AUTH_JWT_URL: ${{ inputs.auth-jwt-url }}
           AUTH_JWT_CLIENT: ${{ inputs.auth-jwt-client }}
-          GRAPHQL_CONTOUR: ${{ inputs.graphql-contour }}
         run: |
           if ! jq -e '.scripts["graphql-codegen"]' package.json >/dev/null; then
             echo "no graphql-codegen script"; tar -czf "$RUNNER_TEMP/codegen.tgz" -T /dev/null; exit 0
