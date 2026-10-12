@@ -14,7 +14,9 @@
 #
 # Inputs:
 #   solution-file        Solution/project to restore, build, test, pack. Empty = discovered.
-#   dotnet-version       setup-dotnet syntax (e.g. 10.0.x). Empty = global.json.
+#   dotnet-version       setup-dotnet syntax, one per line (e.g. 10.0.x). Empty = <N>.0.x
+#                        for every netN.M target framework in the repo's project/props
+#                        files, plus global.json when present.
 #   version              Explicit package version (-p:PackageVersion). Empty = the
 #                        repo's own scheme, $(VersionMajor).$(VersionMinor).$(BuildNumber)$(VersionTag)
 #                        in Directory.Build.props, fed BuildNumber below (GitLab parity).
@@ -99,10 +101,37 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+      # One SDK per target framework major in the repo, plus global.json. The GitLab
+      # sdk:<N> images carried the runtime the tests ran on; global.json alone is not
+      # that: with rollForward latestMajor setup-dotnet installs only the current LTS,
+      # and a net8.0 testhost fails "You must install or update .NET" (W2,
+      # Mindbox.Tenants PR #2). selftest.yml runs this program (scripts/test-nuget-sdk-set.sh).
+      - name: pick .NET SDKs
+        id: sdk
+        env:
+          OVERRIDE: ${{ inputs.dotnet-version }}
+        run: |
+          # sdk-set: begin
+          if [ -n "$OVERRIDE" ]; then
+            versions="$OVERRIDE"
+          else
+            # ponytail: a repo-wide scan, not the solution's project graph: a stray
+            # project outside the solution only costs one extra SDK install.
+            versions=$(find . \( -name bin -o -name obj -o -name .git \) -prune -o -type f \
+                \( -name '*.csproj' -o -name '*.fsproj' -o -name '*.vbproj' -o -name '*.props' -o -name '*.targets' \) -print0 \
+              | xargs -0 -r cat | tr '\r\n' '  ' \
+              | grep -oE '<TargetFrameworks?( [^>]*)?>[^<]*</TargetFrameworks?>' \
+              | sed -E 's/<[^>]*>//g' | tr ';' '\n' \
+              | sed -nE 's/^[[:space:]]*net([0-9]+)\.[0-9]+.*/\1/p' \
+              | awk '$1 >= 5 { print $1 ".0.x" }' | sort -t. -k1,1n -u || true)
+          fi
+          { echo 'versions<<SDK_SET_EOF'; echo "$versions"; echo 'SDK_SET_EOF'; } >> "$GITHUB_OUTPUT"
+          echo "SDKs: ${versions//$'\n'/ }"
+          # sdk-set: end
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
-          dotnet-version: ${{ inputs.dotnet-version }}
-          global-json-file: ${{ inputs.dotnet-version == '' && 'global.json' || '' }}
+          dotnet-version: ${{ steps.sdk.outputs.versions }}
+          global-json-file: ${{ inputs.dotnet-version == '' && hashFiles('global.json') != '' && 'global.json' || '' }}
 
       - name: mint packages token
         id: token
@@ -172,6 +201,9 @@ jobs:
           shopt -s nullglob
           pkgs=("$RUNNER_TEMP"/nupkg/*.nupkg)
           [ "${#pkgs[@]}" -gt 0 ] || { echo "::error::dotnet pack produced no .nupkg"; exit 1; }
+          # Symbol packages (.snupkg, IncludeSymbols + snupkg) are skipped on purpose:
+          # nora answers 400 to a SymbolsPackage push and its service index has no
+          # SymbolPackagePublish (nora-registry/src/registry/nuget/hosted.rs).
           for p in "${pkgs[@]}"; do
-            dotnet nuget push "$p" -s "$FEED" -k "$TOKEN" --skip-duplicate -t 600
+            dotnet nuget push "$p" -s "$FEED" -k "$TOKEN" --skip-duplicate --no-symbols -t 600
           done
