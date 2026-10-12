@@ -11,6 +11,7 @@ on:
       - ".github/workflows/ansible-os-update.yml"
       - ".github/workflows/npm-package-publish.yml"
       - ".github/workflows/nuget-package-publish.yml"
+      - ".github/workflows/python-package-publish.yml"
       - ".github/workflows/selftest.yml"
       - "ansible/tests/**"
       - "ci/**"
@@ -21,6 +22,7 @@ on:
       - ".github/workflows/ansible-os-update.yml"
       - ".github/workflows/npm-package-publish.yml"
       - ".github/workflows/nuget-package-publish.yml"
+      - ".github/workflows/python-package-publish.yml"
       - ".github/workflows/selftest.yml"
       - "ansible/tests/**"
       - "ci/**"
@@ -55,6 +57,9 @@ jobs:
 
       - name: nuget SDK set (TFM scan, override, workflow copy)
         run: bash scripts/test-nuget-sdk-set.sh
+
+      - name: pypi upload (skip existing, 409, pinned twine, workflow copy)
+        run: bash scripts/test-pypi-upload.sh
 
       # `mode: stage` is only safe BECAUSE it disrupts nothing — that is why it is
       # allowed to skip preflight. This checks the property structurally, so the
