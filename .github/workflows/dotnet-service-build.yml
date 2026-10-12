@@ -80,6 +80,8 @@
 # cache (extras ecr-pull-through, aws-infra terraform/main/eu/runs-on.tf), which
 # also covers BuildKit's docker-container builder. The yandex mirror prefix
 # `cr.yandex/crp2cvbrp76d7dmfegco/` is removed with scripts/dockerfile-from-fix.sh.
+# A Dockerfile that names this account's ECR (`FROM`/`COPY --from` of a private
+# base) gets an ECR login before the build (instance role, read only).
 #
 # Cache: buildx `type=gha` per image scope; RunsOn Magic Cache stores it in S3.
 
@@ -251,6 +253,8 @@ jobs:
         env:
           TEST_ENV: ${{ inputs.test-env }}
           ECR_REGISTRY: ${{ env.ECR_REGISTRY }}
+          DOCKER_TEST_TARGET: ${{ inputs.docker-test-target }}
+          DOCKERFILE: ${{ inputs.dockerfile }}
         run: |
           : > "$RUNNER_TEMP/test.env"
           while IFS= read -r line; do
@@ -263,9 +267,12 @@ jobs:
             printf '%s\n' "$line" >> "$GITHUB_ENV"
             echo "test env: ${key}"
           done <<< "$TEST_ENV"
-          # Testcontainers pulls with ~/.docker/config.json; log in to this
-          # account's ECR when a value names it (instance role, read only).
-          if grep -qF "$ECR_REGISTRY" "$RUNNER_TEMP/test.env"; then
+          # Testcontainers pulls with ~/.docker/config.json, and so does BuildKit
+          # for the docker-test-target stage; log in to this account's ECR when a
+          # value or that Dockerfile names it (instance role, read only).
+          ecr_refs=("$RUNNER_TEMP/test.env")
+          [ -n "$DOCKER_TEST_TARGET" ] && ecr_refs+=("$DOCKERFILE")
+          if grep -qsF "$ECR_REGISTRY" "${ecr_refs[@]}"; then
             aws ecr get-login-password --region "$(cut -d. -f4 <<< "$ECR_REGISTRY")" \
               | docker login --username AWS --password-stdin "$ECR_REGISTRY"
           fi
@@ -346,6 +353,17 @@ jobs:
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - run: mkdir -p .nuget # bind-mount source of the GitLab-era Dockerfiles
+
+      # BuildKit pulls base images with ~/.docker/config.json; log in to this
+      # account's ECR when the Dockerfile names it (instance role, read only).
+      - name: ecr login (base images)
+        env:
+          DOCKERFILE: ${{ inputs.dockerfile }}
+        run: |
+          if grep -qsF "$ECR_REGISTRY" "$DOCKERFILE"; then
+            aws ecr get-login-password --region "$(cut -d. -f4 <<< "$ECR_REGISTRY")" \
+              | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+          fi
 
       # Built into the local daemon as local/<image>:<release>, then pushed by the
       # shared push-to-aws-ecr-repository action: it creates the repository
