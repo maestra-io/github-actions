@@ -74,6 +74,14 @@ jobs:
       - name: dotnet-service-build image-targets / bakes parsing (workflow copy)
         run: bash scripts/test-dotnet-service-build.sh
 
+      # warn-as-error must keep tests running on the Microsoft.Testing.Platform
+      # runner too (a bare /warnaserror ran zero tests there, exit 5).
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.x
+      - name: dotnet-service-build warn-as-error on MTP and VSTest runners (workflow copy)
+        run: bash scripts/test-dotnet-service-build-mtp.sh
+
       # `mode: stage` is only safe BECAUSE it disrupts nothing — that is why it is
       # allowed to skip preflight. This checks the property structurally, so the
       # mode cannot quietly grow a drain.
