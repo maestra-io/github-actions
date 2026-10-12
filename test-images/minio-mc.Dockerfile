@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.28
 # MinIO server plus the `mc` client, for Testcontainers fixtures that exec `mc`
 # inside the server container (quay.io/minio/minio ships it; dm-serving
 # MinioTestFixture). mirror-test-images.yml downloads and verifies `mc`; the
