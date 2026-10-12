@@ -16,6 +16,7 @@ on:
       - "ansible/tests/**"
       - "ci/**"
       - "scripts/**"
+      - "push-helm-chart-to-aws-ecr/**"
   push:
     branches: [main]
     paths:
@@ -27,6 +28,7 @@ on:
       - "ansible/tests/**"
       - "ci/**"
       - "scripts/**"
+      - "push-helm-chart-to-aws-ecr/**"
 
 permissions:
   contents: read
@@ -57,6 +59,9 @@ jobs:
 
       - name: nuget SDK set (TFM scan, override, workflow copy)
         run: bash scripts/test-nuget-sdk-set.sh
+
+      - name: push-helm-chart-to-aws-ecr version resolution
+        run: bash scripts/test-helm-chart-version.sh
 
       - name: nuget build SDK pin (highest TFM, global.json kept/restored, workflow copy)
         run: bash scripts/test-nuget-sdk-pin.sh
