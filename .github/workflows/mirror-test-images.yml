@@ -35,7 +35,7 @@ env:
 
 jobs:
   image:
-    runs-on: runs-on=${{ github.run_id }}/pool=build
+    runs-on: runs-on=${{ github.run_id }}-image-${{ strategy.job-index }}/pool=build
     timeout-minutes: 20
     permissions:
       contents: read

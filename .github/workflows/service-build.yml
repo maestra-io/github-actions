@@ -174,7 +174,7 @@ env:
 
 jobs:
   version:
-    runs-on: runs-on=${{ github.run_id }}/pool=small
+    runs-on: runs-on=${{ github.run_id }}-version/pool=small
     timeout-minutes: 5
     outputs:
       release: ${{ steps.v.outputs.release }}
@@ -236,7 +236,7 @@ jobs:
 
   test:
     needs: version
-    runs-on: runs-on=${{ github.run_id }}/pool=build
+    runs-on: runs-on=${{ github.run_id }}-test/pool=build
     timeout-minutes: 45
     permissions:
       contents: read
@@ -361,7 +361,10 @@ jobs:
     # Not on pull_request unless pr-images: images are built (and checked) by the
     # release on the default branch and by the workflow_dispatch dry run.
     if: ${{ needs.version.outputs.images != '' && (github.event_name != 'pull_request' || inputs.pr-images) }}
-    runs-on: runs-on=${{ github.run_id }}/pool=build
+    # One label per leg: legs sharing `runs-on=<run_id>/pool=build` claim each
+    # other's runners, and the robbed leg waits out RunsOn's retry backoff
+    # (up to 42 min on 12.10, issues-maestra#1556).
+    runs-on: runs-on=${{ github.run_id }}-images-${{ strategy.job-index }}/pool=build
     timeout-minutes: 45
     permissions:
       contents: read
@@ -450,7 +453,7 @@ jobs:
     if: >-
       ${{ !cancelled() && needs.version.outputs.publish == 'true' && needs.test.result == 'success'
           && (needs.images.result == 'success' || (needs.images.result == 'skipped' && needs.version.outputs.images == '')) }}
-    runs-on: runs-on=${{ github.run_id }}/pool=small
+    runs-on: runs-on=${{ github.run_id }}-release/pool=small
     timeout-minutes: 5
     permissions:
       contents: write
@@ -471,7 +474,7 @@ jobs:
     needs: [version, release]
     # !cancelled(): a skipped `images` (bake-only) would otherwise skip every job after it.
     if: ${{ !cancelled() && inputs.bake && needs.version.outputs.publish == 'true' && needs.release.result == 'success' }}
-    runs-on: runs-on=${{ github.run_id }}/pool=small
+    runs-on: runs-on=${{ github.run_id }}-bake/pool=small
     timeout-minutes: 15
     permissions:
       contents: read
@@ -501,7 +504,7 @@ jobs:
   kargo-refresh:
     needs: [version, bake]
     if: ${{ !cancelled() && inputs.bake && inputs.kargo-refresh && needs.version.outputs.publish == 'true' && needs.bake.result == 'success' }}
-    runs-on: runs-on=${{ github.run_id }}/pool=small
+    runs-on: runs-on=${{ github.run_id }}-kargo-refresh/pool=small
     timeout-minutes: 5
     continue-on-error: true
     permissions:
