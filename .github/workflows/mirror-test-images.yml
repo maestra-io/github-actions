@@ -59,6 +59,16 @@ jobs:
             sha256: 8ec42f70f5db7bfe584790b06af3f7e2b16f48488ea4c96e0ebd8cea40990dfa
             dockerfile: test-images/minio.Dockerfile
             asset: minio
+          # minio RELEASE.2025-09-07T16-13-09Z + mc (dm-serving execs `mc` in the
+          # container, issues-maestra#1569); the entry's binary is mc, minio is
+          # ADDed with its checksum in the Dockerfile.
+          - repository: test-images/minio-mc
+            tag: RELEASE.2025-09-07T16-13-09Z
+            url: https://github.com/minio/mc/releases/download/RELEASE.2025-08-13T08-35-41Z/mc.linux-amd64.RELEASE.2025-08-13T08-35-41Z
+            sha256sum-url: https://github.com/minio/mc/releases/download/RELEASE.2025-08-13T08-35-41Z/mc.linux-amd64.RELEASE.2025-08-13T08-35-41Z.sha256sum
+            sha256: 01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891
+            dockerfile: test-images/minio-mc.Dockerfile
+            asset: mc
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
