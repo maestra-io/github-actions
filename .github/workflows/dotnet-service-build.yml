@@ -22,7 +22,10 @@
 #   image-targets       REQUIRED. `image=target` pairs, comma or newline
 #                       separated, as IMAGE_TARGETS_PAIRS in GitLab .build-docker:
 #                       <image> is the ECR repository, <target> the Dockerfile stage.
-#   dockerfile          Dockerfile path (default Dockerfile, context = repo root).
+#                       `image=<dockerfile>:<target>` builds from another Dockerfile
+#                       (repos with several, e.g. Dockerfile-celery); an empty
+#                       target (`image=` or `image=<dockerfile>:`) builds the last stage.
+#   dockerfile          Default Dockerfile path (default Dockerfile, context = repo root).
 #   dotnet-version      SDK for the `test` job (setup-dotnet syntax, e.g. 10.0.x).
 #                       Empty = global.json.
 #   solution-file       Solution/project for restore+test. Empty = dotnet discovers.
@@ -33,6 +36,12 @@
 #   docker-test-target  Dockerfile stage that runs the tests (GitLab .run-docker-test,
 #                       usually `tests`). Set = `test` builds and runs that stage
 #                       instead of setup-dotnet + dotnet test.
+#   test-command        Non-.NET repos: shell command run instead of dotnet test
+#                       (`bash -c`), with test-env, PACKAGES_TOKEN (nora OIDC token)
+#                       and PACKAGES_URL in its environment. docker-test-target wins
+#                       when both are set. `true` = no tests.
+#   test-image          With test-command: run it in this image (`docker run`, repo
+#                       mounted at /src, sh -c) instead of on the runner.
 #   warn-as-error       /warnaserror on dotnet test (default true, GitLab parity).
 #   test-env            Extra environment for the tests, KEY=VALUE per line (GitLab
 #                       job `variables:` of the test job, e.g. a Testcontainers image
@@ -46,6 +55,13 @@
 #   bake                Bake kustomization/ into <service>-manifests:<release> (default false).
 #   service             Service name for bake and Kargo. Default: repository name.
 #   bake-path           Passed to bake-oci-manifests (default ./kustomization).
+#   bakes               One repo, several warehouses (GitLab: several
+#                       maestra-bake-oci-manifests jobs). One bake per line:
+#                       `<service> <bake-path> [<image>,<image>...]`; images default
+#                       to all of image-targets and must be among them. Each line
+#                       bakes <service>-manifests:<release> and refreshes
+#                       kargo-<service>/<service>. Set = service, bake-path,
+#                       kargo-project and kargo-warehouse are ignored.
 #   kargo-refresh       Refresh the Kargo Warehouse after bake (default true; only with bake).
 #   kargo-project       Kargo project. Default kargo-<service>.
 #   kargo-warehouse     Warehouse to refresh. Default <service>.
@@ -66,6 +82,14 @@
 #                       (e.g. GITHUB_TOKEN for a repo still on GitHub Packages).
 # Outputs:
 #   release             The release number 1.1.N.
+#
+# Re-runs: images, GitHub release and bake are idempotent for "Re-run failed jobs"
+# of the same run (same release number). An image tag already in ECR is not pushed
+# again when its layers (rootfs diff_ids) equal the ones just built (the earlier
+# attempt pushed this very image), and fails clearly otherwise; the bake reuses
+# an existing <service>-manifests:<release> baked from the same commit with the
+# same content (bake-oci-manifests). A tag that cannot be reused means: dispatch
+# the release workflow again, it takes the next release number.
 #
 # Release number: `${vars.RELEASE_PREFIX:-1.1}.${github.run_number}`: always above
 # the GitLab 1.0.N, inside Kargo's `^1`. run_number belongs to the CALLER workflow
@@ -111,6 +135,12 @@ on:
       docker-test-target:
         type: string
         default: ""
+      test-command:
+        type: string
+        default: ""
+      test-image:
+        type: string
+        default: ""
       warn-as-error:
         type: boolean
         default: true
@@ -129,6 +159,9 @@ on:
       bake-path:
         type: string
         default: ./kustomization
+      bakes:
+        type: string
+        default: ""
       kargo-refresh:
         type: boolean
         default: true
@@ -183,6 +216,8 @@ jobs:
       matrix: ${{ steps.v.outputs.matrix }}
       images: ${{ steps.v.outputs.images }}
       service: ${{ steps.v.outputs.service }}
+      bakes: ${{ steps.v.outputs.bakes }}
+      multi-bake: ${{ steps.v.outputs.multi-bake }}
       publish: ${{ steps.v.outputs.publish }}
       teleport-token: ${{ steps.v.outputs.teleport-token }}
     steps:
@@ -192,7 +227,12 @@ jobs:
           PREFIX: ${{ vars.RELEASE_PREFIX }}
           RUN_NUMBER: ${{ github.run_number }}
           IMAGE_TARGETS: ${{ inputs.image-targets }}
+          DOCKERFILE: ${{ inputs.dockerfile }}
           SERVICE: ${{ inputs.service }}
+          BAKE_PATH: ${{ inputs.bake-path }}
+          BAKES: ${{ inputs.bakes }}
+          KARGO_PROJECT: ${{ inputs.kargo-project }}
+          KARGO_WAREHOUSE: ${{ inputs.kargo-warehouse }}
           REPO_NAME: ${{ github.event.repository.name }}
           PUSH: ${{ inputs.push && github.event_name != 'pull_request' }}
           TELEPORT_TOKEN: ${{ inputs.teleport-token }}
@@ -203,22 +243,57 @@ jobs:
             *) echo "::error::vars.RELEASE_PREFIX '$prefix' is not MAJOR.MINOR"; exit 1 ;;
           esac
           release="${prefix}.${RUN_NUMBER}"
-          # `image=target` pairs, comma or newline separated -> matrix JSON.
+          # >>> targets-and-bakes (scripts/test-dotnet-service-build.sh runs this block)
+          # `image=target` / `image=<dockerfile>:<target>` pairs, comma or newline
+          # separated -> images matrix. Empty target = last stage.
           matrix=$(printf '%s' "$IMAGE_TARGETS" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . \
-            | jq -Rnc '[inputs | split("=") | {image: .[0], target: .[1]}]')
+            | jq -Rnc --arg df "$DOCKERFILE" '[inputs | {image: (split("=")[0]), spec: (split("=")[1])}
+                | {image, dockerfile: (if (.spec // "") | contains(":") then (.spec | split(":")[0]) else $df end),
+                   target: (if (.spec // "") | contains(":") then (.spec | split(":")[1]) else .spec end)}]') || matrix='[]'
           if [ "$(jq 'length' <<<"$matrix")" -eq 0 ] \
-             || jq -e 'any(.[]; (.image // "") == "" or (.target // "") == "")' <<<"$matrix" >/dev/null; then
-            echo "::error::image-targets must be image=target pairs, got '$IMAGE_TARGETS'"; exit 1
+             || jq -e 'any(.[]; (.image // "") == "" or .target == null or (.dockerfile // "") == "")' <<<"$matrix" >/dev/null; then
+            echo "::error::image-targets must be image=target or image=<dockerfile>:<target> pairs, got '$IMAGE_TARGETS'"; exit 1
           fi
+          images=$(jq -r 'map(.image) | join(",")' <<<"$matrix")
+          # One bake (service, bake-path, Kargo project/warehouse inputs) or one per
+          # `bakes` line: `<service> <bake-path> [images]`.
+          if [ -n "$(printf '%s' "$BAKES" | tr -d '[:space:]')" ]; then
+            bakes=$(printf '%s\n' "$BAKES" | sed 's/#.*//' | grep -v '^[[:space:]]*$' \
+              | jq -Rnc --arg all "$images" '[inputs | [splits("[[:space:]]+")] | map(select(. != ""))
+                  | {service: .[0], "bake-path": .[1], images: (.[2] // $all), extra: .[3],
+                     "kargo-project": ("kargo-" + .[0]), "kargo-warehouse": .[0]}]') || bakes='[]'
+            if [ "$(jq 'length' <<<"$bakes")" -eq 0 ] \
+               || jq -e 'any(.[]; (.service // "") == "" or (.["bake-path"] // "") == "" or .extra != null)' <<<"$bakes" >/dev/null; then
+              echo "::error::bakes lines must be '<service> <bake-path> [image,image...]', got '$BAKES'"; exit 1
+            fi
+            unknown=$(jq -r --arg all "$images" '($all | split(",")) as $a | [.[].images | split(",")[] | select(. as $i | $a | index($i) | not)] | unique | join(",")' <<<"$bakes")
+            if [ -n "$unknown" ]; then
+              echo "::error::bakes name images that image-targets does not build: $unknown"; exit 1
+            fi
+            if [ "$(jq '[.[].service] | unique | length' <<<"$bakes")" -ne "$(jq 'length' <<<"$bakes")" ]; then
+              echo "::error::bakes lists a service twice"; exit 1
+            fi
+            bakes=$(jq -c 'map(del(.extra))' <<<"$bakes")
+            multi=true
+          else
+            svc="${SERVICE:-$REPO_NAME}"
+            bakes=$(jq -nc --arg s "$svc" --arg p "$BAKE_PATH" --arg i "$images" \
+              --arg kp "${KARGO_PROJECT:-kargo-$svc}" --arg kw "${KARGO_WAREHOUSE:-$svc}" \
+              '[{service: $s, "bake-path": $p, images: $i, "kargo-project": $kp, "kargo-warehouse": $kw}]')
+            multi=false
+          fi
+          # <<< targets-and-bakes
           {
             echo "release=$release"
             echo "matrix=$matrix"
-            echo "images=$(jq -r 'map(.image) | join(",")' <<<"$matrix")"
-            echo "service=${SERVICE:-$REPO_NAME}"
+            echo "images=$images"
+            echo "service=$(jq -r '.[0].service' <<<"$bakes")"
+            echo "bakes=$bakes"
+            echo "multi-bake=$multi"
             echo "publish=$PUSH"
             echo "teleport-token=${TELEPORT_TOKEN:-image-push-github-actions-${REPO_NAME}}"
           } >> "$GITHUB_OUTPUT"
-          echo "release $release, images $(jq -c 'map(.image)' <<<"$matrix"), publish=$PUSH"
+          echo "release $release, images $(jq -c 'map(.image)' <<<"$matrix"), bakes $(jq -c 'map(.service)' <<<"$bakes"), publish=$PUSH"
 
   test:
     needs: version
@@ -258,6 +333,7 @@ jobs:
           ECR_REGISTRY: ${{ env.ECR_REGISTRY }}
           DOCKER_TEST_TARGET: ${{ inputs.docker-test-target }}
           DOCKERFILE: ${{ inputs.dockerfile }}
+          TEST_IMAGE: ${{ inputs.test-image }}
         run: |
           : > "$RUNNER_TEMP/test.env"
           while IFS= read -r line; do
@@ -275,7 +351,7 @@ jobs:
           # value or that Dockerfile names it (instance role, read only).
           ecr_refs=("$RUNNER_TEMP/test.env")
           [ -n "$DOCKER_TEST_TARGET" ] && ecr_refs+=("$DOCKERFILE")
-          if grep -qsF "$ECR_REGISTRY" "${ecr_refs[@]}"; then
+          if grep -qsF "$ECR_REGISTRY" "${ecr_refs[@]}" || [[ "$TEST_IMAGE" == "$ECR_REGISTRY"/* ]]; then
             aws ecr get-login-password --region "$(cut -d. -f4 <<< "$ECR_REGISTRY")" \
               | docker login --username AWS --password-stdin "$ECR_REGISTRY"
           fi
@@ -302,13 +378,28 @@ jobs:
           TARGET: ${{ inputs.docker-test-target }}
         run: docker run --rm --env-file "$RUNNER_TEMP/test.env" "local/${TARGET}:latest"
 
+      # ── test-command (non-.NET repos) ───────────────────────────────────
+      - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+          TEST_IMAGE: ${{ inputs.test-image }}
+          PACKAGES_TOKEN: ${{ steps.token.outputs.token }}
+          PACKAGES_URL: ${{ inputs.packages-url }}
+        run: |
+          if [ -n "$TEST_IMAGE" ]; then
+            docker run --rm --env-file "$RUNNER_TEMP/test.env" -e PACKAGES_TOKEN -e PACKAGES_URL \
+              -v "$PWD:/src" -w /src "$TEST_IMAGE" sh -c "$TEST_COMMAND"
+          else
+            bash -c "$TEST_COMMAND"
+          fi
+
       # ── dotnet test (GitLab .update-source-and-test) ─────────────────────
-      - if: ${{ inputs.docker-test-target == '' }}
+      - if: ${{ inputs.docker-test-target == '' && inputs.test-command == '' }}
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: ${{ inputs.dotnet-version }}
           global-json-file: ${{ inputs.dotnet-version == '' && 'global.json' || '' }}
-      - if: ${{ inputs.docker-test-target == '' }}
+      - if: ${{ inputs.docker-test-target == '' && inputs.test-command == '' }}
         env:
           TOKEN: ${{ steps.token.outputs.token }}
           SOURCE: ${{ inputs.nuget-source-name }}
@@ -327,6 +418,9 @@ jobs:
 
   images:
     needs: [version, test]
+    # Explicit: the matrix carries `dockerfile` too, the check name stays
+    # `images (<image>, <target>)` as before.
+    name: images (${{ matrix.image }}, ${{ matrix.target }})
     runs-on: runs-on=${{ github.run_id }}/pool=build
     timeout-minutes: 45
     permissions:
@@ -362,7 +456,7 @@ jobs:
       # account's ECR when the Dockerfile names it (instance role, read only).
       - name: ecr login (base images)
         env:
-          DOCKERFILE: ${{ inputs.dockerfile }}
+          DOCKERFILE: ${{ matrix.dockerfile }}
         run: |
           if grep -qsF "$ECR_REGISTRY" "$DOCKERFILE"; then
             aws ecr get-login-password --region "$(cut -d. -f4 <<< "$ECR_REGISTRY")" \
@@ -377,7 +471,7 @@ jobs:
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
-          file: ${{ inputs.dockerfile }}
+          file: ${{ matrix.dockerfile }}
           target: ${{ matrix.target }}
           load: true
           push: false
@@ -395,8 +489,50 @@ jobs:
             ${{ inputs.docker-test-target != '' && format('type=gha,scope={0}', inputs.docker-test-target) || '' }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
 
-      - name: push ${{ matrix.image }}:${{ needs.version.outputs.release }}
+      # Idempotent re-run: the tag may already be in ECR (immutable) from an
+      # earlier attempt of this run. Same layers (rootfs diff_ids of the ECR
+      # image config = those of the image just built, i.e. a cache-hit rebuild
+      # of the same commit) = that attempt pushed this image: skip the push.
+      # Anything else would end in ECR TAG_INVALID: fail and say what to do.
+      # Layers, not the image id: with the containerd image store `.Id` is a
+      # manifest digest, and the config's `created` may differ between attempts.
+      - name: ${{ matrix.image }}:${{ needs.version.outputs.release }} already in ECR?
+        id: existing
         if: ${{ needs.version.outputs.publish == 'true' }}
+        env:
+          IMAGE: ${{ matrix.image }}
+          RELEASE: ${{ needs.version.outputs.release }}
+        run: |
+          region="$(cut -d. -f4 <<< "$ECR_REGISTRY")"
+          if ! out=$(aws ecr batch-get-image --region "$region" --repository-name "$IMAGE" \
+                --image-ids imageTag="$RELEASE" \
+                --accepted-media-types application/vnd.docker.distribution.manifest.v2+json application/vnd.oci.image.manifest.v1+json \
+                --output json 2>&1); then
+            if grep -q RepositoryNotFoundException <<<"$out"; then echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+            echo "::error::cannot read ${IMAGE}:${RELEASE} from ECR: $out"; exit 1
+          fi
+          if [ "$(jq '.images | length' <<<"$out")" -eq 0 ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          digest=$(jq -r '.images[0].imageId.imageDigest' <<<"$out")
+          config=$(jq -r '.images[0].imageManifest | fromjson | .config.digest // empty' <<<"$out")
+          remote=""
+          if [ -n "$config" ]; then
+            url=$(aws ecr get-download-url-for-layer --region "$region" --repository-name "$IMAGE" \
+              --layer-digest "$config" --query downloadUrl --output text)
+            remote=$(curl -sfL --retry 3 "$url" | jq -c '.rootfs.diff_ids') || remote=""
+          fi
+          local=$(docker image inspect --format '{{json .RootFS.Layers}}' "local/${IMAGE}:${RELEASE}" | jq -c .)
+          if [ -n "$remote" ] && [ "$remote" = "$local" ]; then
+            echo "${IMAGE}:${RELEASE} is already in ECR (${digest}) with the layers just built: push skipped"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::${IMAGE}:${RELEASE} already exists in ECR (${digest}) with other layers than the image built now; tags are immutable. Dispatch the release workflow again: it takes the next release number."
+            exit 1
+          fi
+
+      - name: push ${{ matrix.image }}:${{ needs.version.outputs.release }}
+        if: ${{ needs.version.outputs.publish == 'true' && steps.existing.outputs.skip != 'true' }}
         uses: maestra-io/github-actions/push-to-aws-ecr-repository@v1
         with:
           awsRegion: us-west-2
@@ -427,22 +563,28 @@ jobs:
           gh release create "$RELEASE" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "$RELEASE" --generate-notes
 
+  # One leg per warehouse (`bakes`); a single-bake caller keeps the check name `bake`.
   bake:
     needs: [version, release]
     if: ${{ inputs.bake && needs.version.outputs.publish == 'true' }}
+    name: ${{ needs.version.outputs.multi-bake == 'true' && format('bake ({0})', matrix.service) || 'bake' }}
     runs-on: runs-on=${{ github.run_id }}/pool=small
     timeout-minutes: 15
     permissions:
       contents: read
       id-token: write # Teleport join + cosign keyless
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.version.outputs.bakes) }}
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - uses: maestra-io/github-actions/bake-oci-manifests@v1
         with:
-          service: ${{ needs.version.outputs.service }}
-          images: ${{ needs.version.outputs.images }}
+          service: ${{ matrix.service }}
+          images: ${{ matrix.images }}
           tag: ${{ needs.version.outputs.release }}
-          bake-path: ${{ inputs.bake-path }}
+          bake-path: ${{ matrix.bake-path }}
           teleport-token: ${{ needs.version.outputs.teleport-token }}
 
   # Instant freight: POST /v1beta1/projects/<p>/warehouses/<w>/refresh on Kargo
@@ -460,27 +602,41 @@ jobs:
   kargo-refresh:
     needs: [version, bake]
     if: ${{ inputs.bake && inputs.kargo-refresh && needs.version.outputs.publish == 'true' }}
+    name: ${{ needs.version.outputs.multi-bake == 'true' && format('kargo-refresh ({0})', matrix.service) || 'kargo-refresh' }}
     runs-on: runs-on=${{ github.run_id }}/pool=small
     timeout-minutes: 5
     continue-on-error: true
     permissions:
       contents: read
       id-token: write # Teleport join
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.version.outputs.bakes) }}
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - id: tp-version
         run: |
-          v=$(curl -sf "https://${TELEPORT_FQDN}/webapi/find" | jq -r '.auto_update.tools_version // .server_version')
+          v=$(curl -sf --retry 5 --retry-all-errors "https://${TELEPORT_FQDN}/webapi/find" | jq -r '.auto_update.tools_version // .server_version')
           echo "version=$v" >> "$GITHUB_OUTPUT"
-      - uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
+      # Downloads from cdn.teleport.dev; one retry after a pause (5xx flakes).
+      - id: tp-setup
+        continue-on-error: true
+        uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
+        with:
+          version: ${{ steps.tp-version.outputs.version }}
+          proxy: ${{ env.TELEPORT_FQDN }}
+      - if: ${{ steps.tp-setup.outcome == 'failure' }}
+        run: sleep 20
+      - if: ${{ steps.tp-setup.outcome == 'failure' }}
+        uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
         with:
           version: ${{ steps.tp-version.outputs.version }}
           proxy: ${{ env.TELEPORT_FQDN }}
       - env:
           TOKEN_NAME: ${{ inputs.kargo-teleport-token }}
-          SERVICE: ${{ needs.version.outputs.service }}
-          PROJECT: ${{ inputs.kargo-project }}
-          WAREHOUSE: ${{ inputs.kargo-warehouse }}
+          PROJECT: ${{ matrix.kargo-project }}
+          WAREHOUSE: ${{ matrix.kargo-warehouse }}
         run: |
           out="$(mktemp -d)"
           cat > "$out/tbot.yaml" <<EOF
@@ -522,8 +678,8 @@ jobs:
             --context "teleport.maestra.io-us-iota-lw-kube-infra" \
             -n kargo create token kargo-ci-github --duration 10m)
           echo "::add-mask::$bearer"
-          project="${PROJECT:-kargo-${SERVICE}}"
-          warehouse="${WAREHOUSE:-${SERVICE}}"
+          project="${PROJECT}"
+          warehouse="${WAREHOUSE}"
           http=$(curl -sS -o "$out/resp" -w '%{http_code}' -X POST \
             --cert "$out/app/tlscert" --key "$out/app/key" \
             -H "Authorization: Bearer ${bearer}" \

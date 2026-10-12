@@ -148,11 +148,24 @@ runs:
       env:
         TELEPORT_FQDN: ${{ inputs.teleport-fqdn }}
       run: |
-        version=$(curl -sf "https://${TELEPORT_FQDN}/webapi/find" \
+        version=$(curl -sf --retry 5 --retry-all-errors "https://${TELEPORT_FQDN}/webapi/find" \
           | jq -r '.auto_update.tools_version // .server_version')
         echo "version=$version" >> "$GITHUB_OUTPUT"
 
-    - uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
+    # Binary downloads (cdn.teleport.dev, GitHub releases) 5xx now and then and
+    # a failed bake cannot be re-run past its own push (immutable tags): every
+    # download gets one retry after a pause.
+    - id: tp-setup
+      continue-on-error: true
+      uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
+      with:
+        version: ${{ steps.tp-version.outputs.version }}
+        proxy: ${{ inputs.teleport-fqdn }}
+    - if: ${{ steps.tp-setup.outcome == 'failure' }}
+      shell: bash
+      run: sleep 20
+    - if: ${{ steps.tp-setup.outcome == 'failure' }}
+      uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
       with:
         version: ${{ steps.tp-version.outputs.version }}
         proxy: ${{ inputs.teleport-fqdn }}
@@ -260,8 +273,10 @@ runs:
       env:
         FLUX_VERSION: ${{ inputs.flux-version }}
       run: |
-        curl -sL "https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/flux_${FLUX_VERSION}_linux_amd64.tar.gz" \
-          | sudo tar -xz -C /usr/local/bin flux
+        tgz="$(mktemp)"
+        curl -sfL --retry 5 --retry-delay 5 --retry-all-errors -o "$tgz" \
+          "https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/flux_${FLUX_VERSION}_linux_amd64.tar.gz"
+        sudo tar -xzf "$tgz" -C /usr/local/bin flux
         flux --version
 
     # ── Substitute the version placeholder ────────────────────────────────
@@ -353,15 +368,39 @@ runs:
         check_registry_floor external-vault-agent 4.3.1
 
     # ── Bake the OCI artifact ─────────────────────────────────────────────
+    # Idempotent re-run: a tag already pushed by an earlier attempt (e.g. the
+    # cosign download failed after the push) is reused when it was baked from
+    # this commit and holds exactly this tree; its digest goes on to signing
+    # and verification. Anything else fails: the repository is IMMUTABLE and
+    # the tag belongs to another bake. (Not compared by digest: `flux push`
+    # stamps a creation time, so a re-push of the same tree differs.)
     - name: flux push artifact
       id: push
       shell: bash
       env:
         ECR_REGISTRY: ${{ inputs.ecr-registry }}
+        AWS_REGION: ${{ inputs.aws-region }}
         IMAGE_MANIFESTS: ${{ inputs.service }}-manifests
         TAG: ${{ steps.ver.outputs.version }}
         BAKE_PATH: ${{ inputs.bake-path }}
       run: |
+        existing=$(aws ecr batch-get-image --region "$AWS_REGION" --repository-name "$IMAGE_MANIFESTS" \
+          --image-ids "imageTag=${TAG}" --accepted-media-types application/vnd.oci.image.manifest.v1+json \
+          --output json) || { echo "::error::cannot read ${IMAGE_MANIFESTS}:${TAG} from ECR"; exit 1; }
+        if [ "$(jq '.images | length' <<<"$existing")" -gt 0 ]; then
+          digest=$(jq -r '.images[0].imageId.imageDigest' <<<"$existing")
+          revision=$(jq -r '.images[0].imageManifest | fromjson | .annotations["org.opencontainers.image.revision"] // empty' <<<"$existing")
+          prev="$(mktemp -d)"
+          flux pull artifact "oci://${ECR_REGISTRY}/${IMAGE_MANIFESTS}:${TAG}" --output "$prev" >/dev/null
+          if [ "$revision" = "$GITHUB_SHA" ] && diff -r "$prev" "$BAKE_PATH" >/dev/null; then
+            echo "${IMAGE_MANIFESTS}:${TAG} already baked from ${GITHUB_SHA} with this tree (${digest}): push skipped"
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          diff -r "$prev" "$BAKE_PATH" | head -20 || true
+          echo "::error::${IMAGE_MANIFESTS}:${TAG} already exists (${digest}, revision ${revision:-unknown}) and is not this bake of ${GITHUB_SHA}; tags are immutable. Release again under a new tag."
+          exit 1
+        fi
         out=$(flux push artifact \
           "oci://${ECR_REGISTRY}/${IMAGE_MANIFESTS}:${TAG}" \
           --path "${BAKE_PATH}" \
@@ -371,7 +410,14 @@ runs:
         echo "$out" | jq .
         echo "digest=$(echo "$out" | jq -r .digest)" >> "$GITHUB_OUTPUT"
 
-    - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+    - id: cosign-install
+      continue-on-error: true
+      uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+    - if: ${{ steps.cosign-install.outcome == 'failure' }}
+      shell: bash
+      run: sleep 20
+    - if: ${{ steps.cosign-install.outcome == 'failure' }}
+      uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
 
     - name: cosign keyless sign manifests
       shell: bash
@@ -485,7 +531,7 @@ runs:
         # crane goes into a temp dir, never into the workspace — the tree that
         # was just packed into the artifact stays exactly as verified.
         CRANE_DIR="$(mktemp -d)"
-        curl -sfL "https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz" \
+        curl -sfL --retry 5 --retry-delay 5 --retry-all-errors "https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz" \
           | tar -xz -C "$CRANE_DIR" crane
         export PATH="${CRANE_DIR}:${PATH}"
         crane version
