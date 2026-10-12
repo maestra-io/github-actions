@@ -414,6 +414,7 @@ top of each file.
 | workflow | does | GitLab original |
 | --- | --- | --- |
 | [`dotnet-service-build.yml`](.github/workflows/dotnet-service-build.yml) | `version` → `test` → `images` (matrix) → `release` → `bake` → `kargo-refresh` | dotnet-service-cicd-components release-template, create-release-number, docker-push-to-all, maestra-bake-oci-manifests |
+| [`service-build.yml`](.github/workflows/service-build.yml) | same jobs as `dotnet-service-build.yml` for any language: `test` runs the repo's `test-command` (optional `python-version` / `node-version`) or a Dockerfile `docker-test-target`; build secrets under the Dockerfile's own ids (`build-secret-ids`) | docker-push-to-all, maestra-bake-oci-manifests, create-release-number, the repo's own GitLab test jobs |
 | [`nuget-package-publish.yml`](.github/workflows/nuget-package-publish.yml) | restore, build, test, pack, `dotnet nuget push` | dotnet-nuget-cicd-components |
 | [`npm-package-publish.yml`](.github/workflows/npm-package-publish.yml) | `npm ci`, test, `npm run release` (semantic-release) | frontend-ci-components `templates/lib` |
 | [`python-package-publish.yml`](.github/workflows/python-package-publish.yml) | poetry/uv build, test, `twine upload` | — |
