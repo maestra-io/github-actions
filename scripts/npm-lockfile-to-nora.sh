@@ -7,7 +7,7 @@
 # Artifactory locals serve scoped tarballs as /-/@scope/name-ver.tgz, nora (like
 # npmjs) as /-/name-ver.tgz, so both the prefix and that segment change. npm's
 # `replace-registry-host` cannot do this: it keeps the old path. registry.npmjs.org
-# URLs are left alone (`replace-registry-host=always` routes them through nora).
+# URLs are left alone (`replace-registry-host=npmjs` routes them through nora).
 # `integrity` is untouched: the imported tarballs are byte-identical. Idempotent.
 #
 # Usage: npm-lockfile-to-nora.sh [lockfile...]
