@@ -5,4 +5,8 @@
     <PackageId>Maestra.GithubActions.Selftest.MixedTfm</PackageId>
     <Version>0.0.0-selftest</Version>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- The SDK that compiled this assembly, read back by the tests. -->
+    <AssemblyMetadata Include="BuildSdk" Value="$(NETCoreSdkVersion)" />
+  </ItemGroup>
 </Project>
