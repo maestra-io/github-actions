@@ -21,7 +21,17 @@
 #   scope             npm scope served by nora (default @mindbox-cloud).
 #   packages-url      Default https://packages.maestra.io (npm at /npm/).
 #   packages-audience `aud` of the GitHub OIDC token nora accepts (default packages.maestra.io).
-#   test-script       npm script run after install, --if-present (default test).
+#   checks            npm scripts run after install, space-separated, each only if
+#                     the package has it (default: the lib@3 merge-request jobs
+#                     graphql-codegen check-types check-scripts check-styles test).
+#                     All of them run even after one fails; the failed ones are
+#                     listed in the job summary and fail the step at the end.
+#   test-script       Legacy single script (default test). Any other value runs
+#                     only that script, --if-present, instead of `checks`; empty
+#                     skips both.
+#   report-coverage   On pull_request, run `test` with vitest coverage and keep a
+#                     sticky "Coverage summary" comment on the PR (lib@3
+#                     report-coverage). Needs `checks` (not a custom test-script).
 #   build-script      npm script run before release, --if-present (default build:npm-package).
 #   release-script    npm script that runs semantic-release (default release).
 #   release           Run the release on push (default true). Never on pull_request.
@@ -69,9 +79,15 @@ on:
       packages-audience:
         type: string
         default: packages.maestra.io
+      checks:
+        type: string
+        default: graphql-codegen check-types check-scripts check-styles test
       test-script:
         type: string
         default: test
+      report-coverage:
+        type: boolean
+        default: false
       build-script:
         type: string
         default: build:npm-package
@@ -163,11 +179,83 @@ jobs:
           npm ci --prefer-offline --ignore-scripts
           [ "${#locks[@]}" -eq 0 ] || git checkout -- "${locks[@]}"
 
+      # lib@3 ran these as separate jobs, so one red check did not hide the others.
+      # graphql-codegen goes first: on push it generates the code build:npm-package needs.
+      - name: checks
+        id: checks
+        if: ${{ inputs.test-script == 'test' && inputs.checks != '' }}
+        env:
+          CHECKS: ${{ inputs.checks }}
+          COVERAGE: ${{ inputs.report-coverage && github.event_name == 'pull_request' }}
+        run: |
+          # npm-checks: begin
+          summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          printf '### npm checks\n\n| script | result |\n|---|---|\n' >> "$summary"
+          failed=""
+          for s in $CHECKS; do
+            if ! jq -e --arg s "$s" '.scripts[$s]' package.json > /dev/null; then
+              echo "| \`$s\` | no such script |" >> "$summary"
+              continue
+            fi
+            set --
+            case "$s" in
+              check-styles) set -- --allow-empty-input ;;
+              test) [ "$COVERAGE" != true ] || set -- --coverage --coverage.reportsDirectory=coverage \
+                      --coverage.reporter=json-summary --coverage.reporter=text-summary --coverage.reporter=lcov ;;
+            esac
+            echo "::group::npm run $s $*"
+            if npm run "$s" ${1:+--} "$@"; then r=passed; else r=failed; failed="$failed $s"; fi
+            echo "::endgroup::"
+            echo "| \`$s\` | $r |" >> "$summary"
+          done
+          [ -z "$failed" ] || { echo "::error::npm checks failed:$failed"; exit 1; }
+          # npm-checks: end
+
       - name: test
-        if: ${{ inputs.test-script != '' }}
+        if: ${{ inputs.test-script != 'test' && inputs.test-script != '' }}
         env:
           SCRIPT: ${{ inputs.test-script }}
         run: npm run --if-present "$SCRIPT"
+
+      - name: upload coverage
+        if: ${{ always() && inputs.report-coverage && github.event_name == 'pull_request' && steps.checks.conclusion != 'skipped' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage
+          path: coverage/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # lib@3 comment-coverage: one comment per PR, updated on every push. A fork
+      # PR has a read-only token; the comment is a nicety, not a check.
+      - name: coverage comment
+        if: ${{ always() && inputs.report-coverage && github.event_name == 'pull_request' && steps.checks.conclusion != 'skipped' }}
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const MARKER = '<!-- npm-package-publish-coverage -->';
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            let body;
+            try {
+              const total = JSON.parse(fs.readFileSync('coverage/coverage-summary.json', 'utf8')).total;
+              const rows = ['statements', 'branches', 'functions', 'lines']
+                .map(k => `| ${k} | ${total[k].pct}% | ${total[k].covered}/${total[k].total} |`);
+              body = [MARKER, '**Coverage summary**', '', '| | % | covered |', '|---|---|---|', ...rows, '',
+                `Full report: \`coverage\` artifact of [the run](${run}).`];
+            } catch {
+              body = [MARKER, '**Coverage report** :x:', '', `Coverage not found in [the run](${run}).`];
+            }
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const existing = comments.find(c => c.body && c.body.includes(MARKER));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body: body.join('\n') });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body: body.join('\n') });
+            }
 
       # Fresh token: tests may outlive the first one.
       - name: mint release token
