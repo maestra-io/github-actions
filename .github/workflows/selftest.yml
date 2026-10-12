@@ -10,6 +10,7 @@ on:
     paths:
       - ".github/workflows/ansible-os-update.yml"
       - ".github/workflows/npm-package-publish.yml"
+      - ".github/workflows/nuget-package-publish.yml"
       - ".github/workflows/selftest.yml"
       - "ansible/tests/**"
       - "ci/**"
@@ -19,6 +20,7 @@ on:
     paths:
       - ".github/workflows/ansible-os-update.yml"
       - ".github/workflows/npm-package-publish.yml"
+      - ".github/workflows/nuget-package-publish.yml"
       - ".github/workflows/selftest.yml"
       - "ansible/tests/**"
       - "ci/**"
@@ -51,6 +53,9 @@ jobs:
       - name: npm-lockfile-to-nora (rewrite, keep, idempotence, workflow copy)
         run: bash scripts/test-npm-lockfile-to-nora.sh
 
+      - name: nuget SDK set (TFM scan, override, workflow copy)
+        run: bash scripts/test-nuget-sdk-set.sh
+
       # `mode: stage` is only safe BECAUSE it disrupts nothing — that is why it is
       # allowed to skip preflight. This checks the property structurally, so the
       # mode cannot quietly grow a drain.
@@ -78,3 +83,16 @@ jobs:
             grep -qF -- "$line" ansible/tests/test-host-limit-selector.sh \
               || { echo "::error::test no longer contains: $line"; exit 1; }
           done
+
+  # End to end: the real reusable workflow on a net8.0 + net10.0 solution with no
+  # global.json. Each test asserts it runs on its own target's runtime (no
+  # RollForward), so a missing 8.0 runtime fails here the way Mindbox.Tenants
+  # PR #2 failed. PR-only: on a push to main the workflow would publish.
+  nuget-mixed-tfm:
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/nuget-package-publish.yml
+    permissions:
+      contents: read
+      id-token: write # the workflow mints a nora token even when it only builds
+    with:
+      solution-file: ci/fixtures/nuget-mixed-tfm/Mixed.sln
