@@ -73,8 +73,14 @@ jobs:
       - name: pypi upload (skip existing, 409, pinned twine, workflow copy)
         run: bash scripts/test-pypi-upload.sh
 
-      - name: dotnet-service-build image-targets / bakes parsing (workflow copy)
+      - name: dotnet-service-build image-targets / bakes, global.json SDK, AWS credentials wait (workflow copy)
         run: bash scripts/test-dotnet-service-build.sh
+
+      # A cached layer that holds the packages token replays it after it expired
+      # (maestra-io/billing publish -r linux-x64: 401). Docker + a fake feed that
+      # accepts only the current token; the GitLab-era Dockerfile must reproduce it.
+      - name: dotnet-service-build packages token (layer cache, token files, expired-token e2e; workflow copy)
+        run: bash scripts/test-dotnet-service-build-cache.sh
 
       - name: service-build image-targets parsing (workflow copy)
         run: bash scripts/test-service-build.sh

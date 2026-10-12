@@ -310,6 +310,27 @@ jobs:
       # ── Dockerfile stage (GitLab .run-docker-test) ───────────────────────
       - if: ${{ inputs.docker-test-target != '' }}
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      # Layer cache only for a Dockerfile that never writes the token into a layer:
+      # a cached layer replays it after it expired (dotnet-service-build.yml header).
+      - if: ${{ inputs.docker-test-target != '' }}
+        name: layer cache
+        id: cache
+        env:
+          DOCKERFILE: ${{ inputs.dockerfile }}
+          SCOPES: ${{ inputs.docker-test-target }}
+        run: |
+          # >>> layer-cache (scripts/test-dotnet-service-build-cache.sh runs this block)
+          persists='--password|ClearTextPassword|_authToken|http-basic|^[[:space:]]*ARG[[:space:]]+[A-Za-z0-9_]*(TOKEN|PASSWORD)'
+          if grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
+            echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer (GitLab-era 'dotnet nuget update source --password'): built WITHOUT the layer cache, a cached layer would replay an expired token. Mount it per RUN instead: --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_<source> (scripts/nuget-secret-mount-fix.sh)."
+            from=""; to=""
+          else
+            scopes=$(printf '%s\n' "$SCOPES" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . || true)
+            from=$(awk '{print "type=gha,scope=" $0}' <<<"$scopes")
+            to="type=gha,mode=max,scope=$(head -n1 <<<"$scopes")"
+          fi
+          { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; } >> "$GITHUB_OUTPUT"
+          # <<< layer-cache
       - if: ${{ inputs.docker-test-target != '' }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -320,8 +341,8 @@ jobs:
           tags: local/${{ inputs.docker-test-target }}:latest
           build-args: ${{ inputs.build-args }}
           secrets: ${{ steps.secrets.outputs.value }}
-          cache-from: type=gha,scope=${{ inputs.docker-test-target }}
-          cache-to: type=gha,mode=max,scope=${{ inputs.docker-test-target }}
+          cache-from: ${{ steps.cache.outputs.from }}
+          cache-to: ${{ steps.cache.outputs.to }}
       - if: ${{ inputs.docker-test-target != '' }}
         env:
           TARGET: ${{ inputs.docker-test-target }}
@@ -429,6 +450,29 @@ jobs:
               | docker login --username AWS --password-stdin "$ECR_REGISTRY"
           fi
 
+      # Layer cache only for a Dockerfile that never writes the token into a layer:
+      # a cached layer replays it after it expired (dotnet-service-build.yml header).
+      - name: layer cache
+        id: cache
+        env:
+          DOCKERFILE: ${{ matrix.dockerfile }}
+          SCOPES: |
+            ${{ matrix.image }}
+            ${{ inputs.docker-test-target }}
+        run: |
+          # >>> layer-cache (scripts/test-dotnet-service-build-cache.sh runs this block)
+          persists='--password|ClearTextPassword|_authToken|http-basic|^[[:space:]]*ARG[[:space:]]+[A-Za-z0-9_]*(TOKEN|PASSWORD)'
+          if grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
+            echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer (GitLab-era 'dotnet nuget update source --password'): built WITHOUT the layer cache, a cached layer would replay an expired token. Mount it per RUN instead: --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_<source> (scripts/nuget-secret-mount-fix.sh)."
+            from=""; to=""
+          else
+            scopes=$(printf '%s\n' "$SCOPES" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . || true)
+            from=$(awk '{print "type=gha,scope=" $0}' <<<"$scopes")
+            to="type=gha,mode=max,scope=$(head -n1 <<<"$scopes")"
+          fi
+          { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; } >> "$GITHUB_OUTPUT"
+          # <<< layer-cache
+
       # Built into the local daemon as local/<image>:<release>, then pushed by the
       # shared push-to-aws-ecr-repository action: it creates the repository
       # IMMUTABLE_WITH_EXCLUSION with the org pull policy and logs in through the
@@ -451,10 +495,8 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ needs.version.outputs.release }}
           secrets: ${{ steps.secrets.outputs.value }}
-          cache-from: |
-            type=gha,scope=${{ matrix.image }}
-            ${{ inputs.docker-test-target != '' && format('type=gha,scope={0}', inputs.docker-test-target) || '' }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          cache-from: ${{ steps.cache.outputs.from }}
+          cache-to: ${{ steps.cache.outputs.to }}
 
       - name: push ${{ matrix.image }}:${{ needs.version.outputs.release }}
         if: ${{ needs.version.outputs.publish == 'true' }}

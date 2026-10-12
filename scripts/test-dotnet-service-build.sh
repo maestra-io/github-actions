@@ -60,3 +60,51 @@ fails "a=t" "" "base empty name" "=Dockerfile-base"
 fails "a=t" "" "base empty dockerfile" "base=:t"
 fails "a=t" "" "base three fields" "base=D:t:c"
 echo "dotnet-service-build targets/bakes/base-image: OK"
+
+# ── sdk-version: a global.json setup-dotnet rejects gets <major>.<minor>.x ──────
+sdk=$(sed -n '/# >>> sdk-version/,/# <<< sdk-version/p' "$wf" | sed 's/^          //')
+[ -n "$sdk" ] || { echo "sdk-version block not found in $wf"; exit 1; }
+work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+# sdk_for <DOTNET_VERSION> <global.json content or "-" for none> -> "version|file"
+sdk_for() {
+  rm -f "$work/global.json"; [ "$2" = "-" ] || printf '%s' "$2" > "$work/global.json"
+  : > "$work/out"
+  (cd "$work" && DOTNET_VERSION="$1" GITHUB_OUTPUT="$work/out" bash -c "set -eo pipefail; $sdk" >/dev/null)
+  echo "$(sed -n 's/^version=//p' "$work/out")|$(sed -n 's/^file=//p' "$work/out")"
+}
+eq "$(sdk_for "" '{"sdk":{"version":"10.0.0","rollForward":"latestMajor"}}')" "10.0.x|" "10.0.0 + rollForward"
+eq "$(sdk_for "" '{"sdk":{"version":"8.0.0","rollForward":"latestFeature"}}')" "8.0.x|" "8.0.0 + rollForward"
+eq "$(sdk_for "" '{"sdk":{"version":"9.0.5","rollForward":"latestPatch"}}')" "9.0.x|" "runtime-like patch + rollForward"
+eq "$(sdk_for "" '{"sdk":{"version":"10.0.100","rollForward":"latestFeature"}}')" "|global.json" "full SDK version: setup-dotnet reads it"
+eq "$(sdk_for "" '{"sdk":{"version":"10.0.0"}}')" "|global.json" "no rollForward: as is"
+eq "$(sdk_for "" '{"sdk":{"version":"10.0.100-rc.1.25451.107","rollForward":"latestMajor"}}')" "|global.json" "prerelease: as is"
+eq "$(sdk_for "" $'{ // comment\n "sdk": {"version":"10.0.0","rollForward":"latestMajor"} }')" "|global.json" "unreadable global.json: as is"
+eq "$(sdk_for "" -)" "|global.json" "no global.json: as before"
+eq "$(sdk_for "8.0.x" '{"sdk":{"version":"10.0.0","rollForward":"latestMajor"}}')" "8.0.x|" "explicit dotnet-version wins"
+echo "dotnet-service-build sdk-version: OK"
+
+# ── aws-credentials: wait out a fresh instance's NoCredentials ─────────────────
+aws=$(awk 'index($0,"# >>> aws-credentials"){n++} n==1{print} n==1&&index($0,"# <<< aws-credentials"){exit}' "$wf" | sed 's/^          //')
+[ -n "$aws" ] || { echo "aws-credentials block not found in $wf"; exit 1; }
+[ "$(sed -n '/# >>> aws-credentials/,/# <<< aws-credentials/p' "$wf" | sed 's/^          //')" = "$(printf '%s\n%s' "$aws" "$aws")" ] \
+  || { echo "FAIL aws-credentials: the test and images copies differ"; exit 1; }
+mkdir -p "$work/bin"
+cat > "$work/bin/aws" <<'A'
+#!/usr/bin/env bash
+n=$(( $(cat "$AWS_N") + 1 )); echo "$n" > "$AWS_N"
+[ "$n" -gt "$AWS_FAILS" ] && { echo 515260921971; exit 0; }
+echo "Unable to locate credentials. You can configure credentials by running \"aws configure\"." >&2; exit 253
+A
+chmod +x "$work/bin/aws"
+# aws_run <fails before success> -> "<aws calls> <sleeps> <exit>"
+aws_run() {
+  echo 0 > "$work/n"; : > "$work/sleeps"; local rc=0
+  PATH="$work/bin:$PATH" AWS_N="$work/n" AWS_FAILS="$1" ECR_REGISTRY=515260921971.dkr.ecr.us-west-2.amazonaws.com \
+    bash -c "set -eo pipefail; sleep() { echo \"\$1\" >> '$work/sleeps'; }; $aws" >"$work/out" 2>&1 || rc=$?
+  echo "$(cat "$work/n") $(wc -l < "$work/sleeps" | tr -d ' ') $rc"
+}
+eq "$(aws_run 0)" "1 0 0" "credentials at once"
+eq "$(aws_run 3)" "4 3 0" "NoCredentials 3x, then credentials"
+eq "$(aws_run 9)" "5 4 0" "never: 5 tries, then the AWS steps report it"
+grep -q '::warning::no AWS credentials' "$work/out" || { cat "$work/out"; echo "FAIL aws-credentials: no warning"; exit 1; }
+echo "dotnet-service-build aws-credentials: OK"

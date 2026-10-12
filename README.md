@@ -424,3 +424,10 @@ top of each file.
 `cr.yandex/crp2cvbrp76d7dmfegco/` mirror prefix from `FROM` lines (idempotent);
 base images then come from `mcr.microsoft.com` directly and from `docker.io`
 through RunsOn's ECR pull-through cache.
+
+[`scripts/nuget-secret-mount-fix.sh`](scripts/nuget-secret-mount-fix.sh) replaces the
+GitLab-era `dotnet nuget update source private --password $(cat /run/secrets/...)`
+RUN (it writes the minutes-lived OIDC token into a cached layer, replayed after it
+expired) with `--mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_<source>`
+on every `dotnet` RUN that can reach the feed (idempotent). Until then the
+workflows build such a Dockerfile without the layer cache.
