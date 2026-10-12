@@ -47,6 +47,9 @@
 #                       passed under (the Dockerfile's `--mount=type=secret,id=...`).
 #                       Default PRIVATE_PACKAGES_TOKEN.
 #   build-args          Extra `--build-arg`s, KEY=VALUE per line (not secret).
+#   pr-images           Build the images on pull_request too (default false: a PR runs
+#                       tests only; a broken Dockerfile surfaces in the release on the
+#                       default branch, before anything is pushed).
 #   push                Push images and run release/bake/kargo-refresh (default
 #                       true). Never on pull_request. false = build-only dry run.
 #   bake                Bake kustomization/ into <service>-manifests:<release> (default false).
@@ -102,6 +105,9 @@ on:
       build-args:
         type: string
         default: ""
+      pr-images:
+        type: boolean
+        default: false
       push:
         type: boolean
         default: true
@@ -323,6 +329,9 @@ jobs:
 
   images:
     needs: [version, test]
+    # Not on pull_request unless pr-images: images are built (and checked) by the
+    # release on the default branch and by the workflow_dispatch dry run.
+    if: ${{ github.event_name != 'pull_request' || inputs.pr-images }}
     runs-on: runs-on=${{ github.run_id }}/pool=build
     timeout-minutes: 45
     permissions:
