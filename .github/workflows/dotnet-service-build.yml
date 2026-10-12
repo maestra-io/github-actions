@@ -37,7 +37,9 @@
 #                       as an OCI layout handed to the build as the `<name>` build context.
 #                       Context = repo root. Never pushed. Empty = none.
 #   dotnet-version      SDK for the `test` job (setup-dotnet syntax, e.g. 10.0.x).
-#                       Empty = global.json.
+#                       Empty = global.json; a global.json that setup-dotnet rejects
+#                       (`rollForward` with a non-SDK version such as 10.0.0) gets
+#                       <major>.<minor>.x instead.
 #   solution-file       Solution/project for restore+test. Empty = dotnet discovers.
 #   test-filter         dotnet test --filter (default TestCategory!=IntegrationTest).
 #                       Empty = no --filter: required for Microsoft.Testing.Platform
@@ -116,11 +118,30 @@
 # file: renaming that file restarts it at 1 and collides with existing (immutable)
 # tags, so set RELEASE_PREFIX (e.g. 1.2) when that happens.
 #
-# Registry token: nora accepts the GitHub Actions OIDC token. It is minted per job
-# (audience packages-audience) and handed to the Dockerfile under the secret id the
-# Dockerfiles already use (`--mount=type=secret,id=PRIVATE_PACKAGES_TOKEN`), so no
-# Dockerfile changes for auth. The nuget.config source URL still has to point at
-# packages.maestra.io (migration wave).
+# Registry token: nora accepts the GitHub Actions OIDC token (audience
+# packages-audience). It lives MINUTES, so the docker builds get it as secret FILES
+# that a background loop re-mints every minute (BuildKit reads the file at each RUN
+# that mounts it). Two BuildKit secrets carry it:
+#   PRIVATE_PACKAGES_TOKEN  the raw token (GitLab-era id);
+#   NUGET_CREDENTIALS       `Username=ci;Password=<token>`, the value format of NuGet's
+#                           NuGetPackageSourceCredentials_<source> variable, which
+#                           wins over nuget.config credentials.
+# Dockerfile pattern: mount the token on EVERY RUN that may reach the feed (restore,
+# build/publish/test without --no-restore: `publish -r <rid>` restores runtime packs),
+# never write it into a file:
+#   RUN --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private \
+#       dotnet restore
+#   FROM build AS publish
+#   RUN --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private \
+#       dotnet publish src/Svc/Svc.csproj -c Release -r linux-x64 -o /dist
+# (`private` = the nuget.config source key). A secret's value is not part of the layer
+# cache key: the GitLab-era `RUN --mount=type=secret,... dotnet nuget update source
+# private --password $(cat /run/secrets/...)` writes a token into NuGet.Config that the
+# cache replays in later jobs and runs after it expired (401 as soon as a later step
+# restores). Such a Dockerfile (a `--password`, `ClearTextPassword`, `_authToken`,
+# `http-basic` or `ARG ...TOKEN/PASSWORD` line) is built WITHOUT the layer cache, with
+# a warning; scripts/nuget-secret-mount-fix.sh rewrites it to the pattern above. The
+# nuget.config source URL still has to point at packages.maestra.io (migration wave).
 #
 # Base images: Dockerfiles use `FROM mcr.microsoft.com/...` directly (MCR has no pull
 # limits); `docker.io/...` is mirrored transparently by RunsOn's ECR pull-through
@@ -130,7 +151,12 @@
 # A Dockerfile that names this account's ECR (`FROM`/`COPY --from` of a private
 # base) gets an ECR login before the build (instance role, read only).
 #
-# Cache: buildx `type=gha` per image scope; RunsOn Magic Cache stores it in S3.
+# Cache: buildx `type=gha` per image scope (images also read the docker-test-target
+# scope); RunsOn Magic Cache stores it in S3. Off for a Dockerfile that writes a token
+# into a layer (see Registry token).
+#
+# AWS: a fresh RunsOn instance can lack its instance-role credentials for a few seconds
+# (NoCredentials); `test` and `images` wait up to ~40 s for them before any AWS call.
 
 name: dotnet-service-build
 
@@ -381,6 +407,19 @@ jobs:
             core.setSecret(t);
             core.setOutput('token', t);
 
+      - name: aws credentials
+        run: |
+          # >>> aws-credentials (scripts/test-dotnet-service-build.sh runs this block)
+          # A fresh RunsOn instance can lack its instance-role credentials for a few
+          # seconds (NoCredentials): wait for them before the first AWS call.
+          region="$(cut -d. -f4 <<< "$ECR_REGISTRY")"
+          for i in 1 2 3 4 5; do
+            aws sts get-caller-identity --region "$region" --query Account --output text >/dev/null 2>&1 && exit 0
+            [ "$i" -lt 5 ] && sleep 10
+          done
+          echo "::warning::no AWS credentials after 5 tries; the AWS calls below may fail"
+          # <<< aws-credentials
+
       - name: test-env
         env:
           TEST_ENV: ${{ inputs.test-env }}
@@ -416,6 +455,53 @@ jobs:
       - if: ${{ inputs.docker-test-target != '' }}
         # GitLab Dockerfiles bind-mount the CI NuGet cache dir; it must exist.
         run: mkdir -p .nuget
+      # Layer cache only for a Dockerfile that never writes the token into a layer
+      # (header, Registry token).
+      - if: ${{ inputs.docker-test-target != '' }}
+        name: layer cache
+        id: cache
+        env:
+          DOCKERFILE: ${{ inputs.dockerfile }}
+          SCOPES: ${{ inputs.docker-test-target }}
+        run: |
+          # >>> layer-cache (scripts/test-dotnet-service-build-cache.sh runs this block)
+          persists='--password|ClearTextPassword|_authToken|http-basic|^[[:space:]]*ARG[[:space:]]+[A-Za-z0-9_]*(TOKEN|PASSWORD)'
+          if grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
+            echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer (GitLab-era 'dotnet nuget update source --password'): built WITHOUT the layer cache, a cached layer would replay an expired token. Mount it per RUN instead: --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_<source> (scripts/nuget-secret-mount-fix.sh)."
+            from=""; to=""
+          else
+            scopes=$(printf '%s\n' "$SCOPES" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . || true)
+            from=$(awk '{print "type=gha,scope=" $0}' <<<"$scopes")
+            to="type=gha,mode=max,scope=$(head -n1 <<<"$scopes")"
+          fi
+          { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; } >> "$GITHUB_OUTPUT"
+          # <<< layer-cache
+      # BuildKit reads a secret FILE each time a RUN mounts it: the files are rewritten
+      # with a fresh OIDC token every minute, so a RUN late in a long build still gets a
+      # live one (header, Registry token).
+      - name: packages token files
+        env:
+          OVERRIDE: ${{ secrets.private-packages-token }}
+          AUDIENCE: ${{ inputs.packages-audience }}
+        run: |
+          # >>> token-files (scripts/test-dotnet-service-build-cache.sh runs this block)
+          dir="$RUNNER_TEMP/packages-token"; mkdir -p "$dir"; chmod 700 "$dir"
+          write() { # <token>: atomic, a reader never sees half a file
+            printf '%s' "$1" > "$dir/.t" && mv -f "$dir/.t" "$dir/PRIVATE_PACKAGES_TOKEN"
+            printf 'Username=ci;Password=%s' "$1" > "$dir/.n" && mv -f "$dir/.n" "$dir/NUGET_CREDENTIALS"
+          }
+          mint() {
+            curl -sSf --retry 3 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" | jq -r '.value // empty'
+          }
+          if [ -n "$OVERRIDE" ]; then write "$OVERRIDE"; exit 0; fi
+          t=$(mint) && [ -n "$t" ] || { echo "::error::cannot mint the packages OIDC token"; exit 1; }
+          echo "::add-mask::$t"
+          write "$t"
+          # Lives until the runner's orphan cleanup at the end of the job. Its tokens are
+          # not masked (no workflow commands after the step): never print a secret in a RUN.
+          ( while sleep 60; do t=$(mint) && [ -n "$t" ] && write "$t"; done ) </dev/null >/dev/null 2>&1 &
+          # <<< token-files
       - if: ${{ inputs.docker-test-target != '' }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -424,9 +510,11 @@ jobs:
           target: ${{ inputs.docker-test-target }}
           load: true
           tags: local/${{ inputs.docker-test-target }}:latest
-          secrets: PRIVATE_PACKAGES_TOKEN=${{ steps.token.outputs.token }}
-          cache-from: type=gha,scope=${{ inputs.docker-test-target }}
-          cache-to: type=gha,mode=max,scope=${{ inputs.docker-test-target }}
+          secret-files: |
+            PRIVATE_PACKAGES_TOKEN=${{ runner.temp }}/packages-token/PRIVATE_PACKAGES_TOKEN
+            NUGET_CREDENTIALS=${{ runner.temp }}/packages-token/NUGET_CREDENTIALS
+          cache-from: ${{ steps.cache.outputs.from }}
+          cache-to: ${{ steps.cache.outputs.to }}
       - if: ${{ inputs.docker-test-target != '' }}
         env:
           TARGET: ${{ inputs.docker-test-target }}
@@ -448,11 +536,33 @@ jobs:
           fi
 
       # ── dotnet test (GitLab .update-source-and-test) ─────────────────────
+      # setup-dotnet rejects a global.json `rollForward` with a version that is not a
+      # full SDK version (10.0.0, 8.0.0); dotnet itself rolls forward from it. Such a
+      # file gets <major>.<minor>.x; an explicit dotnet-version always wins.
+      - if: ${{ inputs.docker-test-target == '' && inputs.test-command == '' }}
+        id: sdk
+        env:
+          DOTNET_VERSION: ${{ inputs.dotnet-version }}
+        run: |
+          # >>> sdk-version (scripts/test-dotnet-service-build.sh runs this block)
+          version="$DOTNET_VERSION"; file=""
+          if [ -z "$version" ]; then
+            file=global.json
+            # Same test as setup-dotnet; a global.json jq cannot read (comments) is passed as is.
+            v=$(jq -r '.sdk.version // empty' global.json 2>/dev/null) || v=""
+            rf=$(jq -r '.sdk.rollForward // empty' global.json 2>/dev/null) || rf=""
+            if [ -n "$rf" ] && ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[1-9][0-9]{2,}$ ]] && [[ "$v" =~ ^([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
+              version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.x"; file=""
+              echo "global.json sdk.version $v with rollForward $rf: setup-dotnet gets $version"
+            fi
+          fi
+          { echo "version=$version"; echo "file=$file"; } >> "$GITHUB_OUTPUT"
+          # <<< sdk-version
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command == '' }}
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
-          dotnet-version: ${{ inputs.dotnet-version }}
-          global-json-file: ${{ inputs.dotnet-version == '' && 'global.json' || '' }}
+          dotnet-version: ${{ steps.sdk.outputs.version }}
+          global-json-file: ${{ steps.sdk.outputs.file }}
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command == '' }}
         env:
           TOKEN: ${{ steps.token.outputs.token }}
@@ -486,6 +596,25 @@ jobs:
           fi
       - if: ${{ needs.version.outputs.base-name != '' && (github.event_name != 'pull_request' || inputs.pr-images) }}
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: layer cache (base image)
+        id: cache-base
+        if: ${{ needs.version.outputs.base-name != '' && (github.event_name != 'pull_request' || inputs.pr-images) }}
+        env:
+          DOCKERFILE: ${{ needs.version.outputs.base-dockerfile }}
+          SCOPES: base-image
+        run: |
+          # >>> layer-cache (scripts/test-dotnet-service-build-cache.sh runs this block)
+          persists='--password|ClearTextPassword|_authToken|http-basic|^[[:space:]]*ARG[[:space:]]+[A-Za-z0-9_]*(TOKEN|PASSWORD)'
+          if grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
+            echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer (GitLab-era 'dotnet nuget update source --password'): built WITHOUT the layer cache, a cached layer would replay an expired token. Mount it per RUN instead: --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_<source> (scripts/nuget-secret-mount-fix.sh)."
+            from=""; to=""
+          else
+            scopes=$(printf '%s\n' "$SCOPES" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . || true)
+            from=$(awk '{print "type=gha,scope=" $0}' <<<"$scopes")
+            to="type=gha,mode=max,scope=$(head -n1 <<<"$scopes")"
+          fi
+          { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; } >> "$GITHUB_OUTPUT"
+          # <<< layer-cache
       - name: base image ${{ needs.version.outputs.base-name }}
         if: ${{ needs.version.outputs.base-name != '' && (github.event_name != 'pull_request' || inputs.pr-images) }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -494,9 +623,11 @@ jobs:
           file: ${{ needs.version.outputs.base-dockerfile }}
           target: ${{ needs.version.outputs.base-target }}
           outputs: type=cacheonly
-          secrets: PRIVATE_PACKAGES_TOKEN=${{ steps.token.outputs.token }}
-          cache-from: type=gha,scope=base-image
-          cache-to: type=gha,mode=max,scope=base-image
+          secret-files: |
+            PRIVATE_PACKAGES_TOKEN=${{ runner.temp }}/packages-token/PRIVATE_PACKAGES_TOKEN
+            NUGET_CREDENTIALS=${{ runner.temp }}/packages-token/NUGET_CREDENTIALS
+          cache-from: ${{ steps.cache-base.outputs.from }}
+          cache-to: ${{ steps.cache-base.outputs.to }}
 
   images:
     needs: [version, test]
@@ -525,20 +656,21 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: mint packages token
-        id: token
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          OVERRIDE: ${{ secrets.private-packages-token }}
-          AUDIENCE: ${{ inputs.packages-audience }}
-        with:
-          script: |
-            const t = process.env.OVERRIDE || await core.getIDToken(process.env.AUDIENCE);
-            core.setSecret(t);
-            core.setOutput('token', t);
-
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - run: mkdir -p .nuget # bind-mount source of the GitLab-era Dockerfiles
+
+      - name: aws credentials
+        run: |
+          # >>> aws-credentials (scripts/test-dotnet-service-build.sh runs this block)
+          # A fresh RunsOn instance can lack its instance-role credentials for a few
+          # seconds (NoCredentials): wait for them before the first AWS call.
+          region="$(cut -d. -f4 <<< "$ECR_REGISTRY")"
+          for i in 1 2 3 4 5; do
+            aws sts get-caller-identity --region "$region" --query Account --output text >/dev/null 2>&1 && exit 0
+            [ "$i" -lt 5 ] && sleep 10
+          done
+          echo "::warning::no AWS credentials after 5 tries; the AWS calls below may fail"
+          # <<< aws-credentials
 
       # BuildKit pulls base images with ~/.docker/config.json; log in to this
       # account's ECR when the Dockerfile (or the base-image one) names it
@@ -553,6 +685,56 @@ jobs:
               | docker login --username AWS --password-stdin "$ECR_REGISTRY"
           fi
 
+      # Layer cache only for a Dockerfile that never writes the token into a layer
+      # (header, Registry token).
+      - name: layer cache
+        id: cache
+        env:
+          DOCKERFILE: ${{ matrix.dockerfile }}
+          SCOPES: |
+            ${{ matrix.image }}
+            ${{ inputs.docker-test-target }}
+        run: |
+          # >>> layer-cache (scripts/test-dotnet-service-build-cache.sh runs this block)
+          persists='--password|ClearTextPassword|_authToken|http-basic|^[[:space:]]*ARG[[:space:]]+[A-Za-z0-9_]*(TOKEN|PASSWORD)'
+          if grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
+            echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer (GitLab-era 'dotnet nuget update source --password'): built WITHOUT the layer cache, a cached layer would replay an expired token. Mount it per RUN instead: --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_<source> (scripts/nuget-secret-mount-fix.sh)."
+            from=""; to=""
+          else
+            scopes=$(printf '%s\n' "$SCOPES" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . || true)
+            from=$(awk '{print "type=gha,scope=" $0}' <<<"$scopes")
+            to="type=gha,mode=max,scope=$(head -n1 <<<"$scopes")"
+          fi
+          { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; } >> "$GITHUB_OUTPUT"
+          # <<< layer-cache
+
+      # BuildKit reads a secret FILE each time a RUN mounts it: the files are rewritten
+      # with a fresh OIDC token every minute, so a RUN late in a long build still gets a
+      # live one (header, Registry token).
+      - name: packages token files
+        env:
+          OVERRIDE: ${{ secrets.private-packages-token }}
+          AUDIENCE: ${{ inputs.packages-audience }}
+        run: |
+          # >>> token-files (scripts/test-dotnet-service-build-cache.sh runs this block)
+          dir="$RUNNER_TEMP/packages-token"; mkdir -p "$dir"; chmod 700 "$dir"
+          write() { # <token>: atomic, a reader never sees half a file
+            printf '%s' "$1" > "$dir/.t" && mv -f "$dir/.t" "$dir/PRIVATE_PACKAGES_TOKEN"
+            printf 'Username=ci;Password=%s' "$1" > "$dir/.n" && mv -f "$dir/.n" "$dir/NUGET_CREDENTIALS"
+          }
+          mint() {
+            curl -sSf --retry 3 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" | jq -r '.value // empty'
+          }
+          if [ -n "$OVERRIDE" ]; then write "$OVERRIDE"; exit 0; fi
+          t=$(mint) && [ -n "$t" ] || { echo "::error::cannot mint the packages OIDC token"; exit 1; }
+          echo "::add-mask::$t"
+          write "$t"
+          # Lives until the runner's orphan cleanup at the end of the job. Its tokens are
+          # not masked (no workflow commands after the step): never print a secret in a RUN.
+          ( while sleep 60; do t=$(mint) && [ -n "$t" ] && write "$t"; done ) </dev/null >/dev/null 2>&1 &
+          # <<< token-files
+
       # base-image: an OCI layout from the cache `test` filled, handed to the build
       # as the named context the Dockerfile's FROM refers to.
       - name: uses ${{ needs.version.outputs.base-name }}?
@@ -566,6 +748,25 @@ jobs:
           if grep -qiF "FROM $NAME" "$DOCKERFILE"; then
             echo "context=${NAME}=oci-layout://${RUNNER_TEMP}/base-image" >> "$GITHUB_OUTPUT"
           fi
+      - name: layer cache (base image)
+        id: cache-base
+        if: ${{ steps.base.outputs.context != '' }}
+        env:
+          DOCKERFILE: ${{ needs.version.outputs.base-dockerfile }}
+          SCOPES: base-image
+        run: |
+          # >>> layer-cache (scripts/test-dotnet-service-build-cache.sh runs this block)
+          persists='--password|ClearTextPassword|_authToken|http-basic|^[[:space:]]*ARG[[:space:]]+[A-Za-z0-9_]*(TOKEN|PASSWORD)'
+          if grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
+            echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer (GitLab-era 'dotnet nuget update source --password'): built WITHOUT the layer cache, a cached layer would replay an expired token. Mount it per RUN instead: --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_<source> (scripts/nuget-secret-mount-fix.sh)."
+            from=""; to=""
+          else
+            scopes=$(printf '%s\n' "$SCOPES" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . || true)
+            from=$(awk '{print "type=gha,scope=" $0}' <<<"$scopes")
+            to="type=gha,mode=max,scope=$(head -n1 <<<"$scopes")"
+          fi
+          { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; } >> "$GITHUB_OUTPUT"
+          # <<< layer-cache
       - name: base image ${{ needs.version.outputs.base-name }}
         if: ${{ steps.base.outputs.context != '' }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -574,8 +775,10 @@ jobs:
           file: ${{ needs.version.outputs.base-dockerfile }}
           target: ${{ needs.version.outputs.base-target }}
           outputs: type=oci,dest=${{ runner.temp }}/base-image,tar=false
-          secrets: PRIVATE_PACKAGES_TOKEN=${{ steps.token.outputs.token }}
-          cache-from: type=gha,scope=base-image
+          secret-files: |
+            PRIVATE_PACKAGES_TOKEN=${{ runner.temp }}/packages-token/PRIVATE_PACKAGES_TOKEN
+            NUGET_CREDENTIALS=${{ runner.temp }}/packages-token/NUGET_CREDENTIALS
+          cache-from: ${{ steps.cache-base.outputs.from }}
 
       # Built into the local daemon as local/<image>:<release>, then pushed by the
       # shared push-to-aws-ecr-repository action: it creates the repository
@@ -598,11 +801,11 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ needs.version.outputs.release }}
-          secrets: PRIVATE_PACKAGES_TOKEN=${{ steps.token.outputs.token }}
-          cache-from: |
-            type=gha,scope=${{ matrix.image }}
-            ${{ inputs.docker-test-target != '' && format('type=gha,scope={0}', inputs.docker-test-target) || '' }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          secret-files: |
+            PRIVATE_PACKAGES_TOKEN=${{ runner.temp }}/packages-token/PRIVATE_PACKAGES_TOKEN
+            NUGET_CREDENTIALS=${{ runner.temp }}/packages-token/NUGET_CREDENTIALS
+          cache-from: ${{ steps.cache.outputs.from }}
+          cache-to: ${{ steps.cache.outputs.to }}
 
       # Idempotent re-run: the tag may already be in ECR (immutable) from an
       # earlier attempt of this run. Same layers (rootfs diff_ids of the ECR
