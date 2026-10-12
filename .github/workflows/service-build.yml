@@ -32,6 +32,9 @@
 #   test-command        Bash run on the runner from the repo root (the GitLab test
 #                       jobs). Gets PACKAGES_TOKEN (GitHub OIDC token nora accepts as
 #                       Basic `token:<it>`), PACKAGES_URL and the test-env variables.
+#                       The token expires within minutes: run `packages-token` (on PATH)
+#                       for a fresh one before each later install, e.g.
+#                       `poetry config http-basic.maestra token "$(packages-token)"`.
 #                       Docker is available (Testcontainers / docker compose).
 #   docker-test-target  Dockerfile stage that runs the tests instead (built with the
 #                       build secrets, then `docker run`). Both empty = no tests.
@@ -291,6 +294,23 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ inputs.node-version }}
+      # The GitHub OIDC token lives minutes: a test-command that installs packages more
+      # than once (tox envs) mints a fresh one with `packages-token` before each install.
+      - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
+        env:
+          AUDIENCE: ${{ inputs.packages-audience }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          cat > "$RUNNER_TEMP/bin/packages-token" <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          t=$(curl -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+                "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${PACKAGES_AUDIENCE}" | jq -r .value)
+          printf '%s' "$t"
+          SH
+          chmod +x "$RUNNER_TEMP/bin/packages-token"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          echo "PACKAGES_AUDIENCE=$AUDIENCE" >> "$GITHUB_ENV"
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
         env:
           PACKAGES_TOKEN: ${{ steps.token.outputs.token }}
