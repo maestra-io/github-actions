@@ -58,9 +58,9 @@ cp "$work/Dockerfile.chained" "$work/Dockerfile.chained.orig"
 "$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.chained" | grep -q 'fix by hand' || { echo "FAIL nuget-secret-mount-fix: chained credential RUN not reported"; exit 1; }
 cmp -s "$work/Dockerfile.chained" "$work/Dockerfile.chained.orig" || { echo "FAIL nuget-secret-mount-fix: chained credential RUN changed"; exit 1; }
 eq "$(cache_for "$fx/Dockerfile.gitlab" $'img\ntests')" "|" "GitLab-era Dockerfile: no cache"
-eq "$(cache_for "$work/Dockerfile.fixed" $'img\ntests')" "type=gha,scope=img type=gha,scope=tests|type=gha,mode=max,scope=img" "fixed Dockerfile: cache"
-eq "$(cache_for "$work/Dockerfile.fixed" $'img\n')" "type=gha,scope=img|type=gha,mode=max,scope=img" "no docker-test-target"
-eq "$(cache_for "$work/Dockerfile.fixed" "tests")" "type=gha,scope=tests|type=gha,mode=max,scope=tests" "test job"
+eq "$(cache_for "$work/Dockerfile.fixed" $'img\ntests')" "type=gha,scope=img type=gha,scope=tests|type=gha,mode=max,compression=zstd,compression-level=3,scope=img" "fixed Dockerfile: cache"
+eq "$(cache_for "$work/Dockerfile.fixed" $'img\n')" "type=gha,scope=img|type=gha,mode=max,compression=zstd,compression-level=3,scope=img" "no docker-test-target"
+eq "$(cache_for "$work/Dockerfile.fixed" "tests")" "type=gha,scope=tests|type=gha,mode=max,compression=zstd,compression-level=3,scope=tests" "test job"
 for persist in 'ARG PRIVATE_PACKAGES_TOKEN' \
                'RUN --mount=type=secret,id=T npm config set //packages.maestra.io/npm/:_authToken $(cat /run/secrets/T)' \
                'RUN --mount=type=secret,id=T poetry config http-basic.maestra token $(cat /run/secrets/T)' \
