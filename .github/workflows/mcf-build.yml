@@ -259,7 +259,8 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: node_modules
-          key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
+          # The lockfile is rewritten to nora by now: its hash is not the key the other jobs look up.
+          key: ${{ steps.cache.outputs.cache-primary-key }}
 
   codegen:
     needs: install
