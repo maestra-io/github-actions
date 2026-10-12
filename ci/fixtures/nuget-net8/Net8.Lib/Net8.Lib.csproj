@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Packable so the workflow's pack step has output, like any real publisher. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <PackageId>Maestra.GithubActions.Selftest.Net8</PackageId>
+    <Version>0.0.0-selftest</Version>
+  </PropertyGroup>
+</Project>
