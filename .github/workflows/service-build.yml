@@ -39,14 +39,17 @@
 #   docker-test-target  Dockerfile stage that runs the tests instead (built with the
 #                       build secrets, then `docker run`). Both empty = no tests.
 #   python-version      actions/setup-python before test-command (empty = skip).
-#   node-version        actions/setup-node before test-command (empty = skip).
+#   node-version        actions/setup-node before test-command (empty = skip), with npm
+#                       auth for packages-url/npm/: `npm ci` needs no token setup.
 #   test-env            Extra environment for the tests, KEY=VALUE per line, not
 #                       secret (shown in the log); exported to test-command and passed
 #                       with --env-file to the docker-test-target container.
 #   build-secret-ids    Comma-separated BuildKit secret ids the packages token is
 #                       passed under (the Dockerfile's `--mount=type=secret,id=...`).
 #                       Default PRIVATE_PACKAGES_TOKEN.
-#   build-args          Extra `--build-arg`s, KEY=VALUE per line (not secret).
+#   build-args          Extra `--build-arg`s, KEY=VALUE per line (not secret). Always
+#                       passed: `release`/`revision` = `<release> (<sha>)`, RELEASE_NUMBER
+#                       = bare `<release>` (GitLab create-release-number).
 #   push                Push images and run release/bake/kargo-refresh (default
 #                       true). Never on pull_request. false = build-only dry run.
 #   bake                Bake kustomization/ into <service>-manifests:<release> (default false).
@@ -294,6 +297,7 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ inputs.node-version }}
+          registry-url: ${{ inputs.packages-url }}/npm/
       # The GitHub OIDC token lives minutes: a test-command that installs packages more
       # than once (tox envs) mints a fresh one with `packages-token` before each install.
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
@@ -314,6 +318,7 @@ jobs:
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
         env:
           PACKAGES_TOKEN: ${{ steps.token.outputs.token }}
+          NODE_AUTH_TOKEN: ${{ steps.token.outputs.token }}
           PACKAGES_URL: ${{ inputs.packages-url }}
           TEST_COMMAND: ${{ inputs.test-command }}
         run: bash -eo pipefail -c "$TEST_COMMAND"
@@ -383,6 +388,7 @@ jobs:
           build-args: |
             revision=${{ needs.version.outputs.release }} (${{ github.sha }})
             release=${{ needs.version.outputs.release }} (${{ github.sha }})
+            RELEASE_NUMBER=${{ needs.version.outputs.release }}
             ${{ inputs.build-args }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}

@@ -8,6 +8,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/dotnet-service-build.yml"
+      - ".github/workflows/service-build.yml"
       - ".github/workflows/service-build-selftest.yml"
       - "ci/fixtures/service-build/**"
 
@@ -43,3 +44,17 @@ jobs:
       test-command: test -f /src/ci/fixtures/service-build/Dockerfile && test "$SELFTEST" = in-container && test -n "$PACKAGES_TOKEN"
       test-image: docker.io/library/busybox:1.37
       test-env: SELFTEST=in-container
+
+  # A private @mindbox-cloud package resolves with no npm auth in test-command.
+  node-npm-auth:
+    needs: in-container
+    uses: ./.github/workflows/service-build.yml
+    permissions:
+      contents: write
+      id-token: write
+      packages: read
+    with:
+      image-targets: selftest_default=
+      dockerfile: ci/fixtures/service-build/Dockerfile
+      node-version: '24'
+      test-command: npm view @mindbox-cloud/frontend-shared-configs version
