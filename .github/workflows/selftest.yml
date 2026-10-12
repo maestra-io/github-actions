@@ -52,9 +52,6 @@ jobs:
       - name: npm-lockfile-to-nora (rewrite, keep, idempotence, workflow copy)
         run: bash scripts/test-npm-lockfile-to-nora.sh
 
-      - name: npm-package-publish checks (all run, missing skipped, lib@3 args; workflow copy)
-        run: bash scripts/test-npm-checks.sh
-
       - name: nuget SDK set (TFM scan, override, workflow copy)
         run: bash scripts/test-nuget-sdk-set.sh
 

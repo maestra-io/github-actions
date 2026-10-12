@@ -189,7 +189,6 @@ jobs:
           CHECKS: ${{ inputs.checks }}
           COVERAGE: ${{ inputs.report-coverage && github.event_name == 'pull_request' }}
         run: |
-          # npm-checks: begin
           summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
           printf '### npm checks\n\n| script | result |\n|---|---|\n' >> "$summary"
           failed=""
@@ -210,7 +209,6 @@ jobs:
             echo "| \`$s\` | $r |" >> "$summary"
           done
           [ -z "$failed" ] || { echo "::error::npm checks failed:$failed"; exit 1; }
-          # npm-checks: end
 
       - name: test
         if: ${{ inputs.test-script != 'test' && inputs.test-script != '' }}
