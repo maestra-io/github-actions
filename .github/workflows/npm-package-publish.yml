@@ -33,12 +33,18 @@
 #
 # Lockfiles: `resolved` URLs of the legacy Artifactory registry are rewritten to
 # nora before `npm ci` (scripts/npm-lockfile-to-nora.sh, inlined below: a reusable
-# workflow cannot read files of its own repository). `replace-registry-host=always`
-# alone breaks them: npm keeps the Artifactory path (/artifactory/api/npm/npm/...)
+# workflow cannot read files of its own repository). `replace-registry-host`
+# alone cannot do it: npm keeps the Artifactory path (/artifactory/api/npm/npm/...)
 # under nora's /npm/, and Artifactory's scoped tarball layout /-/@scope/name-ver.tgz
-# is not nora's /-/name-ver.tgz. It stays for registry.npmjs.org URLs, which it
-# routes through nora. The rewrite is reverted after install, so a release commit
-# (@semantic-release/git) carries the repository's own lockfile.
+# is not nora's /-/name-ver.tgz. The rewrite is reverted after install, so a release
+# commit (@semantic-release/git) carries the repository's own lockfile.
+#
+# `replace-registry-host=npmjs` (npm's default, written explicitly) routes only
+# registry.npmjs.org URLs through nora. `always` also rewrote nora's OWN tarball
+# URLs: npm 10 builds `<registry without slash><pathname>`, so
+# https://packages.maestra.io/npm/x/-/x-1.tgz became /npm/npm/x/-/x-1.tgz, a 404
+# for every package resolved from a packument rather than the lockfile (an `npx`
+# tool, a semantic-release plugin installed on the fly).
 
 name: npm-package-publish
 
@@ -115,7 +121,7 @@ jobs:
             echo "registry=${registry}"
             echo "${SCOPE}:registry=${registry}"
             echo "//${registry#https://}:_authToken=\${NPM_TOKEN}"
-            echo "replace-registry-host=always"
+            echo "replace-registry-host=npmjs"
           } > "$RUNNER_TEMP/npmrc"
           mv "$RUNNER_TEMP/npmrc" .npmrc
           echo "registry ${registry}, scope ${SCOPE}"

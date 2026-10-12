@@ -41,4 +41,9 @@ cat > "$d/wf/package-lock.json" <<'LF'
 LF
 (cd "$d/wf" && URL=https://packages.maestra.io bash -c "$prog")
 diff -u "$d/want" "$d/wf/package-lock.json"
+
+# `replace-registry-host=always` also rewrote nora's own tarball URLs into
+# /npm/npm/<pkg>/-/... (404 for anything resolved from a packument, e.g. npx).
+grep -q '^ *echo "replace-registry-host=npmjs"$' "$wf" \
+  || { echo "npm-package-publish.yml must write replace-registry-host=npmjs"; exit 1; }
 echo "npm-lockfile-to-nora: OK"
