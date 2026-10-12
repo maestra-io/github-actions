@@ -27,6 +27,9 @@
 #                       Empty = global.json.
 #   solution-file       Solution/project for restore+test. Empty = dotnet discovers.
 #   test-filter         dotnet test --filter (default TestCategory!=IntegrationTest).
+#                       Empty = no --filter: required for Microsoft.Testing.Platform
+#                       runners (global.json `test.runner`), e.g. xunit v3 MTP
+#                       rejects `--filter` with "Unknown option".
 #   docker-test-target  Dockerfile stage that runs the tests (GitLab .run-docker-test,
 #                       usually `tests`). Set = `test` builds and runs that stage
 #                       instead of setup-dotnet + dotnet test.
@@ -319,7 +322,8 @@ jobs:
           sln=(); [ -n "$SOLUTION" ] && sln=("$SOLUTION")
           wae=(); [ "$WARN_AS_ERROR" = "true" ] && wae=(/warnaserror)
           dotnet restore "${sln[@]}" --locked-mode
-          dotnet test --no-restore "${sln[@]}" --configuration Release --filter "$FILTER" "${wae[@]}"
+          filter=(); [ -n "$FILTER" ] && filter=(--filter "$FILTER")
+          dotnet test --no-restore "${sln[@]}" --configuration Release "${filter[@]}" "${wae[@]}"
 
   images:
     needs: [version, test]
