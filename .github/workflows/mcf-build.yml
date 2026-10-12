@@ -1,0 +1,617 @@
+# Reusable check, build and release workflow for a micro-frontend (MCF): the GitHub
+# port of frontend-ci-components templates/mcf (mcf@3) for the omega contour
+# (issues-maestra#1571). The static files reach the buckets at promotion, by the
+# upload Job of the MCF's own kustomization/, not from here.
+#
+#   version ─► install ─► codegen ─► checks, test, build ─► image ─► release ─► bake ─► kargo-refresh
+#
+# Usage (caller, on push to the default branch and on pull_request):
+#
+#   jobs:
+#     build:
+#       uses: maestra-io/github-actions/.github/workflows/mcf-build.yml@main
+#       permissions: { contents: write, id-token: write, pull-requests: read }
+#       with:
+#         push: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
+#
+# Inputs:
+#   node-version        Exact Node.js version (default 24.19.0, as mcf@3).
+#   test-max-workers    Vitest workers (default 6, as mcf@3).
+#   min-lines-coverage  Lines coverage floor of `test` (default 40, as mcf@3).
+#   push                Push the image and run release/bake/kargo-refresh (default true).
+#                       Never on pull_request. false = build-only dry run.
+#   image               ECR repository of the static image. Default: repository name.
+#   service             Service name for bake and Kargo. Default: repository name.
+#   kargo-project       Kargo project. Default kargo-<service>.
+#   kargo-warehouse     Warehouse to refresh. Default <service>.
+#   graphql-contour     Exported as GRAPHQL_CONTOUR to `graphql-codegen`; the MCF's
+#                       graphql.config.js picks that contour's endpoints (default omega).
+#   auth-jwt-url        auth-jwt the schema token comes from (default the omega one).
+#   auth-jwt-client     Its client (auth-jwt-terraform terraform/omega/clients.tf).
+#   teleport-token      Join token of the image-push bot (default the org-wide one).
+#   kargo-teleport-token  Join token of the kargo-refresh bot.
+#   packages-url        Package registry (default https://packages.maestra.io, nora).
+#   packages-audience   `aud` of the GitHub OIDC token nora accepts.
+# Outputs:
+#   release             The release number 1.1.N.
+#
+# Jobs:
+#   install   node_modules is cached under the lockfile hash and `npm ci` runs only
+#             on a miss; every other job restores it and never reaches nora.
+#   codegen   GitHub OIDC -> auth-jwt JWT (masked) -> `npm run graphql-codegen`; the
+#             generated code goes to the other jobs as an artifact.
+#   checks    check-types, check-scripts, check-styles, entries in parallel; on
+#             pull_request also check-unused-code and the localization keys report,
+#             which never fail the job (mcf@3 allow_failure).
+#   test      vitest with coverage, fails under min-lines-coverage.
+#   build     package.json version = release, LAST_HOTFIX from hotfix/* tags (the MF
+#             plugin bakes both into the bundle), `npm run build`.
+#   image     rclone + build/v2_static/<mcf> without source maps -> ECR <image>:<release>.
+#   release   git tag + GitHub Release <release>; a PR labelled `hotfix` also gets
+#             the marker tag hotfix/<release>.
+#   bake, kargo-refresh  as in service-build.yml.
+#
+# Not ported from mcf@3: cyrillic (translation-checker, issues-maestra#1581), e2e,
+# functional tests and the -e2e/-with-deps images (issues-maestra#1573), hot testing
+# environments, multi-contour schema loading, and the RU contour jobs (Octopus,
+# phrase, metrics, pipelines release submit, Mindbox Datadog).
+
+name: mcf-build
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        type: string
+        default: "24.19.0"
+      test-max-workers:
+        type: string
+        default: "6"
+      min-lines-coverage:
+        type: string
+        default: "40"
+      push:
+        type: boolean
+        default: true
+      image:
+        type: string
+        default: ""
+      service:
+        type: string
+        default: ""
+      kargo-project:
+        type: string
+        default: ""
+      kargo-warehouse:
+        type: string
+        default: ""
+      graphql-contour:
+        type: string
+        default: omega
+      auth-jwt-url:
+        type: string
+        default: https://auth-jwt.maestra.io
+      auth-jwt-client:
+        type: string
+        default: github-frontend-graphql-schema
+      teleport-token:
+        type: string
+        default: image-push-github-actions-maestra-io
+      kargo-teleport-token:
+        type: string
+        default: kargo-refresh-github-actions-maestra-io
+      packages-url:
+        type: string
+        default: https://packages.maestra.io
+      packages-audience:
+        type: string
+        default: packages.maestra.io
+    outputs:
+      release:
+        value: ${{ jobs.version.outputs.release }}
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('mcf-{0}-{1}', github.repository, github.ref) || format('release-{0}', github.repository) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  ECR_REGISTRY: 515260921971.dkr.ecr.us-west-2.amazonaws.com
+  TELEPORT_FQDN: teleport.maestra.io:443
+  HUSKY: "0"
+
+jobs:
+  version:
+    runs-on: runs-on=${{ github.run_id }}-version/pool=small
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      release: ${{ steps.v.outputs.release }}
+      publish: ${{ steps.v.outputs.publish }}
+      image: ${{ steps.v.outputs.image }}
+      service: ${{ steps.v.outputs.service }}
+      mcf: ${{ steps.v.outputs.mcf }}
+      bake: ${{ steps.v.outputs.bake }}
+      last-hotfix: ${{ steps.hotfix.outputs.last-hotfix }}
+      is-hotfix: ${{ steps.hotfix.outputs.is-hotfix }}
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            package.json
+            kustomization/
+          sparse-checkout-cone-mode: false
+      - id: v
+        env:
+          PREFIX: ${{ vars.RELEASE_PREFIX }}
+          RUN_NUMBER: ${{ github.run_number }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          IMAGE: ${{ inputs.image }}
+          SERVICE: ${{ inputs.service }}
+          PUSH: ${{ inputs.push && github.event_name != 'pull_request' }}
+        run: |
+          prefix="${PREFIX:-1.1}"
+          case "$prefix" in
+            [0-9]*.[0-9]*) ;;
+            *) echo "::error::vars.RELEASE_PREFIX '$prefix' is not MAJOR.MINOR"; exit 1 ;;
+          esac
+          # build/v2_static/<mcf>: the package name without its scope, - -> _ (webpack-configs moduleFederation).
+          mcf=$(jq -r '.name // empty' package.json | sed -E 's#^@[^/]+/##; s#-#_#g')
+          [ -n "$mcf" ] || { echo "::error::package.json has no name"; exit 1; }
+          {
+            echo "release=${prefix}.${RUN_NUMBER}"
+            echo "publish=$PUSH"
+            echo "image=${IMAGE:-$REPO_NAME}"
+            echo "service=${SERVICE:-$REPO_NAME}"
+            echo "mcf=$mcf"
+            if [ -d kustomization ]; then echo "bake=true"; else echo "bake=false"; fi
+          } >> "$GITHUB_OUTPUT"
+          echo "release ${prefix}.${RUN_NUMBER}, mcf $mcf, image ${IMAGE:-$REPO_NAME}, publish=$PUSH, kustomization/ $([ -d kustomization ] && echo present || echo absent)"
+
+      # mcf@3 build/create-hotfix-marker: the MF plugin reads LAST_HOTFIX, the newest
+      # hotfix/X.Y.Z tag, this release included when its PR carries the `hotfix` label.
+      - id: hotfix
+        if: ${{ steps.v.outputs.publish == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ steps.v.outputs.release }}
+        run: |
+          is_hotfix=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" \
+            --jq 'any(.[]; any(.labels[]; .name == "hotfix"))') \
+            || { echo "::warning::PR lookup failed; this release is not treated as a hotfix"; is_hotfix=false; }
+          versions=$(gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/hotfix/" --jq '.[].ref' \
+            | sed -nE 's#^refs/tags/hotfix/([0-9]+\.[0-9]+\.[0-9]+)$#\1#p') \
+            || { echo "::warning::hotfix tags query failed; LAST_HOTFIX may be incomplete"; versions=""; }
+          if [ "$is_hotfix" = true ]; then versions=$(printf '%s\n%s' "$versions" "$RELEASE"); fi
+          last_hotfix=$(printf '%s\n' "$versions" | grep . | sort -V | tail -n 1 || true)
+          { echo "last-hotfix=$last_hotfix"; echo "is-hotfix=$is_hotfix"; } >> "$GITHUB_OUTPUT"
+          echo "LAST_HOTFIX=${last_hotfix:-<none>} hotfix=$is_hotfix"
+
+  install:
+    runs-on: runs-on=${{ github.run_id }}-install/pool=small
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write # nora OIDC token
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: node_modules
+          key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
+          lookup-only: true
+      - if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.node-version }}
+      - if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+        name: write .npmrc
+        env:
+          URL: ${{ inputs.packages-url }}
+        run: |
+          registry="${URL%/}/npm/"
+          kept=""
+          [ -f .npmrc ] && kept=$(grep -vE '^[[:space:]]*(registry|@[^:]+:registry|//[^=]*:_authToken|replace-registry-host|always-auth)[[:space:]]*=' .npmrc || true)
+          {
+            [ -z "$kept" ] || printf '%s\n' "$kept"
+            echo "registry=${registry}"
+            echo "@mindbox-cloud:registry=${registry}"
+            echo "//${registry#https://}:_authToken=\${NPM_TOKEN}"
+            echo "replace-registry-host=npmjs"
+          } > "$RUNNER_TEMP/npmrc"
+          mv "$RUNNER_TEMP/npmrc" .npmrc
+      - if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+        name: mint packages token
+        id: token
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          AUDIENCE: ${{ inputs.packages-audience }}
+        with:
+          script: |
+            const t = await core.getIDToken(process.env.AUDIENCE);
+            core.setSecret(t);
+            core.setOutput('token', t);
+      - if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+        name: npm ci
+        env:
+          NPM_TOKEN: ${{ steps.token.outputs.token }}
+          URL: ${{ inputs.packages-url }}
+        run: |
+          # Same program as scripts/npm-lockfile-to-nora.sh (keep in sync; selftest covers the script).
+          nora="${URL%/}/npm/"
+          nora_re=$(printf '%s' "$nora" | sed 's/[.[\*^$/]/\\&/g')
+          locks=()
+          for f in package-lock.json npm-shrinkwrap.json; do [ -f "$f" ] && locks+=("$f"); done
+          for f in "${locks[@]}"; do
+            sed -i.bak -E \
+              -e "s#(\"resolved\": *\")https://artifactory\.mindbox\.ru/artifactory/api/npm/[^/\"]+/#\1${nora}#g" \
+              -e "s#(\"resolved\": *\"${nora_re}@[^/\"]+/[^/\"]+/-/)@[^/\"]+/#\1#g" \
+              "$f"
+            rm -f "$f.bak"
+          done
+          npm ci --prefer-offline --no-audit --no-fund
+      - if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: node_modules
+          key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
+
+  codegen:
+    needs: install
+    runs-on: runs-on=${{ github.run_id }}-codegen/pool=small
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # auth-jwt login
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.node-version }}
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: node_modules
+          key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
+          fail-on-cache-miss: true
+      - name: graphql-codegen
+        env:
+          AUTH_JWT_URL: ${{ inputs.auth-jwt-url }}
+          AUTH_JWT_CLIENT: ${{ inputs.auth-jwt-client }}
+          GRAPHQL_CONTOUR: ${{ inputs.graphql-contour }}
+        run: |
+          if ! jq -e '.scripts["graphql-codegen"]' package.json >/dev/null; then
+            echo "no graphql-codegen script"; tar -czf "$RUNNER_TEMP/codegen.tgz" -T /dev/null; exit 0
+          fi
+          id_token=$(curl -sSf --connect-timeout 10 --max-time 30 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUTH_JWT_URL" | jq -r '.value // empty')
+          [ -n "$id_token" ] || { echo "::error::no GitHub OIDC token"; exit 1; }
+          echo "::add-mask::$id_token"
+          code=$(jq -cn --arg c "$AUTH_JWT_CLIENT" '{clientId: $c, policy: "default"}' \
+            | curl -sS --connect-timeout 10 --max-time 60 -o "$RUNNER_TEMP/jwt.json" -w '%{http_code}' -X POST "$AUTH_JWT_URL/token" \
+                -H "Authorization: Bearer $id_token" -H "Content-Type: application/json" --data-binary @-)
+          [ "$code" = 200 ] || { echo "::error::auth-jwt $AUTH_JWT_URL/token as $AUTH_JWT_CLIENT: HTTP $code"; exit 1; }
+          JWT_TOKEN=$(jq -r '.token // .jwt // empty' "$RUNNER_TEMP/jwt.json")
+          rm -f "$RUNNER_TEMP/jwt.json"
+          [ -n "$JWT_TOKEN" ] || { echo "::error::auth-jwt response has no token"; exit 1; }
+          echo "::add-mask::$JWT_TOKEN"
+          JWT_TOKEN="$JWT_TOKEN" npm run graphql-codegen
+          find src \( -path src/generated -o -name __generated__ \) -type d -prune -print0 \
+            | tar -czf "$RUNNER_TEMP/codegen.tgz" --null -T -
+          echo "generated: $(tar -tzf "$RUNNER_TEMP/codegen.tgz" | wc -l) entries"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codegen
+          path: ${{ runner.temp }}/codegen.tgz
+          retention-days: 1
+
+  checks:
+    needs: codegen
+    runs-on: runs-on=${{ github.run_id }}-checks/pool=build
+    timeout-minutes: 30
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.node-version }}
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: node_modules
+          key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
+          fail-on-cache-miss: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codegen
+          path: ${{ runner.temp }}
+      - run: tar -xzf "$RUNNER_TEMP/codegen.tgz"
+      - name: checks
+        env:
+          PR: ${{ github.event_name == 'pull_request' }}
+        run: |
+          logs="$RUNNER_TEMP/checks"; mkdir -p "$logs"
+          names=(); advisory=" unused-code localization-keys "
+          start() { local n=$1; shift; names+=("$n"); ( "$@" > "$logs/$n.log" 2>&1; echo $? > "$logs/$n.rc" ) & }
+          has() { jq -e --arg s "$1" '.scripts[$s]' package.json > /dev/null; }
+          has check-types && start types npm run check-types
+          has check-scripts && start lint npm run check-scripts
+          has check-styles && start stylelint npm run check-styles
+          shopt -s globstar nullglob
+          entries=(src/entries/**/*.ts)
+          [ "${#entries[@]}" -eq 0 ] \
+            || start entries node ./node_modules/@mindbox-cloud/frontend-shared-configs/check-entry-types/checkEntryTypes.js
+          if [ "$PR" = true ]; then
+            has check-unused-code && start unused-code npm run check-unused-code
+            i18n=./node_modules/@mindbox-cloud/frontend-i18n/utils
+            [ -f "$i18n/deadLocalizationKeys.js" ] && start localization-keys bash -c "
+              node $i18n/deadLocalizationKeys.js --md-report $logs/unused-keys.md
+              [ ! -f $i18n/undefinedLocalizationKeys.js ] || node $i18n/undefinedLocalizationKeys.js --md-report $logs/missing-keys.md"
+          fi
+          wait
+          printf '### checks\n\n| check | result |\n|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
+          failed=""
+          for n in "${names[@]}"; do
+            rc=$(cat "$logs/$n.rc")
+            echo "::group::$n (exit $rc)"; cat "$logs/$n.log"; echo "::endgroup::"
+            if [ "$rc" = 0 ]; then r=passed
+            elif [[ "$advisory" == *" $n "* ]]; then r="failed (not blocking)"
+            else r=failed; failed="$failed $n"; fi
+            echo "| \`$n\` | $r |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          cat "$logs"/unused-keys.md "$logs"/missing-keys.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          [ -z "$failed" ] || { echo "::error::checks failed:$failed"; exit 1; }
+
+  test:
+    needs: codegen
+    runs-on: runs-on=${{ github.run_id }}-test/pool=build
+    timeout-minutes: 30
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.node-version }}
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: node_modules
+          key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
+          fail-on-cache-miss: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codegen
+          path: ${{ runner.temp }}
+      - run: tar -xzf "$RUNNER_TEMP/codegen.tgz"
+      - name: vitest
+        env:
+          WORKERS: ${{ inputs.test-max-workers }}
+          MIN_LINES_COVERAGE: ${{ inputs.min-lines-coverage }}
+        run: |
+          # typecheck is the `types` check of the checks job.
+          npm test -- \
+            --maxConcurrency=4 \
+            --maxWorkers="$WORKERS" \
+            --testTimeout=20000 \
+            --typecheck.enabled=false \
+            --coverage \
+            --coverage.reportsDirectory=coverage \
+            --coverage.reporter=json-summary \
+            --coverage.reporter=text-summary
+          lines=$(node -p "require('./coverage/coverage-summary.json').total.lines.pct")
+          echo "lines coverage: ${lines}% (floor ${MIN_LINES_COVERAGE}%)" | tee -a "$GITHUB_STEP_SUMMARY"
+          if awk "BEGIN { exit !($lines < $MIN_LINES_COVERAGE) }"; then
+            echo "::error::lines coverage ${lines}% is below ${MIN_LINES_COVERAGE}%"; exit 1
+          fi
+
+  build:
+    needs: [version, codegen]
+    runs-on: runs-on=${{ github.run_id }}-build/pool=build
+    timeout-minutes: 30
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.node-version }}
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: node_modules
+          key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
+          fail-on-cache-miss: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codegen
+          path: ${{ runner.temp }}
+      - run: tar -xzf "$RUNNER_TEMP/codegen.tgz"
+      - name: npm run build
+        env:
+          PUBLISH: ${{ needs.version.outputs.publish }}
+          RELEASE: ${{ needs.version.outputs.release }}
+          LAST_HOTFIX: ${{ needs.version.outputs.last-hotfix }}
+          MCF: ${{ needs.version.outputs.mcf }}
+        run: |
+          [ "$PUBLISH" != true ] || npm pkg set version="$RELEASE"
+          echo "version $(jq -r .version package.json), LAST_HOTFIX=${LAST_HOTFIX:-<none>}"
+          npm run build
+          out="build/v2_static/$MCF"
+          [ -f "$out/mf-manifest.json" ] || { echo "::error::$out/mf-manifest.json was not built"; exit 1; }
+          find build -name '*.map' -type f -delete
+          tar -czf "$RUNNER_TEMP/static.tgz" -C build v2_static
+          du -sh "$out"
+      - if: ${{ needs.version.outputs.publish == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: static
+          path: ${{ runner.temp }}/static.tgz
+          retention-days: 1
+
+  image:
+    needs: [version, checks, test, build]
+    if: ${{ needs.version.outputs.publish == 'true' }}
+    runs-on: runs-on=${{ github.run_id }}-image/pool=small
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write # Teleport join
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: static
+          path: ${{ runner.temp }}
+      - name: build ${{ needs.version.outputs.image }}:${{ needs.version.outputs.release }}
+        env:
+          IMAGE: ${{ needs.version.outputs.image }}
+          RELEASE: ${{ needs.version.outputs.release }}
+        run: |
+          ctx="$RUNNER_TEMP/image"; mkdir -p "$ctx/static"
+          tar -xzf "$RUNNER_TEMP/static.tgz" -C "$ctx/static"
+          printf 'FROM rclone/rclone:1.67.0\nCOPY static /static\n' > "$ctx/Dockerfile"
+          docker build "$ctx" -t "local/$IMAGE:$RELEASE" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.version=$RELEASE"
+      - uses: maestra-io/github-actions/push-to-aws-ecr-repository@v1
+        with:
+          awsRegion: us-west-2
+          repositories: ${{ needs.version.outputs.image }}
+          localTag: ${{ needs.version.outputs.release }}
+          targetTag: ${{ needs.version.outputs.release }}
+          teleportToken: ${{ inputs.teleport-token }}
+
+  # Git tag + GitHub Release BEFORE the bake: bake-oci-manifests checks out the release tag.
+  release:
+    needs: [version, image]
+    runs-on: runs-on=${{ github.run_id }}-release/pool=small
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ needs.version.outputs.release }}
+          IS_HOTFIX: ${{ needs.version.outputs.is-hotfix }}
+        run: |
+          if gh release view "$RELEASE" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $RELEASE already exists"
+          else
+            gh release create "$RELEASE" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "$RELEASE" --generate-notes
+          fi
+          if [ "$IS_HOTFIX" = true ]; then
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/hotfix/$RELEASE" -f sha="$GITHUB_SHA" >/dev/null \
+              && echo "created hotfix/$RELEASE" \
+              || echo "::warning::failed to create hotfix/$RELEASE; the next release's LAST_HOTFIX misses it"
+          fi
+
+  bake:
+    needs: [version, release]
+    if: ${{ needs.version.outputs.bake == 'true' }}
+    runs-on: runs-on=${{ github.run_id }}-bake/pool=small
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write # Teleport join + cosign keyless
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: maestra-io/github-actions/bake-oci-manifests@v1
+        with:
+          service: ${{ needs.version.outputs.service }}
+          images: ${{ needs.version.outputs.image }}
+          tag: ${{ needs.version.outputs.release }}
+          teleport-token: ${{ inputs.teleport-token }}
+
+  # Instant freight instead of the Warehouse's 5m poll; the same Teleport path as
+  # service-build.yml kargo-refresh (see there). Best effort.
+  kargo-refresh:
+    needs: [version, bake]
+    runs-on: runs-on=${{ github.run_id }}-kargo-refresh/pool=small
+    timeout-minutes: 5
+    continue-on-error: true
+    permissions:
+      contents: read
+      id-token: write # Teleport join
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - id: tp-version
+        run: |
+          v=$(curl -sf "https://${TELEPORT_FQDN}/webapi/find" | jq -r '.auto_update.tools_version // .server_version')
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
+        with:
+          version: ${{ steps.tp-version.outputs.version }}
+          proxy: ${{ env.TELEPORT_FQDN }}
+      - env:
+          TOKEN_NAME: ${{ inputs.kargo-teleport-token }}
+          SERVICE: ${{ needs.version.outputs.service }}
+          PROJECT: ${{ inputs.kargo-project }}
+          WAREHOUSE: ${{ inputs.kargo-warehouse }}
+        run: |
+          out="$(mktemp -d)"
+          cat > "$out/tbot.yaml" <<EOF
+          version: v2
+          proxy_server: ${TELEPORT_FQDN}
+          onboarding:
+            join_method: github
+            token: ${TOKEN_NAME}
+          oneshot: true
+          storage:
+            type: memory
+          services:
+            - type: kubernetes/v2
+              destination:
+                type: directory
+                path: ${out}/kube
+              selectors:
+                - name: us-iota-lw-kube-infra
+            - type: application
+              app_name: kargo
+              destination:
+                type: directory
+                path: ${out}/app
+          EOF
+          mkdir -p "$out/kube" "$out/app"
+          tbot start -c "$out/tbot.yaml" & pid=$!
+          for _ in $(seq 1 30); do
+            [ -s "$out/kube/kubeconfig.yaml" ] && [ -s "$out/app/tlscert" ] && break
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 1
+          done
+          kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
+          [ -s "$out/kube/kubeconfig.yaml" ] && [ -s "$out/app/tlscert" ] \
+            || { echo "::warning::tbot (${TOKEN_NAME}) produced no credentials; freight appears on the next Warehouse poll"; exit 1; }
+
+          bearer=$(kubectl --kubeconfig "$out/kube/kubeconfig.yaml" \
+            --context "teleport.maestra.io-us-iota-lw-kube-infra" \
+            -n kargo create token kargo-ci-github --duration 10m)
+          echo "::add-mask::$bearer"
+          project="${PROJECT:-kargo-${SERVICE}}"
+          warehouse="${WAREHOUSE:-${SERVICE}}"
+          http=$(curl -sS -o "$out/resp" -w '%{http_code}' -X POST \
+            --cert "$out/app/tlscert" --key "$out/app/key" \
+            -H "Authorization: Bearer ${bearer}" \
+            "https://kargo.teleport.maestra.io/v1beta1/projects/${project}/warehouses/${warehouse}/refresh") || http=000
+          if [ "$http" = "200" ]; then
+            echo "Kargo warehouse ${project}/${warehouse} refreshed"
+          else
+            echo "::warning::Kargo warehouse ${project}/${warehouse} refresh failed (HTTP ${http}): $(head -c 300 "$out/resp" 2>/dev/null)"
+            exit 1
+          fi

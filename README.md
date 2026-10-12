@@ -418,6 +418,7 @@ top of each file.
 | [`nuget-package-publish.yml`](.github/workflows/nuget-package-publish.yml) | restore, build, test, pack, `dotnet nuget push` | dotnet-nuget-cicd-components |
 | [`npm-package-publish.yml`](.github/workflows/npm-package-publish.yml) | `npm ci`, lib@3 checks (`checks` input: graphql-codegen, check-types, check-scripts, check-styles, test; `--if-present`, all reported), optional PR coverage comment (`report-coverage`), `npm run release` (semantic-release); RunsOn `pool` input `small` (default) or `build` | frontend-ci-components `templates/lib` |
 | [`python-package-publish.yml`](.github/workflows/python-package-publish.yml) | poetry/uv build, test, `twine upload` | — |
+| [`mcf-build.yml`](.github/workflows/mcf-build.yml) | micro-frontends: `install` (node_modules cached by lockfile hash, `npm ci` only on a miss) → `codegen` (GitHub OIDC → auth-jwt omega JWT) → `checks`, `test`, `build` → `image` (rclone + `v2_static/<mcf>`) → `release` → `bake` → `kargo-refresh`; the bucket upload runs at promotion from the MCF's own `kustomization/` | frontend-ci-components `templates/mcf` (mcf@3) |
 | [`helm-chart.yml`](.github/workflows/helm-chart.yml) | PR: `check` (version bump, CHANGELOG, lint, helm-unittest); main: `release` → ECR `helm-charts/<name>` ([`push-helm-chart-to-aws-ecr`](push-helm-chart-to-aws-ecr/action.yml)) | system/components/helm-ci helm-merge-request + helm-release |
 
 [`scripts/dockerfile-from-fix.sh`](scripts/dockerfile-from-fix.sh) drops the
