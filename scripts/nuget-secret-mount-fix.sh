@@ -7,7 +7,8 @@
 # stores the token in NuGet.Config; a secret's value is not part of the cache key,
 # so the layer cache replays it in later builds after it expired (401 as soon as a
 # later step restores). This removes that RUN and mounts the token on every RUN
-# that runs dotnet restore/build/publish/test/pack/... (not with --no-restore/--no-build):
+# that runs dotnet restore/build/publish/test/pack/... instead, --no-restore ones too (a
+# build target may still reach the feed: segmentations' `dotnet tool install`):
 #   RUN --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private dotnet restore
 # (NUGET_CREDENTIALS = `Username=ci;Password=<token>`, NuGet's env credential format).
 # A credential RUN that also does something else is reported, not touched.
@@ -28,7 +29,6 @@ import re, sys
 
 CRED = re.compile(r'^dotnet\s+nuget\s+update\s+source\s+([A-Za-z0-9_.-]+)\s.*--password\b', re.S)
 DOTNET = re.compile(r'\bdotnet["\',\s]+(restore|build|publish|test|pack|msbuild|tool|workload|run)\b')
-NOFEED = re.compile(r'--no-restore\b|--no-build\b')  # these never reach the feed
 FLAG = re.compile(r'^--\S+\s*')
 
 def instructions(lines):
@@ -70,8 +70,7 @@ for path in sys.argv[1:]:
             k = a - 1  # the comment lines right above it explain it: drop them too
             while k >= 0 and lines[k].strip().startswith('#') and not lines[k].strip().startswith('###'):
                 drop.add(k); k -= 1
-        elif DOTNET.search(cmd) and 'id=NUGET_CREDENTIALS' not in text \
-                and len(DOTNET.findall(cmd)) > len(NOFEED.findall(cmd)):
+        elif DOTNET.search(cmd) and 'id=NUGET_CREDENTIALS' not in text:
             runs.append(a)
     if re.search(r'--password', ''.join(l for i, l in enumerate(lines) if i not in drop)):
         print(f'still writes a password (fix by hand): {path}')
