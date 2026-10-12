@@ -2,6 +2,7 @@ name: 'Push a Helm chart to AWS ECR'
 description: >-
   Package a chart and push it as OCI to <registry>/<repositoryPrefix>/<chart name>:<version>
   in us-west-2, the GitHub port of the GitLab helm-ci helm-chart-push-aws job.
+  The version is Chart.yaml's or the `version` input (build-number charts).
   An already published version is skipped (release tags are immutable).
   Auth: Teleport workload identity -> role/teleport-image-push, the job needs
   `id-token: write`.
@@ -10,6 +11,19 @@ inputs:
     description: 'Chart directory.'
     required: false
     default: '.'
+  version:
+    description: >-
+      Chart version to package and push. Empty (default) = Chart.yaml `version`.
+      Set it when the version is the build number rather than a field in git
+      (DirectCRM cdp-*-tenant: `helm package --version $BUILD_VERSION`).
+    required: false
+    default: ''
+  appVersion:
+    description: >-
+      Chart appVersion. Empty (default) = `version` when that is set, else
+      Chart.yaml `appVersion`.
+    required: false
+    default: ''
   repositoryPrefix:
     description: 'ECR repository prefix, the chart lands in <prefix>/<chart name>.'
     required: false
@@ -50,12 +64,10 @@ runs:
       shell: bash
       env:
         CHART_PATH: ${{ inputs.chartPath }}
+        VERSION: ${{ inputs.version }}
+        APP_VERSION: ${{ inputs.appVersion }}
       run: |
-        name=$(yq e '.name' "${CHART_PATH}/Chart.yaml")
-        version=$(yq e '.version' "${CHART_PATH}/Chart.yaml")
-        echo "name=$name" >> "$GITHUB_OUTPUT"
-        echo "version=$version" >> "$GITHUB_OUTPUT"
-        echo "chart ${name}@${version}"
+        bash "${GITHUB_ACTION_PATH}/resolve-version.sh" | tee -a "$GITHUB_OUTPUT"
 
     - name: Get Teleport version
       if: ${{ steps.chart.outputs.version != '0.0.0' }}
@@ -124,6 +136,7 @@ runs:
         CHART_PATH: ${{ github.workspace }}/${{ inputs.chartPath }}
         NAME: ${{ steps.chart.outputs.name }}
         VERSION: ${{ steps.chart.outputs.version }}
+        APP_VERSION: ${{ steps.chart.outputs.app-version }}
         PREFIX: ${{ inputs.repositoryPrefix }}
         AWS_REGION: ${{ inputs.awsRegion }}
       run: |
@@ -141,7 +154,8 @@ runs:
         }
         aws ecr get-login-password | helm registry login "$registry" --username AWS --password-stdin
         pkg="$(mktemp -d)"
-        helm package --dependency-update "$CHART_PATH" --destination "$pkg"
+        helm package --dependency-update "$CHART_PATH" --destination "$pkg" \
+          --version "$VERSION" --app-version "$APP_VERSION"
         helm push "${pkg}/${NAME}-${VERSION}.tgz" "oci://${registry}/${PREFIX}"
         echo "pushed=true" >> "$GITHUB_OUTPUT"
         echo "Pushed oci://${registry}/${repo}:${VERSION}"
