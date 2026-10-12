@@ -51,6 +51,14 @@ jobs:
             sha256: 7c5bd8512c6e966455b1d198209358b2d191c77a83ab377c4073281065fb855f
             dockerfile: test-images/minio.Dockerfile
             asset: minio
+          # Messaging, ai-assistant-rnd, db-maintenance pin this one (issues-maestra#1569).
+          - repository: test-images/minio
+            tag: RELEASE.2025-03-12T18-04-18Z
+            url: https://github.com/minio/minio/releases/download/RELEASE.2025-03-12T18-04-18Z/minio.linux-amd64.RELEASE.2025-03-12T18-04-18Z
+            sha256sum-url: https://github.com/minio/minio/releases/download/RELEASE.2025-03-12T18-04-18Z/minio.linux-amd64.RELEASE.2025-03-12T18-04-18Z.sha256sum
+            sha256: 8ec42f70f5db7bfe584790b06af3f7e2b16f48488ea4c96e0ebd8cea40990dfa
+            dockerfile: test-images/minio.Dockerfile
+            asset: minio
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
