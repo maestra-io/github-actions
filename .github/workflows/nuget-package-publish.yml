@@ -119,7 +119,7 @@ jobs:
             # project outside the solution only costs one extra SDK install.
             versions=$(find . \( -name bin -o -name obj -o -name .git \) -prune -o -type f \
                 \( -name '*.csproj' -o -name '*.fsproj' -o -name '*.vbproj' -o -name '*.props' -o -name '*.targets' \) -print0 \
-              | xargs -0 -r cat | tr -d '\r' \
+              | xargs -0 -r cat | tr '\r\n' '  ' \
               | grep -oE '<TargetFrameworks?( [^>]*)?>[^<]*</TargetFrameworks?>' \
               | sed -E 's/<[^>]*>//g' | tr ';' '\n' \
               | sed -nE 's/^[[:space:]]*net([0-9]+)\.[0-9]+.*/\1/p' \

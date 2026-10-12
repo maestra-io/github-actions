@@ -29,13 +29,17 @@ X
 cat > "$r/src/Tests/Tests.csproj" <<'X'
 <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>
   <TargetFramework Condition="'$(X)' == ''">net9.0</TargetFramework>
+  <TargetFrameworks>
+    net11.0;
+    net8.0
+  </TargetFrameworks>
 </PropertyGroup></Project>
 X
 echo '<Project><PropertyGroup><TargetFrameworks>net48;net8.0-windows</TargetFrameworks></PropertyGroup></Project>' > "$r/src/Win/Win.fsproj"
 echo '<Project><PropertyGroup><TargetFramework>net7.0</TargetFramework></PropertyGroup></Project>' > "$r/src/Lib/bin/Release/Stale.csproj"
 echo '<Project><PropertyGroup><TargetFramework>net5.0</TargetFramework></PropertyGroup></Project>' > "$r/obj/Stale.props"
 
-check "mixed TFMs" $'6.0.x\n8.0.x\n9.0.x\n10.0.x' "$(run "$r" "")"
+check "mixed TFMs" $'6.0.x\n8.0.x\n9.0.x\n10.0.x\n11.0.x' "$(run "$r" "")"
 check "override" $'7.0.x\n9.0.100' "$(run "$r" $'7.0.x\n9.0.100')"
 mkdir "$d/none"; check "no projects" "" "$(run "$d/none" "")"
 echo "nuget-sdk-set: OK"
