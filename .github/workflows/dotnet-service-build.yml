@@ -42,7 +42,10 @@
 #                       when both are set. `true` = no tests.
 #   test-image          With test-command: run it in this image (`docker run`, repo
 #                       mounted at /src, sh -c) instead of on the runner.
-#   warn-as-error       /warnaserror on dotnet test (default true, GitLab parity).
+#   warn-as-error       Warnings as errors on dotnet test (default true, GitLab parity),
+#                       as -p:MSBuildTreatWarningsAsErrors=true: same effect as
+#                       /warnaserror, but works on both runners (MTP hands a bare
+#                       /warnaserror to the test app: "Zero tests ran", exit 5).
 #   test-env            Extra environment for the tests, KEY=VALUE per line (GitLab
 #                       job `variables:` of the test job, e.g. a Testcontainers image
 #                       override). Exported to the dotnet test step, passed with
@@ -410,14 +413,19 @@ jobs:
           FILTER: ${{ inputs.test-filter }}
           WARN_AS_ERROR: ${{ inputs.warn-as-error }}
         run: |
+          # >>> dotnet-test (scripts/test-dotnet-service-build-mtp.sh runs this block)
           # Same credential shape as GitLab (`dotnet nuget update source private`).
           dotnet nuget update source "$SOURCE" --username ci --password "$TOKEN" \
             --store-password-in-clear-text || echo "::warning::no nuget source '$SOURCE' to authenticate"
           sln=(); [ -n "$SOLUTION" ] && sln=("$SOLUTION")
-          wae=(); [ "$WARN_AS_ERROR" = "true" ] && wae=(/warnaserror)
+          # An MSBuild property, not /warnaserror: under the Microsoft.Testing.Platform
+          # runner (global.json `test.runner`) dotnet test forwards a bare /warnaserror
+          # to the test app, which then runs zero tests (exit 5). Same effect on VSTest.
+          wae=(); [ "$WARN_AS_ERROR" = "true" ] && wae=(-p:MSBuildTreatWarningsAsErrors=true)
           dotnet restore "${sln[@]}" --locked-mode
           filter=(); [ -n "$FILTER" ] && filter=(--filter "$FILTER")
           dotnet test --no-restore "${sln[@]}" --configuration Release "${filter[@]}" "${wae[@]}"
+          # <<< dotnet-test
 
   images:
     needs: [version, test]
