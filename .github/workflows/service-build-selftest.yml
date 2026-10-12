@@ -1,0 +1,45 @@
+# End-to-end check of dotnet-service-build.yml on its own pull requests: the
+# non-.NET test mode (test-command on the runner and in a test-image), several
+# Dockerfiles, last-stage builds and the bakes parsing. On pull_request the
+# reusable workflow never pushes, releases or bakes, so this is safe to run.
+name: service-build-selftest
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/dotnet-service-build.yml"
+      - ".github/workflows/service-build-selftest.yml"
+      - "ci/fixtures/service-build/**"
+
+jobs:
+  on-runner:
+    uses: ./.github/workflows/dotnet-service-build.yml
+    permissions:
+      contents: write # validated for the callee's (skipped) release job
+      id-token: write
+      packages: read
+    with:
+      image-targets: |
+        selftest_default=ci/fixtures/service-build/Dockerfile:
+        selftest_worker=ci/fixtures/service-build/Dockerfile.worker:worker
+      test-command: test -n "$PACKAGES_TOKEN" && test "$SELFTEST" = on-runner
+      test-env: SELFTEST=on-runner
+      bake: true
+      bakes: |
+        selftest-a ./ci/fixtures/service-build selftest_default
+        selftest-b ./ci/fixtures/service-build
+
+  # Sequential: both calls share the callee's pull_request concurrency group,
+  # which cancels in progress.
+  in-container:
+    needs: on-runner
+    uses: ./.github/workflows/dotnet-service-build.yml
+    permissions:
+      contents: write
+      id-token: write
+      packages: read
+    with:
+      image-targets: selftest_other=ci/fixtures/service-build/Dockerfile.worker:other
+      test-command: test -f /src/ci/fixtures/service-build/Dockerfile && test "$SELFTEST" = in-container && test -n "$PACKAGES_TOKEN"
+      test-image: docker.io/library/busybox:1.37
+      test-env: SELFTEST=in-container

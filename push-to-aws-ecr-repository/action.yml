@@ -106,11 +106,23 @@ runs:
       env:
         TELEPORT_FQDN: ${{ inputs.teleportFqdn }}
       run: |
-        version=$(curl -sf "https://${TELEPORT_FQDN}/webapi/find" \
+        version=$(curl -sf --retry 5 --retry-all-errors "https://${TELEPORT_FQDN}/webapi/find" \
           | jq -r '.auto_update.tools_version // .server_version')
         echo "version=$version" >> "$GITHUB_OUTPUT"
 
-    - if: ${{ inputs.awsAccessKey == '' }}
+    # cdn.teleport.dev 5xx now and then: one retry after a pause.
+    - id: tp-setup
+      if: ${{ inputs.awsAccessKey == '' }}
+      continue-on-error: true
+      uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
+      with:
+        version: ${{ steps.tp-version.outputs.version }}
+        proxy: ${{ inputs.teleportFqdn }}
+
+    - if: ${{ steps.tp-setup.outcome == 'failure' }}
+      shell: bash
+      run: sleep 20
+    - if: ${{ steps.tp-setup.outcome == 'failure' }}
       uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
       with:
         version: ${{ steps.tp-version.outputs.version }}
@@ -262,7 +274,7 @@ runs:
         # whose CHART_PATH is the repo root packs the working tree, and a
         # 15 MB binary dropped there breaks `helm package` (rake #5).
         CRANE_DIR="$(mktemp -d)"
-        curl -sfL "https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz" \
+        curl -sfL --retry 5 --retry-delay 5 --retry-all-errors "https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz" \
           | tar -xz -C "$CRANE_DIR" crane
         export PATH="${CRANE_DIR}:${PATH}"
         crane version

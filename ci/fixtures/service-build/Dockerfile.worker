@@ -1,0 +1,5 @@
+# Fixture for service-build-selftest.yml: a second Dockerfile with a named stage.
+FROM docker.io/library/busybox:1.37 AS worker
+RUN echo worker > /stage
+FROM worker AS other
+RUN echo other > /stage
