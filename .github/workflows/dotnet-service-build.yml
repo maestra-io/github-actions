@@ -49,7 +49,8 @@
 #                       usually `tests`). Set = `test` builds and runs that stage
 #                       instead of setup-dotnet + dotnet test.
 #   test-command        Non-.NET repos: shell command run instead of dotnet test
-#                       (`bash -c`), with test-env, PACKAGES_TOKEN (nora OIDC token)
+#                       (`bash -eo pipefail -c`: any failing line fails the job; `sh -ec`
+#                       with test-image), with test-env, PACKAGES_TOKEN (nora OIDC token)
 #                       and PACKAGES_URL in its environment. docker-test-target wins
 #                       when both are set. `true` = no tests.
 #   test-image          With test-command: run it in this image (`docker run`, repo
@@ -530,9 +531,9 @@ jobs:
         run: |
           if [ -n "$TEST_IMAGE" ]; then
             docker run --rm --env-file "$RUNNER_TEMP/test.env" -e PACKAGES_TOKEN -e PACKAGES_URL \
-              -v "$PWD:/src" -w /src "$TEST_IMAGE" sh -c "$TEST_COMMAND"
+              -v "$PWD:/src" -w /src "$TEST_IMAGE" sh -ec "$TEST_COMMAND"
           else
-            bash -c "$TEST_COMMAND"
+            bash -eo pipefail -c "$TEST_COMMAND"
           fi
 
       # ── dotnet test (GitLab .update-source-and-test) ─────────────────────
