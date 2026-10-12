@@ -1,0 +1,4 @@
+# Fixture for service-build-selftest.yml: starts FROM the base image built from
+# Dockerfile.base (GitLab-style `local/<name>:latest`); fails if it is not that one.
+FROM local/selftest-base:latest
+RUN grep -qx base /base && echo on-base > /stage
