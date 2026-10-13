@@ -539,7 +539,7 @@ jobs:
   kargo-refresh:
     needs: [version, bake]
     runs-on: runs-on=${{ github.run_id }}-kargo-refresh/pool=small
-    timeout-minutes: 5
+    timeout-minutes: 8
     continue-on-error: true
     permissions:
       contents: read
@@ -554,11 +554,9 @@ jobs:
         with:
           version: ${{ steps.tp-version.outputs.version }}
           proxy: ${{ env.TELEPORT_FQDN }}
-      - env:
+      - id: tbot-config
+        env:
           TOKEN_NAME: ${{ inputs.kargo-teleport-token }}
-          SERVICE: ${{ needs.version.outputs.service }}
-          PROJECT: ${{ inputs.kargo-project }}
-          WAREHOUSE: ${{ inputs.kargo-warehouse }}
         run: |
           out="$(mktemp -d)"
           cat > "$out/tbot.yaml" <<EOF
@@ -584,16 +582,27 @@ jobs:
                 path: ${out}/app
           EOF
           mkdir -p "$out/kube" "$out/app"
-          tbot start -c "$out/tbot.yaml" & pid=$!
-          for _ in $(seq 1 30); do
-            [ -s "$out/kube/kubeconfig.yaml" ] && [ -s "$out/app/tlscert" ] && break
-            kill -0 "$pid" 2>/dev/null || break
-            sleep 1
-          done
-          kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
-          [ -s "$out/kube/kubeconfig.yaml" ] && [ -s "$out/app/tlscert" ] \
-            || { echo "::warning::tbot (${TOKEN_NAME}) produced no credentials; freight appears on the next Warehouse poll"; exit 1; }
-
+          echo "dir=$out" >> "$GITHUB_OUTPUT"
+      # Retries transient Teleport backend / GitHub OIDC failures (fails at once on
+      # configuration errors) and stops tbot once the files land: its heartbeat can
+      # hang minutes after a oneshot run's outputs (see fluxcd setup-flux-ecr).
+      - uses: maestra-io/github-actions/tbot-join@v1
+        with:
+          config: ${{ steps.tbot-config.outputs.dir }}/tbot.yaml
+          require: |
+            ${{ steps.tbot-config.outputs.dir }}/kube/kubeconfig.yaml
+            ${{ steps.tbot-config.outputs.dir }}/app/tlscert
+            ${{ steps.tbot-config.outputs.dir }}/app/key
+          label: token ${{ inputs.kargo-teleport-token }}
+          hint: "is it a github join token that allows this repository, and does the job have id-token: write? Freight appears on the next Warehouse poll."
+          warn-only: true
+      - env:
+          OUT: ${{ steps.tbot-config.outputs.dir }}
+          SERVICE: ${{ needs.version.outputs.service }}
+          PROJECT: ${{ inputs.kargo-project }}
+          WAREHOUSE: ${{ inputs.kargo-warehouse }}
+        run: |
+          out="$OUT"
           bearer=$(kubectl --kubeconfig "$out/kube/kubeconfig.yaml" \
             --context "teleport.maestra.io-us-iota-lw-kube-infra" \
             -n kargo create token kargo-ci-github --duration 10m)

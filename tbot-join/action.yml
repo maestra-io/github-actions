@@ -1,0 +1,49 @@
+name: "tbot join (with retries)"
+description: >-
+  Run a one-shot tbot join from a config the caller wrote and wait for its
+  outputs, retrying transient Teleport / GitHub OIDC / network failures (4
+  attempts, 5/15/30 s apart, 45 s each) and failing at once on configuration
+  errors. Needs tbot on PATH (teleport-actions/setup) and `id-token: write` for
+  join_method github. The composite actions of this repo run tbot-join.sh
+  directly from their own ref; this wrapper is for the reusable workflows,
+  which run in the caller's checkout.
+
+inputs:
+  config:
+    description: "Path to the tbot config (directory destinations, storage: memory, oneshot: true)."
+    required: true
+  require:
+    description: "Newline-separated output files that must exist and be non-empty for the join to count."
+    required: true
+  label:
+    description: "What is joining, for messages (e.g. `token github-actions-kargo-refresh`)."
+    required: false
+    default: ""
+  hint:
+    description: "Printed only when the failure is a configuration error (unknown token, claims, RBAC, no id-token: write)."
+    required: false
+    default: ""
+  warn-only:
+    description: "`true`: report the final failure as a ::warning:: (best-effort callers); the step still fails."
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: tbot join
+      shell: bash
+      env:
+        CONFIG: ${{ inputs.config }}
+        REQUIRE: ${{ inputs.require }}
+        LABEL: ${{ inputs.label }}
+        HINT: ${{ inputs.hint }}
+        WARN_ONLY: ${{ inputs.warn-only }}
+      run: |
+        args=(-c "$CONFIG" -l "$LABEL" -H "$HINT")
+        while IFS= read -r f; do
+          f="${f#"${f%%[![:space:]]*}"}"; f="${f%"${f##*[![:space:]]}"}"
+          [ -n "$f" ] && args+=(-r "$f")
+        done <<<"$REQUIRE"
+        [ "$WARN_ONLY" = true ] && args+=(-w)
+        bash "${GITHUB_ACTION_PATH}/tbot-join.sh" "${args[@]}"

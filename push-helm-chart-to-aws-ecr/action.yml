@@ -113,8 +113,10 @@ runs:
             audiences: ["sts.amazonaws.com"]
         EOF
         mkdir -p "$out/svid"
-        tbot start -c "$out/tbot.yaml" || true
-        test -s "$out/svid/jwt_svid" || { echo "::error::tbot minted no JWT SVID with token ${TELEPORT_TOKEN}: is the ref main/master, and does the job have id-token: write?"; exit 1; }
+        # Retries transient Teleport backend / GitHub OIDC failures, fails at once
+        # on configuration errors (../tbot-join/tbot-join.sh, same ref as this action).
+        bash "${GITHUB_ACTION_PATH}/../tbot-join/tbot-join.sh" -c "$out/tbot.yaml" -r "$out/svid/jwt_svid" \
+          -l "token ${TELEPORT_TOKEN}" -H "is the ref main/master, and does the job have id-token: write?"
         echo "PUSH_ECR_JWT_SVID=$out/svid/jwt_svid" >> "$GITHUB_ENV"
 
     - name: Configure AWS Credentials (workload identity)
