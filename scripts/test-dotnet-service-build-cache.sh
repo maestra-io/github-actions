@@ -63,7 +63,7 @@ printf 'FROM sdk\nRUN --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageS
 "$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.pre124" >/dev/null
 eq "$(cat "$work/Dockerfile.pre124")" "$(printf 'FROM sdk\nRUN --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private dotnet restore\nRUN --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private dotnet build -c Release --no-restore\nRUN ls')" "nuget-secret-mount-fix: pre-#124 Dockerfile upgraded"
 eq "$("$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.pre124")" "unchanged: $work/Dockerfile.pre124" "nuget-secret-mount-fix: pre-#124 upgrade idempotent"
-printf 'FROM sdk\nRUN dotnet build\n' > "$work/Dockerfile.nofeed"
+printf 'FROM sdk\n# RUN --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private dotnet restore\nRUN dotnet build\n' > "$work/Dockerfile.nofeed"
 eq "$("$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.nofeed")" "unchanged: $work/Dockerfile.nofeed" "nuget-secret-mount-fix: no credential anywhere, untouched"
 eq "$(cache_for "$fx/Dockerfile.gitlab" $'img\ntests')" "|" "GitLab-era Dockerfile: no cache"
 eq "$(cache_for "$work/Dockerfile.fixed" $'img\ntests')" "type=gha,scope=img type=gha,scope=tests|type=gha,mode=max,scope=img" "fixed Dockerfile: cache"

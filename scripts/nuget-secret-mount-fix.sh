@@ -79,7 +79,7 @@ for path in sys.argv[1:]:
     if re.search(r'--password', ''.join(l for i, l in enumerate(lines) if i not in drop)):
         print(f'still writes a password (fix by hand): {path}')
     if not names and runs:  # converted before #124: reuse the source names already mounted
-        names = MOUNTED.findall(''.join(lines))
+        names = MOUNTED.findall(' '.join(joined(lines, a, b) for a, b in instructions(lines)))
     if not names:
         print(f'unchanged: {path}'); continue
     mounts = ' '.join(f'--mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_{n}'
