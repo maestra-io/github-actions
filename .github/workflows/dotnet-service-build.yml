@@ -99,6 +99,11 @@
 #   nuget-source-name   nuget.config source the packages token is set on (default private).
 #   packages-url        Package registry (default https://packages.maestra.io, nora).
 #   packages-audience   `aud` of the GitHub OIDC token nora accepts (default packages.maestra.io).
+#   sticky-buildkit     Build the images on runner t3a-2xl-sticky (maestra-io/.github-private)
+#                       with the BuildKit state on a persistent EBS disk (RunsOn sticky
+#                       disk, one snapshot per repo and branch) instead of the type=gha
+#                       layer cache: a NuGet restore layer survives between jobs without
+#                       an export/import. Canary: api-mimic. Default false.
 # Secrets:
 #   private-packages-token  Optional. Overrides the nora OIDC token passed as the
 #                       PRIVATE_PACKAGES_TOKEN build secret and used for restore
@@ -242,6 +247,9 @@ on:
       packages-audience:
         type: string
         default: packages.maestra.io
+      sticky-buildkit:
+        type: boolean
+        default: false
     secrets:
       private-packages-token:
         required: false
@@ -467,7 +475,9 @@ jobs:
         run: |
           # >>> layer-cache (scripts/test-dotnet-service-build-cache.sh runs this block)
           persists='--password|ClearTextPassword|_authToken|http-basic|^[[:space:]]*ARG[[:space:]]+[A-Za-z0-9_]*(TOKEN|PASSWORD)'
-          if grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
+          if [ "${STICKY:-}" = true ]; then
+            from=""; to="" # layers live on the job's sticky disk, no gha export/import
+          elif grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
             echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer (GitLab-era 'dotnet nuget update source --password'): built WITHOUT the layer cache, a cached layer would replay an expired token. Mount it per RUN instead: --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_<source> (scripts/nuget-secret-mount-fix.sh)."
             from=""; to=""
           else
@@ -564,6 +574,17 @@ jobs:
         with:
           dotnet-version: ${{ steps.sdk.outputs.version }}
           global-json-file: ${{ steps.sdk.outputs.file }}
+      # NuGet global-packages folder on the Magic Cache (S3 next to the runner): the
+      # host-side restore re-downloaded every package on every job (~35 s in quizzes,
+      # api-mimic, 13.10.2026). Keyed on what decides the package graph; a partial key
+      # still restores the previous folder and only the delta is fetched. The docker
+      # paths above keep their restore inside the layer cache instead.
+      - if: ${{ inputs.docker-test-target == '' && inputs.test-command == '' }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/*.props', '**/packages.lock.json', '**/nuget.config', 'global.json') }}
+          restore-keys: nuget-${{ runner.os }}-
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command == '' }}
         env:
           TOKEN: ${{ steps.token.outputs.token }}
@@ -606,7 +627,9 @@ jobs:
         run: |
           # >>> layer-cache (scripts/test-dotnet-service-build-cache.sh runs this block)
           persists='--password|ClearTextPassword|_authToken|http-basic|^[[:space:]]*ARG[[:space:]]+[A-Za-z0-9_]*(TOKEN|PASSWORD)'
-          if grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
+          if [ "${STICKY:-}" = true ]; then
+            from=""; to="" # layers live on the job's sticky disk, no gha export/import
+          elif grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
             echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer (GitLab-era 'dotnet nuget update source --password'): built WITHOUT the layer cache, a cached layer would replay an expired token. Mount it per RUN instead: --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_<source> (scripts/nuget-secret-mount-fix.sh)."
             from=""; to=""
           else
@@ -641,7 +664,8 @@ jobs:
     # One label per leg: legs sharing `runs-on=<run_id>/pool=build` claim each
     # other's runners, and the robbed leg waits out RunsOn's retry backoff
     # (up to 42 min on 12.10, issues-maestra#1556).
-    runs-on: runs-on=${{ github.run_id }}-images-${{ strategy.job-index }}/pool=build
+    # A pool ignores every other label, so the sticky disk needs its own runner spec.
+    runs-on: ${{ inputs.sticky-buildkit && format('runs-on={0}-images-{1}/runner=t3a-2xl-sticky', github.run_id, strategy.job-index) || format('runs-on={0}-images-{1}/pool=build', github.run_id, strategy.job-index) }}
     timeout-minutes: 45
     permissions:
       contents: read
@@ -652,12 +676,25 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.version.outputs.matrix) }}
     steps:
-      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      # sticky_cache=buildkit (sticky-buildkit only): the action binds the BuildKit
+      # state to the sticky disk and names the builder; empty = plain runner.
+      - id: runs-on
+        uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+        with:
+          sticky_cache: ${{ inputs.sticky-buildkit && 'buildkit' || '' }}
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
 
+      # Without the sticky disk every value below is empty/true: the action's default
+      # builder. With it, the RunsOn post step stops the builder itself before the
+      # snapshot (cleanup=false), and the agent's default buildkitd config (Docker Hub
+      # mirror) still applies: no explicit config is passed.
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          name: ${{ steps.runs-on.outputs.buildkit-builder }}
+          driver: docker-container
+          cleanup: ${{ !inputs.sticky-buildkit }}
       - run: mkdir -p .nuget # bind-mount source of the GitLab-era Dockerfiles
 
       - name: aws credentials
@@ -692,13 +729,16 @@ jobs:
         id: cache
         env:
           DOCKERFILE: ${{ matrix.dockerfile }}
+          STICKY: ${{ inputs.sticky-buildkit }}
           SCOPES: |
             ${{ matrix.image }}
             ${{ inputs.docker-test-target }}
         run: |
           # >>> layer-cache (scripts/test-dotnet-service-build-cache.sh runs this block)
           persists='--password|ClearTextPassword|_authToken|http-basic|^[[:space:]]*ARG[[:space:]]+[A-Za-z0-9_]*(TOKEN|PASSWORD)'
-          if grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
+          if [ "${STICKY:-}" = true ]; then
+            from=""; to="" # layers live on the job's sticky disk, no gha export/import
+          elif grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
             echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer (GitLab-era 'dotnet nuget update source --password'): built WITHOUT the layer cache, a cached layer would replay an expired token. Mount it per RUN instead: --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_<source> (scripts/nuget-secret-mount-fix.sh)."
             from=""; to=""
           else
@@ -758,7 +798,9 @@ jobs:
         run: |
           # >>> layer-cache (scripts/test-dotnet-service-build-cache.sh runs this block)
           persists='--password|ClearTextPassword|_authToken|http-basic|^[[:space:]]*ARG[[:space:]]+[A-Za-z0-9_]*(TOKEN|PASSWORD)'
-          if grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
+          if [ "${STICKY:-}" = true ]; then
+            from=""; to="" # layers live on the job's sticky disk, no gha export/import
+          elif grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
             echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer (GitLab-era 'dotnet nuget update source --password'): built WITHOUT the layer cache, a cached layer would replay an expired token. Mount it per RUN instead: --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_<source> (scripts/nuget-secret-mount-fix.sh)."
             from=""; to=""
           else
@@ -776,6 +818,7 @@ jobs:
           file: ${{ needs.version.outputs.base-dockerfile }}
           target: ${{ needs.version.outputs.base-target }}
           outputs: type=oci,dest=${{ runner.temp }}/base-image,tar=false
+          builder: ${{ steps.runs-on.outputs.buildkit-builder }}
           secret-files: |
             PRIVATE_PACKAGES_TOKEN=${{ runner.temp }}/packages-token/PRIVATE_PACKAGES_TOKEN
             NUGET_CREDENTIALS=${{ runner.temp }}/packages-token/NUGET_CREDENTIALS
@@ -792,6 +835,7 @@ jobs:
           file: ${{ matrix.dockerfile }}
           target: ${{ matrix.target }}
           build-contexts: ${{ steps.base.outputs.context }}
+          builder: ${{ steps.runs-on.outputs.buildkit-builder }}
           load: true
           push: false
           tags: local/${{ matrix.image }}:${{ needs.version.outputs.release }}
