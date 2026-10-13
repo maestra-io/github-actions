@@ -58,6 +58,13 @@ printf 'FROM sdk\nRUN --mount=type=secret,id=T dotnet nuget update source privat
 cp "$work/Dockerfile.chained" "$work/Dockerfile.chained.orig"
 "$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.chained" | grep -q 'fix by hand' || { echo "FAIL nuget-secret-mount-fix: chained credential RUN not reported"; exit 1; }
 cmp -s "$work/Dockerfile.chained" "$work/Dockerfile.chained.orig" || { echo "FAIL nuget-secret-mount-fix: chained credential RUN changed"; exit 1; }
+# converted before #124 (api-mimic): the --no-restore build ran unmounted, the SDK workload check sent an empty Basic
+printf 'FROM sdk\nRUN --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private dotnet restore\nRUN dotnet build -c Release --no-restore\nRUN ls\n' > "$work/Dockerfile.pre124"
+"$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.pre124" >/dev/null
+eq "$(cat "$work/Dockerfile.pre124")" "$(printf 'FROM sdk\nRUN --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private dotnet restore\nRUN --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private dotnet build -c Release --no-restore\nRUN ls')" "nuget-secret-mount-fix: pre-#124 Dockerfile upgraded"
+eq "$("$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.pre124")" "unchanged: $work/Dockerfile.pre124" "nuget-secret-mount-fix: pre-#124 upgrade idempotent"
+printf 'FROM sdk\n# RUN --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private dotnet restore\nRUN dotnet build\n' > "$work/Dockerfile.nofeed"
+eq "$("$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.nofeed")" "unchanged: $work/Dockerfile.nofeed" "nuget-secret-mount-fix: no credential anywhere, untouched"
 eq "$(cache_for "$fx/Dockerfile.gitlab" $'img\ntests')" "|" "GitLab-era Dockerfile: no cache"
 eq "$(cache_for "$work/Dockerfile.fixed" $'img\ntests')" "type=gha,scope=img type=gha,scope=tests|type=gha,mode=max,scope=img" "fixed Dockerfile: cache"
 eq "$(cache_for "$work/Dockerfile.fixed" $'img\n')" "type=gha,scope=img|type=gha,mode=max,scope=img" "no docker-test-target"
