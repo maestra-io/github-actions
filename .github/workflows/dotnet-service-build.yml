@@ -104,7 +104,9 @@
 #                       with the BuildKit state on a persistent EBS disk (RunsOn sticky
 #                       disk, one snapshot per repo and branch) instead of the type=gha
 #                       layer cache: a NuGet restore layer survives between jobs without
-#                       an export/import. Canary: api-mimic. Default false.
+#                       an export/import. Default true since 13.10.2026 (api-mimic canary:
+#                       images legs 385-455 s -> 55-62 s warm, 271-317 s cold); false
+#                       falls back to pool=build with the type=gha layer cache.
 # Secrets:
 #   private-packages-token  Optional. Overrides the nora OIDC token passed as the
 #                       PRIVATE_PACKAGES_TOKEN build secret and used for restore
@@ -250,7 +252,7 @@ on:
         default: packages.maestra.io
       sticky-buildkit:
         type: boolean
-        default: false
+        default: true
     secrets:
       private-packages-token:
         required: false
