@@ -647,6 +647,13 @@ jobs:
           path: ${{ runner.temp }}/test-results
           retention-days: 30
           if-no-files-found: ignore
+      # Flaky-test telemetry (maestra-io/issues-maestra#1592): one row per test result into
+      # ci-telemetry VictoriaLogs. The bearer comes from Vault (role ci-test-results-ingest,
+      # bound to this workflow file); never fails the build.
+      - name: ingest test results
+        if: ${{ always() }}
+        continue-on-error: true
+        uses: maestra-io/github-actions/test-results-ingest@v1
 
       # ── base-image: built once here into the cache, the `images` legs reuse it ──
       - if: ${{ needs.version.outputs.base-name != '' && (github.event_name != 'pull_request' || inputs.pr-images) }}
