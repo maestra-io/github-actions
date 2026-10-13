@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 act=test-results-ingest
-rows=$(GITHUB_REPOSITORY=maestra-io/x GITHUB_WORKFLOW=w GITHUB_JOB=j TEST_RESULTS_JOB_SUFFIX=-leg GITHUB_RUN_ID=1 \
+rows=$(GITHUB_HEAD_REF= GITHUB_REPOSITORY=maestra-io/x GITHUB_WORKFLOW=w GITHUB_JOB=j TEST_RESULTS_JOB_SUFFIX=-leg GITHUB_RUN_ID=1 \
   GITHUB_RUN_ATTEMPT=2 GITHUB_SHA=abc GITHUB_REF_NAME=main GITHUB_EVENT_NAME=push \
   python3 -I "$act/test-results-to-jsonl.py" "$act/testdata" 2>/dev/null)
 n=$(wc -l <<<"$rows" | tr -d ' ')
