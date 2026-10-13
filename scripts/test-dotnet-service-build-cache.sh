@@ -63,6 +63,9 @@ eq "$(cache_for "$work/Dockerfile.fixed" $'img\ntests')" "type=gha,scope=img typ
 eq "$(cache_for "$work/Dockerfile.fixed" $'img\n')" "type=gha,scope=img|type=gha,mode=max,scope=img" "no docker-test-target"
 eq "$(cache_for "$work/Dockerfile.fixed" "tests")" "type=gha,scope=tests|type=gha,mode=max,scope=tests" "test job"
 eq "$(STICKY=true cache_for "$work/Dockerfile.fixed" $'img\ntests')" "|" "sticky disk: layers stay on the disk, no gha cache"
+eq "$(sed -n 's/^nocache=//p' "$work/out")" "false" "sticky disk, fixed Dockerfile: builder cache allowed"
+eq "$(STICKY=true cache_for "$fx/Dockerfile.gitlab" img)" "|" "sticky disk, GitLab-era Dockerfile: no gha cache"
+eq "$(sed -n 's/^nocache=//p' "$work/out")" "true" "sticky disk, GitLab-era Dockerfile: --no-cache, the token layer is never replayed"
 for persist in 'ARG PRIVATE_PACKAGES_TOKEN' \
                'RUN --mount=type=secret,id=T npm config set //packages.maestra.io/npm/:_authToken $(cat /run/secrets/T)' \
                'RUN --mount=type=secret,id=T poetry config http-basic.maestra token $(cat /run/secrets/T)' \

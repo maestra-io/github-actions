@@ -321,7 +321,13 @@ jobs:
         run: |
           # >>> layer-cache (scripts/test-dotnet-service-build-cache.sh runs this block)
           persists='--password|ClearTextPassword|_authToken|http-basic|^[[:space:]]*ARG[[:space:]]+[A-Za-z0-9_]*(TOKEN|PASSWORD)'
-          if [ "${STICKY:-}" = true ]; then
+          nocache=false
+          if [ "${STICKY:-}" = true ] && grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
+            # The persistent builder would replay the token layer exactly like the gha
+            # cache does: build this Dockerfile with --no-cache on the sticky disk.
+            echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer: built with --no-cache on the sticky BuildKit disk; scripts/nuget-secret-mount-fix.sh fixes the Dockerfile"
+            from=""; to=""; nocache=true
+          elif [ "${STICKY:-}" = true ]; then
             from=""; to="" # layers live on the job's sticky disk, no gha export/import
           elif grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
             echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer (GitLab-era 'dotnet nuget update source --password'): built WITHOUT the layer cache, a cached layer would replay an expired token. Mount it per RUN instead: --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_<source> (scripts/nuget-secret-mount-fix.sh)."
@@ -331,7 +337,7 @@ jobs:
             from=$(awk '{print "type=gha,scope=" $0}' <<<"$scopes")
             to="type=gha,mode=max,scope=$(head -n1 <<<"$scopes")"
           fi
-          { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; } >> "$GITHUB_OUTPUT"
+          { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; echo "nocache=$nocache"; } >> "$GITHUB_OUTPUT"
           # <<< layer-cache
       - if: ${{ inputs.docker-test-target != '' }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -464,7 +470,13 @@ jobs:
         run: |
           # >>> layer-cache (scripts/test-dotnet-service-build-cache.sh runs this block)
           persists='--password|ClearTextPassword|_authToken|http-basic|^[[:space:]]*ARG[[:space:]]+[A-Za-z0-9_]*(TOKEN|PASSWORD)'
-          if [ "${STICKY:-}" = true ]; then
+          nocache=false
+          if [ "${STICKY:-}" = true ] && grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
+            # The persistent builder would replay the token layer exactly like the gha
+            # cache does: build this Dockerfile with --no-cache on the sticky disk.
+            echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer: built with --no-cache on the sticky BuildKit disk; scripts/nuget-secret-mount-fix.sh fixes the Dockerfile"
+            from=""; to=""; nocache=true
+          elif [ "${STICKY:-}" = true ]; then
             from=""; to="" # layers live on the job's sticky disk, no gha export/import
           elif grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
             echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer (GitLab-era 'dotnet nuget update source --password'): built WITHOUT the layer cache, a cached layer would replay an expired token. Mount it per RUN instead: --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_<source> (scripts/nuget-secret-mount-fix.sh)."
@@ -474,7 +486,7 @@ jobs:
             from=$(awk '{print "type=gha,scope=" $0}' <<<"$scopes")
             to="type=gha,mode=max,scope=$(head -n1 <<<"$scopes")"
           fi
-          { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; } >> "$GITHUB_OUTPUT"
+          { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; echo "nocache=$nocache"; } >> "$GITHUB_OUTPUT"
           # <<< layer-cache
 
       # Built into the local daemon as local/<image>:<release>, then pushed by the
