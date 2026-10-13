@@ -53,8 +53,10 @@ def parse_trx(path):
             defs[ut.get("id")] = (tm.get("className", ""), tm.get("name", ""))
     for r in root.iter(TRX_NS + "UnitTestResult"):
         cls, name = defs.get(r.get("testId"), ("", r.get("testName", "")))
-        # TRX testName carries the DataRow arguments ("Rows (1)"), className is the FQN of the class.
-        test_id = f"{cls}.{r.get('testName') or name}" if cls else (r.get("testName") or name)
+        name = r.get("testName") or name
+        # MSTest's testName is the method plus DataRow arguments ("Rows (1)") and className the
+        # class FQN; xunit's testName is already fully qualified, so prepend only when it is not.
+        test_id = f"{cls}.{name}" if cls and not name.startswith(cls + ".") else name
         outcome = (r.get("outcome") or "").lower()
         outcome = {"notexecuted": "skipped", "inconclusive": "skipped", "passed": "passed", "failed": "failed"}.get(outcome, outcome or "unknown")
         err = r.find(f"{TRX_NS}Output/{TRX_NS}ErrorInfo")

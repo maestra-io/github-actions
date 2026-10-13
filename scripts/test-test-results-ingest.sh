@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Converter self-check: the two fixtures under test-results-ingest/testdata
-# must yield 8 rows, 2 failed with a failure_hash, 2 skipped, and the GitHub context on each row.
+# must yield 9 rows, 2 failed with a failure_hash, 2 skipped, no doubled class prefix (xunit TRX), and the GitHub context on each row.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 act=test-results-ingest
@@ -12,6 +12,8 @@ failed=$(jq -r 'select(.outcome=="failed") | .failure_hash' <<<"$rows" | grep -c
 skipped=$(jq -r 'select(.outcome=="skipped") | .test_id' <<<"$rows" | wc -l | tr -d ' ')
 ctx=$(jq -r 'select(.repo=="maestra-io/x" and .job=="j-leg" and .run_attempt=="2" and .sha=="abc" and .branch=="main") | .test_id' <<<"$rows" | wc -l | tr -d ' ')
 times=$(jq -r '._time' <<<"$rows" | grep -c '^20[0-9][0-9]-' || true)
-echo "rows=$n failed_with_hash=$failed skipped=$skipped with_context=$ctx with_time=$times"
-[ "$n" = 8 ] && [ "$failed" = 2 ] && [ "$skipped" = 2 ] && [ "$ctx" = 8 ] && [ "$times" = 8 ] || { echo "FAIL"; exit 1; }
+doubled=$(jq -r '.test_id' <<<"$rows" | grep -c 'Svc.Tests.X.Svc.Tests.X' || true)
+xunit=$(jq -r '.test_id' <<<"$rows" | grep -cx 'Svc.Tests.X.Works' || true)
+echo "rows=$n failed_with_hash=$failed skipped=$skipped with_context=$ctx with_time=$times xunit_id=$xunit doubled=$doubled"
+[ "$n" = 9 ] && [ "$failed" = 2 ] && [ "$skipped" = 2 ] && [ "$ctx" = 9 ] && [ "$times" = 9 ] && [ "$xunit" = 1 ] && [ "$doubled" = 0 ] || { echo "FAIL"; exit 1; }
 echo OK
