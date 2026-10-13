@@ -295,10 +295,30 @@ jobs:
           dotnet build "${sln[@]}" --configuration Release --no-restore "${ver[@]}" "${wae[@]}"
           if [ "$RUN_TESTS" = "true" ]; then
             filter=(); [ -n "$FILTER" ] && filter=(--filter "$FILTER")
-            dotnet test "${sln[@]}" --configuration Release --no-build --no-restore "${filter[@]}"
+            # TRX for flaky-test telemetry (maestra-io/issues-maestra#1592), as MSBuild properties
+            # rather than --logger: the Microsoft.Testing.Platform runner rejects --logger and
+            # ignores these.
+            VSTestLogger=trx VSTestResultsDirectory="$RUNNER_TEMP/test-results" \
+              dotnet test "${sln[@]}" --configuration Release --no-build --no-restore "${filter[@]}"
           fi
           dotnet pack "${sln[@]}" --no-build --configuration Release --output "$RUNNER_TEMP/nupkg" "${ver[@]}" "${repo[@]}"
           ls -1 "$RUNNER_TEMP/nupkg"
+
+      # Flaky-test telemetry (maestra-io/issues-maestra#1592): TRX of every attempt, pass or fail.
+      # github.job is the CALLED job id (test/package), the same for every call of this
+      # workflow in one run, and an artifact name cannot repeat: a per-job suffix.
+      - id: test-results-id
+        if: ${{ always() }}
+        run: echo "id=$(date +%s%N)" >> "$GITHUB_OUTPUT"
+      - name: upload test results
+        if: ${{ always() && inputs.run-tests }}
+        continue-on-error: true # telemetry never fails the build
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-results-${{ github.job }}-${{ github.run_attempt }}-${{ steps.test-results-id.outputs.id }}
+          path: ${{ runner.temp }}/test-results
+          retention-days: 30
+          if-no-files-found: ignore
 
       # Never leave the temporary pin behind (nothing here commits, but the
       # workspace is the caller's checkout).
