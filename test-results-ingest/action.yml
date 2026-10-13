@@ -7,7 +7,7 @@ description: >-
   Call it with `continue-on-error: true`: telemetry never fails a build.
 inputs:
   path:
-    description: Directory with .trx / JUnit .xml files
+    description: Directory with .trx / JUnit .xml files, or one such file
     default: ${{ runner.temp }}/test-results
   job-suffix:
     description: Appended to the job name in every row (a matrix leg)
@@ -32,7 +32,7 @@ runs:
       run: |
         # >>> ingest (scripts/test-test-results-ingest.sh runs the converter on testdata/)
         set -euo pipefail
-        [ -d "$RESULTS" ] || { echo "no $RESULTS: nothing to ingest"; exit 0; }
+        [ -e "$RESULTS" ] || { echo "no $RESULTS: nothing to ingest"; exit 0; }
         out="$RUNNER_TEMP/test-results-ingest"; rm -rf "$out"; mkdir -p "$out"
         python3 -I "$GITHUB_ACTION_PATH/test-results-to-jsonl.py" "$RESULTS" > "$out/rows.jsonl"
         [ -s "$out/rows.jsonl" ] || { echo "no test results under $RESULTS"; exit 0; }
