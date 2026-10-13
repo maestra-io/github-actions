@@ -321,7 +321,9 @@ jobs:
         run: |
           # >>> layer-cache (scripts/test-dotnet-service-build-cache.sh runs this block)
           persists='--password|ClearTextPassword|_authToken|http-basic|^[[:space:]]*ARG[[:space:]]+[A-Za-z0-9_]*(TOKEN|PASSWORD)'
-          if grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
+          if [ "${STICKY:-}" = true ]; then
+            from=""; to="" # layers live on the job's sticky disk, no gha export/import
+          elif grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
             echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer (GitLab-era 'dotnet nuget update source --password'): built WITHOUT the layer cache, a cached layer would replay an expired token. Mount it per RUN instead: --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_<source> (scripts/nuget-secret-mount-fix.sh)."
             from=""; to=""
           else
@@ -462,7 +464,9 @@ jobs:
         run: |
           # >>> layer-cache (scripts/test-dotnet-service-build-cache.sh runs this block)
           persists='--password|ClearTextPassword|_authToken|http-basic|^[[:space:]]*ARG[[:space:]]+[A-Za-z0-9_]*(TOKEN|PASSWORD)'
-          if grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
+          if [ "${STICKY:-}" = true ]; then
+            from=""; to="" # layers live on the job's sticky disk, no gha export/import
+          elif grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
             echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer (GitLab-era 'dotnet nuget update source --password'): built WITHOUT the layer cache, a cached layer would replay an expired token. Mount it per RUN instead: --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_<source> (scripts/nuget-secret-mount-fix.sh)."
             from=""; to=""
           else
