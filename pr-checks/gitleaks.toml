@@ -1,0 +1,233 @@
+# Central Gitleaks config of the GitLab gitleaks component (gitlab.mindbox.ru
+# system/components/gitleaks, gitleaks.toml, copied 2026-10-13), used by
+# .github/workflows/pr-checks.yml. Keep in sync by hand; a repo-level
+# .gitleaksignore still applies.
+title = "Gitleaks Configuration"
+minVersion = "v8.25.0"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Пути, разрешённые глобально"
+paths = [
+  '''(?i).*\.example$''',
+  '''.*test.*''',
+]
+
+[[allowlists]]
+description = "knowledge directories may contain intentionally secret-looking examples for security documentation"
+paths = ['''(?i)(^|/)knowledge/''']
+
+[[allowlists]]
+description = "Vault JWT mount path in Octopus Terraform -var arguments is not a secret"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+regexes = ['''(?i)vault_jwt_mount''']
+
+[[allowlists]]
+description = "translationKey i18n property name is not a secret"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''(?i)translationKey''']
+
+[[allowlists]]
+description = "fixtures directories and Storybook story files contain mock data, not real secrets"
+targetRules = ["generic-api-key"]
+paths = [
+  '''(?i)(^|/)fixtures/''',
+  '''(?i)\.(story|stories)\.(tsx?|jsx?)$''',
+]
+
+[[allowlists]]
+description = "Pipedrive custom_field_*_key variables are schema field IDs, not secrets"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''(?i)custom.field''']
+
+[[allowlists]]
+description = "google-services.json is a public Firebase app config, not a secret"
+targetRules = ["gcp-api-key", "generic-api-key"]
+paths = ['''(?i)(^|/)google-services\.json$''']
+
+[[allowlists]]
+description = "ai-filters-agent ML paraphrase dataset cache keys are SHA1-like dedup hashes, not credentials"
+targetRules = ["generic-api-key"]
+paths = ['''(?i)(^|/)training/dataset_builder/.*\.jsonl$''']
+
+[[allowlists]]
+description = "curl doc examples use the literal YOUR_TOKEN placeholder, not a real bearer token"
+targetRules = ["curl-auth-header"]
+regexTarget = "match"
+regexes = ['''YOUR_TOKEN''']
+
+[[allowlists]]
+description = "*Channel config fields hold Mattermost channel IDs (routing params), not access tokens"
+targetRules = ["mattermost-access-token"]
+regexTarget = "match"
+regexes = ['''(?i)channel"?\s*[:=]''']
+
+[[allowlists]]
+description = "Yandex Cloud SA key documentation examples are labeled test keys, not credentials"
+targetRules = ["private-key"]
+regexTarget = "match"
+regexes = ['''Yandex\.Cloud SA Key ID:test''']
+
+[[allowlists]]
+description = "iam_token values truncated with an ellipsis are API response documentation examples, not credentials"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''(?i)iam_token"?\s*:\s*"t1\.[A-Za-z0-9_-]*\.\.\.''']
+
+[[allowlists]]
+description = "*-verification-key DNS TXT records are published publicly for domain verification, not secrets"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''(?i)-verification-key=''']
+
+[[allowlists]]
+description = "Kubernetes label selector keys (matchExpressions[].key) such as mindbox/prometheus are label names, not secrets"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''(?i)key:\s*mindbox/''']
+
+[[allowlists]]
+description = "autosizeKey values are client-generated UUIDs grouping email blocks for height equalization, not secrets"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''(?i)autosizeKey''']
+
+[[allowlists]]
+description = "rp-connect-schema-full.json is a vendored Redpanda Connect plugin schema; its jwt/private-key/account_key values are upstream documentation examples"
+targetRules = ["jwt", "private-key", "generic-api-key"]
+paths = ['''(?i)(^|/)rp-connect-schema-full\.json$''']
+
+[[allowlists]]
+description = "bun.lock entries are registry package identifiers and integrity metadata, not credentials"
+targetRules = ["generic-api-key"]
+paths = ['''(?i)(^|/)bun\.lock$''']
+
+[[allowlists]]
+description = "BUILDER_API_KEY is the Builder.io public client key, shipped in the frontend bundle by design"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''BUILDER_API_KEY''']
+
+[[allowlists]]
+description = "MATTERMOST_BOT_USER_ID holds a 26-char Mattermost user id, which has the same shape as an access token but is not one"
+targetRules = ["mattermost-access-token"]
+regexTarget = "match"
+regexes = ['''(?i)USER_ID"?\s*[:=]''']
+
+[[allowlists]]
+description = "*_FIELD_KEY constants are Pipedrive custom-field schema ids, not credentials"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''(?i)_FIELD_KEY''']
+
+[[allowlists]]
+description = "Algolia searchApiKey is the search-only DocSearch key, published to browsers by design"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''(?i)searchApiKey''']
+
+[[allowlists]]
+description = "GPG_KEY holds a public signing-key fingerprint used to verify release artifacts"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''(?i)GPG_KEY''']
+
+[[allowlists]]
+description = "Environment.TickCount64 is a .NET clock call, not a secret"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''Environment\.TickCount''']
+
+[[allowlists]]
+description = "Yandex Cloud folder ids (b1g...) assigned to *_FOLDER shell variables are resource identifiers, not credentials"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''(?i)FOLDER(_ID)?\s*[:=]\s*"?b1g''']
+
+[[allowlists]]
+description = "piv.rs carries an upstream Teleport test fixture RSA key, hardcoded because generating it in debug builds is slow"
+targetRules = ["private-key"]
+paths = ['''(?i)(^|/)piv\.rs$''']
+
+[[allowlists]]
+description = "DeltaConfig.scala is the upstream Delta Lake config-property registry; its key = \"...\" entries are property names"
+targetRules = ["generic-api-key"]
+paths = ['''(?i)(^|/)DeltaConfig\.scala$''']
+
+[[allowlists]]
+description = "delta docs theme layout.html embeds the public Algolia DocSearch key for the delta.io site"
+targetRules = ["generic-api-key"]
+paths = ['''(?i)(^|/)docs/shared/theme/.*/layout\.html$''']
+
+[[allowlists]]
+description = "publisherKey in CrewKit kit manifests is the publisher's public ed25519 key used to verify manifest signatures, not a secret"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''(?i)publisherKey''']
+
+[[allowlists]]
+description = "config/appsettings.development.json holds development-only keys; deployed environments source them from Vault per tenant"
+targetRules = ["generic-api-key"]
+paths = ['''(?i)(^|/)config/appsettings\.development\.json$''']
+
+[[allowlists]]
+description = "vendor/buf/manifest.json is a generated Buf SDK manifest; its values are module commit digests and @buf/* package versions"
+targetRules = ["generic-api-key"]
+paths = ['''(?i)(^|/)vendor/buf/manifest\.json$''']
+
+[[allowlists]]
+description = "teleport-fork docs/pages/**.mdx are upstream Teleport docs; their credential values are placeholders (your_*_password, elided PEM bodies, zero-filled keys)"
+targetRules = ["generic-api-key", "private-key", "curl-auth-user", "jwt"]
+paths = ['''(?i)(^|/)docs/pages/.*\.mdx$''']
+
+[[allowlists]]
+description = "gen/proto/**/*.pb.go is generated protobuf code; flagged strings are enum-value examples inside doc comments"
+targetRules = ["generic-api-key"]
+paths = ['''(?i)(^|/)gen/proto/.*\.pb\.go$''']
+
+[[allowlists]]
+description = "CloudNativePG replicaCluster.promotionToken is base64 checkpoint/WAL metadata used to validate replica promotion, not a credential"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''(?i)promotionToken''']
+
+[[allowlists]]
+description = "Datadog RUM ClientToken (pub… prefix) is a write-only browser telemetry ingest token, shipped to clients by design"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''(?i)ClientToken"?\s*[:=]\s*"?pub[0-9a-f]{32}''']
+
+[[allowlists]]
+description = "renovate.json hostRules[].encrypted values are PGP-armored payloads only the Renovate bot's private key can decrypt"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+regexes = ['''^wc[A-Za-z0-9]M[A-Za-z0-9+/]''']
+
+[[allowlists]]
+description = "curl -u with shell or Helm-templated variable references ($VAR / $${VAR}) carries no literal credential"
+targetRules = ["curl-auth-user", "curl-auth-header"]
+regexTarget = "match"
+regexes = ['''-u\s*"?\$\$?\{''']
+
+[[allowlists]]
+description = "sortKey in TypeScript prop declarations is a type name or column identifier, not a secret"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''(?i)sortKey''']
+
+[[allowlists]]
+description = "deliberately degenerate xxxx-xxxx placeholders in credential-hint heuristics and their demo fixtures"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+regexes = ['''^[xX]{3,}([-_][xX]{3,})+$''']
+
+[[allowlists]]
+description = "help.mindbox.ru documents integration token formats by example; a line labelled as a format example is documentation, not a credential"
+targetRules = ["shopify-access-token"]
+regexTarget = "line"
+regexes = ['''(?i)Пример формата токена''']
