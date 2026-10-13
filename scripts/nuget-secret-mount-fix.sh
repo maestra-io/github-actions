@@ -12,6 +12,9 @@
 #   RUN --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private dotnet restore
 # (NUGET_CREDENTIALS = `Username=ci;Password=<token>`, NuGet's env credential format).
 # A credential RUN that also does something else is reported, not touched.
+# A Dockerfile converted before #124 (only the restore RUN mounted) gets the mount on
+# its other dotnet RUNs, same source: a --no-restore build without it lets the SDK's
+# workload-manifest check send an empty Basic credential, nora locks the runner out.
 # Idempotent: a second run changes nothing.
 #
 # Usage: nuget-secret-mount-fix.sh [file...]   (default: every Dockerfile* in the tree)
@@ -28,6 +31,7 @@ python3 -I - "${files[@]}" <<'PY'
 import re, sys
 
 CRED = re.compile(r'^dotnet\s+nuget\s+update\s+source\s+([A-Za-z0-9_.-]+)\s.*--password\b', re.S)
+MOUNTED = re.compile(r'id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_([A-Za-z0-9_]+)')
 DOTNET = re.compile(r'\bdotnet["\',\s]+(restore|build|publish|test|pack|msbuild|tool|workload|run)\b')
 FLAG = re.compile(r'^--\S+\s*')
 
@@ -74,6 +78,8 @@ for path in sys.argv[1:]:
             runs.append(a)
     if re.search(r'--password', ''.join(l for i, l in enumerate(lines) if i not in drop)):
         print(f'still writes a password (fix by hand): {path}')
+    if not names and runs:  # converted before #124: reuse the source names already mounted
+        names = MOUNTED.findall(''.join(lines))
     if not names:
         print(f'unchanged: {path}'); continue
     mounts = ' '.join(f'--mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_{n}'
