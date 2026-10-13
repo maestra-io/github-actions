@@ -533,10 +533,12 @@ jobs:
             NUGET_CREDENTIALS=${{ runner.temp }}/packages-token/NUGET_CREDENTIALS
           cache-from: ${{ steps.cache.outputs.from }}
           cache-to: ${{ steps.cache.outputs.to }}
+      # No packages token at test time: the .NET SDK workload-manifest check would send an
+      # empty Basic credential to the feed and nora locks the runner out (13.10.2026).
       - if: ${{ inputs.docker-test-target != '' }}
         env:
           TARGET: ${{ inputs.docker-test-target }}
-        run: docker run --rm --env-file "$RUNNER_TEMP/test.env" "local/${TARGET}:latest"
+        run: docker run --rm -e DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=true --env-file "$RUNNER_TEMP/test.env" "local/${TARGET}:latest"
 
       # ── test-command (non-.NET repos) ───────────────────────────────────
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
