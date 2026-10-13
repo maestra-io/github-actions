@@ -401,6 +401,20 @@ import) comes from the `us-west-2` **registry** policy, which grants it org-wide
 `aws iam simulate-principal-policy` does not evaluate registry policies and will report
 `implicitDeny` for it.
 
+## Test results ingest (flaky-test telemetry)
+
+`test-results-ingest` turns the TRX / JUnit files of a job into one JSON row per
+test result (repo, workflow, job, run id and attempt, sha, branch, test id,
+outcome, duration, failure hash) and pushes them to the ci-telemetry
+VictoriaLogs on us-iota-lw-kube-infra
+([issues-maestra#1592](https://github.com/maestra-io/issues-maestra/issues/1592)).
+`dotnet-service-build.yml` and `nuget-package-publish.yml` call it after every
+test run; the bearer comes from Vault role `ci-test-results-ingest`, bound to
+those workflow files, so the job needs `id-token: write` and nothing else. Call
+it with `continue-on-error: true`: telemetry never fails a build. Query:
+datasource `victorialogs-ci-telemetry`, LogsQL
+`_time:14d | stats by (repo, sha, test_id) count_uniq(outcome) n | filter n:>1`.
+
 ## Build and publish workflows (packages.maestra.io, ECR, Kargo)
 
 Reusable workflows for repositories built on GitHub Actions instead of GitLab

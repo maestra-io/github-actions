@@ -1,0 +1,47 @@
+name: test-results-ingest
+description: >-
+  One JSON row per test result from the TRX/JUnit files under `path`, pushed to
+  ci-telemetry VictoriaLogs (flaky-test telemetry, maestra-io/issues-maestra#1592).
+  Needs `id-token: write`; the ingest bearer comes from Vault role
+  ci-test-results-ingest (bound to the reusable workflows and DirectCRM).
+  Call it with `continue-on-error: true`: telemetry never fails a build.
+inputs:
+  path:
+    description: Directory with .trx / JUnit .xml files
+    default: ${{ runner.temp }}/test-results
+  job-suffix:
+    description: Appended to the job name in every row (a matrix leg)
+    default: ""
+runs:
+  using: composite
+  steps:
+    - uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
+      with:
+        url: https://vault.maestra.io
+        method: jwt
+        path: jwt-github
+        role: ci-test-results-ingest
+        jwtGithubAudience: https://github.com/maestra-io
+        exportToken: false
+        secrets: |
+          gitlab/data/common/CI_TEST_RESULTS_TOKEN value | CI_TEST_RESULTS_TOKEN
+    - shell: bash
+      env:
+        RESULTS: ${{ inputs.path }}
+        TEST_RESULTS_JOB_SUFFIX: ${{ inputs.job-suffix }}
+      run: |
+        # >>> ingest (scripts/test-test-results-ingest.sh runs the converter on testdata/)
+        set -euo pipefail
+        [ -d "$RESULTS" ] || { echo "no $RESULTS: nothing to ingest"; exit 0; }
+        out="$RUNNER_TEMP/test-results-ingest"; rm -rf "$out"; mkdir -p "$out"
+        python3 -I "$GITHUB_ACTION_PATH/test-results-to-jsonl.py" "$RESULTS" > "$out/rows.jsonl"
+        [ -s "$out/rows.jsonl" ] || { echo "no test results under $RESULTS"; exit 0; }
+        # The ingress caps a body at 16 MiB: DirectCRM's shards are ~50k rows a job.
+        split -C 4m -d "$out/rows.jsonl" "$out/chunk-"
+        for c in "$out"/chunk-*; do
+          curl -sS --fail-with-body --retry 3 --retry-all-errors -m 60 \
+            -H "Authorization: Bearer $CI_TEST_RESULTS_TOKEN" -H 'Content-Type: application/stream+json' \
+            --data-binary "@$c" https://ci-telemetry.iota.maestra.io/ci/test-results
+        done
+        echo "ingested $(wc -l < "$out/rows.jsonl") rows ($(ls "$out"/chunk-* | wc -l) requests)"
+        # <<< ingest

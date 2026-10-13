@@ -67,6 +67,9 @@ jobs:
       - name: pypi upload (skip existing, 409, pinned twine, workflow copy)
         run: bash scripts/test-pypi-upload.sh
 
+      - name: test-results-ingest converter (TRX + JUnit fixtures)
+        run: bash scripts/test-test-results-ingest.sh
+
       - name: dotnet-service-build image-targets / bakes, global.json SDK, AWS credentials wait (workflow copy)
         run: bash scripts/test-dotnet-service-build.sh
 
