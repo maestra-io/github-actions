@@ -91,8 +91,10 @@ jobs:
       - name: changed files
         run: |
           set -euo pipefail
-          git diff --name-only --diff-filter=d HEAD^1 HEAD > "$RUNNER_TEMP/changed"
-          echo "$(wc -l < "$RUNNER_TEMP/changed") files changed"
+          # NUL-separated and unquoted: core.quotePath would turn a non-ASCII name
+          # into an octal-escaped string that names no file.
+          git -c core.quotePath=false diff -z --name-only --diff-filter=d HEAD^1 HEAD > "$RUNNER_TEMP/changed"
+          echo "$(tr -cd '\0' < "$RUNNER_TEMP/changed" | wc -c) files changed"
 
       - name: check-encoding
         if: ${{ !cancelled() && inputs.check-encoding }}
@@ -101,7 +103,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -s "$RUNNER_TEMP/changed" ]; then echo "no changed files"; exit 0; fi
-          tr '\n' '\0' < "$RUNNER_TEMP/changed" | xargs -0 python3 -I .pr-checks/pr-checks/check-encoding.py "$EXTENSIONS"
+          xargs -0 python3 -I .pr-checks/pr-checks/check-encoding.py "$EXTENSIONS" < "$RUNNER_TEMP/changed"
 
       - name: gitleaks (PR commits)
         if: ${{ !cancelled() && inputs.gitleaks }}
@@ -142,7 +144,7 @@ jobs:
           KPATH: ${{ inputs.kustomize-path }}
         run: |
           set -euo pipefail
-          if [ ! -d "$KPATH" ] || ! grep -q "^${KPATH%/}/" "$RUNNER_TEMP/changed"; then
+          if [ ! -d "$KPATH" ] || ! grep -qz "^${KPATH%/}/" "$RUNNER_TEMP/changed"; then
             echo "nothing changed under $KPATH"; exit 0
           fi
           curl -fsSL -o "$RUNNER_TEMP/kustomize.tar.gz" \
