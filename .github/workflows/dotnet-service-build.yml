@@ -4,6 +4,7 @@
 # create-gitlab-release), issues-maestra#1442 wave W0c.
 #
 #   version ─► test ─► images (matrix) ─► release ─► bake ─► kargo-refresh
+#   pull_request: version ─► test, checks (pr-checks.yml) ─► pr-gate (the required check)
 #
 # Job names are a contract (required checks, `needs:` in callers): keep them.
 #
@@ -1099,3 +1100,29 @@ jobs:
             fi
           done < <(jq -r '.[] | [.["kargo-project"], .["kargo-warehouse"]] | @tsv' <<<"$BAKES")
           exit "$failed"
+
+  # Pull requests only: the shared PR checks (gitleaks on the PR's commits,
+  # check-encoding, kustomize build of a changed overlays tree), then one verdict.
+  checks:
+    if: ${{ github.event_name == 'pull_request' }}
+    uses: maestra-io/github-actions/.github/workflows/pr-checks.yml@main
+    permissions:
+      contents: read
+
+  # The single check a branch ruleset requires (`<caller job> / pr gate`): red when
+  # any PR job failed or was cancelled. Skipped jobs (images without pr-images) pass.
+  pr-gate:
+    name: pr gate
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    needs: [version, test, images, checks]
+    runs-on: runs-on=${{ github.run_id }}-pr-gate/pool=small
+    timeout-minutes: 5
+    steps:
+      - uses: runs-on/action@v2.5.0
+      - env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "PR jobs: $RESULTS"
+          if jq -e 'any(. == "failure" or . == "cancelled")' <<<"$RESULTS" >/dev/null; then
+            echo "::error::a PR job failed or was cancelled"; exit 1
+          fi
