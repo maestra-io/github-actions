@@ -441,6 +441,9 @@ jobs:
           TEST_IMAGE: ${{ inputs.test-image }}
         run: |
           : > "$RUNNER_TEMP/test.env"
+          # TRX of every test path lands here (flaky-test telemetry, maestra-io/issues-maestra#1592);
+          # world-writable for a non-root user in the docker-test-target container.
+          mkdir -p "$RUNNER_TEMP/test-results" && chmod 777 "$RUNNER_TEMP/test-results"
           while IFS= read -r line; do
             line="${line%$'\r'}"
             case "$line" in ''|'#'*) continue ;; esac
@@ -537,10 +540,17 @@ jobs:
           cache-to: ${{ steps.cache.outputs.to }}
       # No packages token at test time: the .NET SDK workload-manifest check would send an
       # empty Basic credential to the feed and nora locks the runner out (13.10.2026).
+      # TRX without touching the stage's CMD (flaky-test telemetry, maestra-io/issues-maestra#1592):
+      # MSBuild reads environment variables as properties, and VSTestLogger /
+      # VSTestResultsDirectory are what `dotnet test --logger / --results-directory` set.
+      # A CMD with its own --logger wins; Microsoft.Testing.Platform ignores both.
       - if: ${{ inputs.docker-test-target != '' }}
         env:
           TARGET: ${{ inputs.docker-test-target }}
-        run: docker run --rm -e DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=true --env-file "$RUNNER_TEMP/test.env" "local/${TARGET}:latest"
+        run: |
+          docker run --rm -e DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=true \
+            -v "$RUNNER_TEMP/test-results:/test-results" -e VSTestLogger=trx -e VSTestResultsDirectory=/test-results \
+            --env-file "$RUNNER_TEMP/test.env" "local/${TARGET}:latest"
 
       # ── test-command (non-.NET repos) ───────────────────────────────────
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
@@ -615,8 +625,35 @@ jobs:
           wae=(); [ "$WARN_AS_ERROR" = "true" ] && wae=(-p:MSBuildTreatWarningsAsErrors=true)
           dotnet restore "${sln[@]}" --locked-mode
           filter=(); [ -n "$FILTER" ] && filter=(--filter "$FILTER")
-          dotnet test --no-restore "${sln[@]}" --configuration Release "${filter[@]}" "${wae[@]}"
+          # TRX for flaky-test telemetry (maestra-io/issues-maestra#1592), as MSBuild properties
+          # rather than --logger: the Microsoft.Testing.Platform runner rejects --logger and
+          # ignores these.
+          VSTestLogger=trx VSTestResultsDirectory="$RUNNER_TEMP/test-results" \
+            dotnet test --no-restore "${sln[@]}" --configuration Release "${filter[@]}" "${wae[@]}"
           # <<< dotnet-test
+
+      # Flaky-test telemetry (maestra-io/issues-maestra#1592): TRX of every attempt, pass or fail.
+      # github.job is the CALLED job id (test/package), the same for every call of this
+      # workflow in one run, and an artifact name cannot repeat: a per-job suffix.
+      - id: test-results-id
+        if: ${{ always() }}
+        run: echo "id=$(date +%s%N)" >> "$GITHUB_OUTPUT"
+      - name: upload test results
+        if: ${{ always() }}
+        continue-on-error: true # telemetry never fails the build
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-results-${{ github.job }}-${{ github.run_attempt }}-${{ steps.test-results-id.outputs.id }}
+          path: ${{ runner.temp }}/test-results
+          retention-days: 30
+          if-no-files-found: ignore
+      # Flaky-test telemetry (maestra-io/issues-maestra#1592): one row per test result into
+      # ci-telemetry VictoriaLogs. The bearer comes from Vault (role ci-test-results-ingest,
+      # bound to this workflow file); never fails the build.
+      - name: ingest test results
+        if: ${{ always() }}
+        continue-on-error: true
+        uses: maestra-io/github-actions/test-results-ingest@v1
 
       # ── base-image: built once here into the cache, the `images` legs reuse it ──
       - if: ${{ needs.version.outputs.base-name != '' && (github.event_name != 'pull_request' || inputs.pr-images) }}

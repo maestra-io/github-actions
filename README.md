@@ -426,6 +426,20 @@ their own ref (`${GITHUB_ACTION_PATH}/../tbot-join/tbot-join.sh`); a workflow us
 
 Tested by [`scripts/test-tbot-join.sh`](scripts/test-tbot-join.sh) (stub `tbot`, run by `selftest`).
 
+## Test results ingest (flaky-test telemetry)
+
+`test-results-ingest` turns the TRX / JUnit files of a job into one JSON row per
+test result (repo, workflow, job, run id and attempt, sha, branch, test id,
+outcome, duration, failure hash) and pushes them to the ci-telemetry
+VictoriaLogs on us-iota-lw-kube-infra
+([issues-maestra#1592](https://github.com/maestra-io/issues-maestra/issues/1592)).
+`dotnet-service-build.yml` and `nuget-package-publish.yml` call it after every
+test run; the bearer comes from Vault role `ci-test-results-ingest`, bound to
+those workflow files, so the job needs `id-token: write` and nothing else. Call
+it with `continue-on-error: true`: telemetry never fails a build. Query:
+datasource `victorialogs-ci-telemetry`, LogsQL
+`_time:14d | stats by (repo, sha, test_id) count_uniq(outcome) n | filter n:>1`.
+
 ## Build and publish workflows (packages.maestra.io, ECR, Kargo)
 
 Reusable workflows for repositories built on GitHub Actions instead of GitLab
@@ -443,7 +457,8 @@ top of each file.
 | [`nuget-package-publish.yml`](.github/workflows/nuget-package-publish.yml) | restore, build, test, pack, `dotnet nuget push` | dotnet-nuget-cicd-components |
 | [`npm-package-publish.yml`](.github/workflows/npm-package-publish.yml) | `npm ci`, lib@3 checks (`checks` input: graphql-codegen, check-types, check-scripts, check-styles, test; `--if-present`, all reported), optional PR coverage comment (`report-coverage`), `npm run release` (semantic-release); RunsOn `pool` input `small` (default) or `build` | frontend-ci-components `templates/lib` |
 | [`python-package-publish.yml`](.github/workflows/python-package-publish.yml) | poetry/uv build, test, `twine upload` | — |
-| [`mcf-build.yml`](.github/workflows/mcf-build.yml) | micro-frontends: `install` (node_modules cached by lockfile hash, `npm ci` only on a miss) → `codegen` (GitHub OIDC → auth-jwt omega JWT) → `checks`, `test`, `build` → `image` (rclone + `v2_static/<mcf>`) → `release` → `bake` → `kargo-refresh`; the bucket upload runs at promotion from the MCF's own `kustomization/` | frontend-ci-components `templates/mcf` (mcf@3) |
+| [`mcf-build.yml`](.github/workflows/mcf-build.yml) | micro-frontends: `install` (node_modules cached by lockfile hash, `npm ci` only on a miss) → `codegen` (GitHub OIDC → auth-jwt omega JWT) → `checks`, `test`, `build` → `image` (rclone + `v2_static/<mcf>`) → `release` → `bake` → `kargo-refresh`, `sourcemaps` (Datadog US3, key from the central Vault); the bucket upload runs at promotion from the MCF's own `kustomization/` | frontend-ci-components `templates/mcf` (mcf@3) |
+| [`frontend-codegen.yml`](.github/workflows/frontend-codegen.yml) | one job `codegen` for a frontend with its own pipeline (maestra-io/frontend): restores the `install` job's `node_modules` cache, GitHub OIDC → auth-jwt omega JWT (client `github-frontend-graphql-schema`, bound to this workflow at `@refs/heads/main`) → `npm run graphql-codegen`; artifact `codegen`. The same job as `codegen` in `mcf-build.yml` | frontend-ci-components graphql-codegen |
 | [`helm-chart.yml`](.github/workflows/helm-chart.yml) | PR: `check` (version bump, CHANGELOG, lint, helm-unittest); main: `release` → ECR `helm-charts/<name>` ([`push-helm-chart-to-aws-ecr`](push-helm-chart-to-aws-ecr/action.yml)) | system/components/helm-ci helm-merge-request + helm-release |
 
 [`scripts/dockerfile-from-fix.sh`](scripts/dockerfile-from-fix.sh) drops the

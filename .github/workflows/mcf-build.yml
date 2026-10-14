@@ -4,6 +4,7 @@
 # upload Job of the MCF's own kustomization/, not from here.
 #
 #   version ─► install ─► codegen ─► checks, test, build ─► image ─► release ─► bake ─► kargo-refresh
+#                                                                            └─► sourcemaps
 #
 # Usage (caller, on push to the default branch and on pull_request):
 #
@@ -19,7 +20,8 @@
 #   test-max-workers    Vitest workers (default 6, as mcf@3).
 #   min-lines-coverage  Lines coverage floor of `test` (default 40, as mcf@3).
 #   push                Push the image and run release/bake/kargo-refresh (default true).
-#                       Never on pull_request. false = build-only dry run.
+#                       Only from the default branch, never on pull_request.
+#                       false = build-only dry run.
 #   image               ECR repository of the static image. Default: repository name.
 #   service             Service name for bake and Kargo. Default: repository name.
 #   kargo-project       Kargo project. Default kargo-<service>.
@@ -47,12 +49,15 @@
 #   image     rclone + build/v2_static/<mcf> without source maps -> ECR <image>:<release>.
 #   release   git tag + GitHub Release <release>; a PR labelled `hotfix` also gets
 #             the marker tag hotfix/<release>.
+#   sourcemaps  the release's source maps -> Datadog US3 (service <mcf>, version <release>,
+#             as mcf@3 upload-source-maps [maestra]); key from the central Vault
+#             (jwt-github role mcf-build-sourcemaps-github-ci). Never fails the release.
 #   bake, kargo-refresh  as in service-build.yml.
 #
 # Not ported from mcf@3: cyrillic (translation-checker, issues-maestra#1581), e2e,
 # functional tests and the -e2e/-with-deps images (issues-maestra#1573), hot testing
 # environments, multi-contour schema loading, and the RU contour jobs (Octopus,
-# phrase, metrics, pipelines release submit, Mindbox Datadog).
+# phrase, metrics, pipelines release submit, Mindbox Datadog source maps).
 
 name: mcf-build
 
@@ -149,8 +154,12 @@ jobs:
           REPO_NAME: ${{ github.event.repository.name }}
           IMAGE: ${{ inputs.image }}
           SERVICE: ${{ inputs.service }}
-          PUSH: ${{ inputs.push && github.event_name != 'pull_request' }}
+          PUSH: ${{ inputs.push && github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          PUSH_REQUESTED: ${{ inputs.push && github.event_name != 'pull_request' }}
         run: |
+          if [ "$PUSH_REQUESTED" = true ] && [ "$PUSH" != true ]; then
+            echo "::warning::$GITHUB_REF is not the default branch: build only, nothing is published"
+          fi
           prefix="${PREFIX:-1.1}"
           case "$prefix" in
             [0-9]*.[0-9]*) ;;
@@ -447,6 +456,7 @@ jobs:
           npm run build
           out="build/v2_static/$MCF"
           [ -f "$out/mf-manifest.json" ] || { echo "::error::$out/mf-manifest.json was not built"; exit 1; }
+          [ "$PUBLISH" != true ] || tar -czf "$RUNNER_TEMP/sourcemaps.tgz" -C build v2_static
           find build -name '*.map' -type f -delete
           tar -czf "$RUNNER_TEMP/static.tgz" -C build v2_static
           du -sh "$out"
@@ -455,6 +465,12 @@ jobs:
         with:
           name: static
           path: ${{ runner.temp }}/static.tgz
+          retention-days: 1
+      - if: ${{ needs.version.outputs.publish == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sourcemaps
+          path: ${{ runner.temp }}/sourcemaps.tgz
           retention-days: 1
 
   image:
@@ -516,6 +532,63 @@ jobs:
               && echo "created hotfix/$RELEASE" \
               || echo "::warning::failed to create hotfix/$RELEASE; the next release's LAST_HOTFIX misses it"
           fi
+
+  sourcemaps:
+    needs: [version, release]
+    runs-on: runs-on=${{ github.run_id }}-sourcemaps/pool=small
+    timeout-minutes: 15
+    continue-on-error: true
+    permissions:
+      contents: read
+      id-token: write # central Vault (jwt-github), nora
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sourcemaps
+          path: ${{ runner.temp }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.node-version }}
+      - uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
+        with:
+          url: https://vault.maestra.io
+          method: jwt
+          path: jwt-github
+          role: mcf-build-sourcemaps-github-ci
+          jwtGithubAudience: https://github.com/maestra-io
+          secrets: |
+            github/data/mcf-build/datadog api_key | DATADOG_API_KEY ;
+      - name: mint packages token
+        id: token
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          AUDIENCE: ${{ inputs.packages-audience }}
+        with:
+          script: |
+            const t = await core.getIDToken(process.env.AUDIENCE);
+            core.setSecret(t);
+            core.setOutput('token', t);
+      - name: datadog-ci sourcemaps upload
+        env:
+          NPM_TOKEN: ${{ steps.token.outputs.token }}
+          URL: ${{ inputs.packages-url }}
+          MCF: ${{ needs.version.outputs.mcf }}
+          RELEASE: ${{ needs.version.outputs.release }}
+          DATADOG_SITE: us3.datadoghq.com
+        run: |
+          registry="${URL%/}/npm/"
+          {
+            echo "registry=${registry}"
+            echo "//${registry#https://}:_authToken=\${NPM_TOKEN}"
+          } > "$RUNNER_TEMP/npmrc"
+          dir="$RUNNER_TEMP/sourcemaps"; mkdir -p "$dir"
+          tar -xzf "$RUNNER_TEMP/sourcemaps.tgz" -C "$dir"
+          echo "$(find "$dir" -name '*.map' | wc -l) source maps of $MCF@$RELEASE"
+          NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/npmrc" npx --yes @datadog/datadog-ci@5.24.1 sourcemaps upload "$dir" \
+            --service "$MCF" \
+            --release-version "$RELEASE" \
+            --minified-path-prefix /
 
   bake:
     needs: [version, release]

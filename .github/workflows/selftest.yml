@@ -15,6 +15,7 @@ on:
     paths:
       - ".github/workflows/ansible-os-update.yml"
       - ".github/workflows/dotnet-service-build.yml"
+      - ".github/workflows/frontend-codegen.yml"
       - ".github/workflows/mcf-build.yml"
       - ".github/workflows/npm-package-publish.yml"
       - ".github/workflows/nuget-package-publish.yml"
@@ -70,6 +71,9 @@ jobs:
 
       - name: pypi upload (skip existing, 409, pinned twine, workflow copy)
         run: bash scripts/test-pypi-upload.sh
+
+      - name: test-results-ingest converter (TRX + JUnit fixtures)
+        run: bash scripts/test-test-results-ingest.sh
 
       - name: dotnet-service-build image-targets / bakes, global.json SDK, AWS credentials wait (workflow copy)
         run: bash scripts/test-dotnet-service-build.sh
