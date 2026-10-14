@@ -401,6 +401,31 @@ import) comes from the `us-west-2` **registry** policy, which grants it org-wide
 `aws iam simulate-principal-policy` does not evaluate registry policies and will report
 `implicitDeny` for it.
 
+## Teleport join with retries (`tbot-join`)
+
+Every `tbot` join in this repo (the image-push JWT SVID in `push-to-aws-ecr-repository`,
+`push-helm-chart-to-aws-ecr` and `bake-oci-manifests`, the Kargo refresh credentials in the
+build workflows) goes through [`tbot-join/tbot-join.sh`](tbot-join/tbot-join.sh): up to 4
+attempts, 5 s / 15 s / 30 s apart, 45 s each (`timeout -k 5 45`), success only when every
+expected output is non-empty. Transient failures (Teleport backend switchover, GitHub's OIDC
+endpoint or discovery timing out, network) are retried; configuration errors (`token expired or
+not found`, `id token claims did not match any allow rules`, `access denied`, a job without
+`id-token: write`) fail at once with that reason. The composite actions call the script from
+their own ref (`${GITHUB_ACTION_PATH}/../tbot-join/tbot-join.sh`); a workflow uses the wrapper:
+
+```yaml
+- uses: maestra-io/github-actions/tbot-join@v1
+  with:
+    config: ${{ steps.cfg.outputs.dir }}/tbot.yaml   # oneshot, storage: memory
+    require: |
+      ${{ steps.cfg.outputs.dir }}/svid/jwt_svid
+    label: token my-token        # for messages
+    hint: "does my-token exist?" # printed for configuration errors only
+    warn-only: false             # true: ::warning:: instead of ::error:: (the step still fails)
+```
+
+Tested by [`scripts/test-tbot-join.sh`](scripts/test-tbot-join.sh) (stub `tbot`, run by `selftest`).
+
 ## Test results ingest (flaky-test telemetry)
 
 `test-results-ingest` turns the TRX / JUnit files of a job into one JSON row per

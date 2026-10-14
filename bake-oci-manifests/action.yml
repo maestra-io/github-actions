@@ -177,12 +177,13 @@ runs:
         SERVICE: ${{ inputs.service }}
         TELEPORT_TOKEN: ${{ inputs.teleport-token }}
       run: |
+        token="${TELEPORT_TOKEN:-image-push-github-actions-${SERVICE}}"
         cat > /tmp/tbot.yaml <<EOF
         version: v2
         proxy_server: ${TELEPORT_FQDN}
         onboarding:
           join_method: github
-          token: ${TELEPORT_TOKEN:-image-push-github-actions-${SERVICE}}
+          token: ${token}
         oneshot: true
         storage:
           type: memory
@@ -196,8 +197,10 @@ runs:
             audiences: ["sts.amazonaws.com"]
         EOF
         mkdir -p /tmp/tbot-output
-        tbot start -c /tmp/tbot.yaml || true
-        test -f /tmp/tbot-output/jwt_svid
+        # Retries transient Teleport backend / GitHub OIDC failures, fails at once
+        # on configuration errors (../tbot-join/tbot-join.sh, same ref as this action).
+        bash "${GITHUB_ACTION_PATH}/../tbot-join/tbot-join.sh" -c /tmp/tbot.yaml -r /tmp/tbot-output/jwt_svid \
+          -l "token ${token}" -H "does ${token} exist in image-push-tokens.yaml, and does the job have id-token: write?"
 
     - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
       with:

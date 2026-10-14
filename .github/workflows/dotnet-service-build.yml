@@ -725,8 +725,13 @@ jobs:
       contents: read
       id-token: write # nora OIDC token + Teleport join
       packages: read  # see `test`
+    # fail-fast off: one failed image (a Teleport/ECR flake) no longer cancels its
+    # siblings, so "re-run failed jobs" rebuilds only that leg instead of legs that
+    # may already have pushed their immutable tag. `images` still ends `failure`
+    # when any leg fails: `release` (and the bake after it) stays skipped and
+    # `pr gate` red, exactly as before.
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.version.outputs.matrix) }}
     steps:
@@ -1058,7 +1063,7 @@ jobs:
       ${{ !cancelled() && inputs.bake && inputs.kargo-refresh && needs.version.outputs.publish == 'true'
           && (needs.bake.result == 'success' || needs.bakes.result == 'success') }}
     runs-on: runs-on=${{ github.run_id }}-kargo-refresh/pool=small
-    timeout-minutes: 5
+    timeout-minutes: 8
     continue-on-error: true
     permissions:
       contents: read
@@ -1083,9 +1088,9 @@ jobs:
         with:
           version: ${{ steps.tp-version.outputs.version }}
           proxy: ${{ env.TELEPORT_FQDN }}
-      - env:
+      - id: tbot-config
+        env:
           TOKEN_NAME: ${{ inputs.kargo-teleport-token }}
-          BAKES: ${{ needs.version.outputs.bakes }}
         run: |
           out="$(mktemp -d)"
           cat > "$out/tbot.yaml" <<EOF
@@ -1111,18 +1116,25 @@ jobs:
                 path: ${out}/app
           EOF
           mkdir -p "$out/kube" "$out/app"
-          # tbot's heartbeat can hang minutes after the outputs land (see
-          # fluxcd setup-flux-ecr): poll for the files, then stop it.
-          tbot start -c "$out/tbot.yaml" & pid=$!
-          for _ in $(seq 1 30); do
-            [ -s "$out/kube/kubeconfig.yaml" ] && [ -s "$out/app/tlscert" ] && break
-            kill -0 "$pid" 2>/dev/null || break
-            sleep 1
-          done
-          kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
-          [ -s "$out/kube/kubeconfig.yaml" ] && [ -s "$out/app/tlscert" ] \
-            || { echo "::warning::tbot (${TOKEN_NAME}) produced no credentials; freight appears on the next Warehouse poll"; exit 1; }
-
+          echo "dir=$out" >> "$GITHUB_OUTPUT"
+      # Retries transient Teleport backend / GitHub OIDC failures (fails at once on
+      # configuration errors) and stops tbot once the files land: its heartbeat can
+      # hang minutes after a oneshot run's outputs (see fluxcd setup-flux-ecr).
+      - uses: maestra-io/github-actions/tbot-join@v1
+        with:
+          config: ${{ steps.tbot-config.outputs.dir }}/tbot.yaml
+          require: |
+            ${{ steps.tbot-config.outputs.dir }}/kube/kubeconfig.yaml
+            ${{ steps.tbot-config.outputs.dir }}/app/tlscert
+            ${{ steps.tbot-config.outputs.dir }}/app/key
+          label: token ${{ inputs.kargo-teleport-token }}
+          hint: "is it a github join token that allows this repository, and does the job have id-token: write? Freight appears on the next Warehouse poll."
+          warn-only: true
+      - env:
+          OUT: ${{ steps.tbot-config.outputs.dir }}
+          BAKES: ${{ needs.version.outputs.bakes }}
+        run: |
+          out="$OUT"
           bearer=$(kubectl --kubeconfig "$out/kube/kubeconfig.yaml" \
             --context "teleport.maestra.io-us-iota-lw-kube-infra" \
             -n kargo create token kargo-ci-github --duration 10m)
