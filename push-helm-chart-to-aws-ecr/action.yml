@@ -5,7 +5,8 @@ description: >-
   The version is Chart.yaml's or the `version` input (build-number charts).
   An already published version is skipped (release tags are immutable).
   Auth: Teleport workload identity -> role/teleport-image-push, the job needs
-  `id-token: write`.
+  `id-token: write`. A `tbot` already on PATH (the caller installed it) skips
+  the Teleport download.
 inputs:
   chartPath:
     description: 'Chart directory.'
@@ -69,8 +70,15 @@ runs:
       run: |
         bash "${GITHUB_ACTION_PATH}/resolve-version.sh" | tee -a "$GITHUB_OUTPUT"
 
-    - name: Get Teleport version
+    - name: Is tbot already on PATH?
       if: ${{ steps.chart.outputs.version != '0.0.0' }}
+      id: tbot
+      shell: bash
+      run: |
+        if command -v tbot >/dev/null; then echo "installed=true"; else echo "installed=false"; fi >> "$GITHUB_OUTPUT"
+
+    - name: Get Teleport version
+      if: ${{ steps.chart.outputs.version != '0.0.0' && steps.tbot.outputs.installed != 'true' }}
       id: tp-version
       shell: bash
       env:
@@ -80,7 +88,7 @@ runs:
           | jq -r '.auto_update.tools_version // .server_version')
         echo "version=$version" >> "$GITHUB_OUTPUT"
 
-    - if: ${{ steps.chart.outputs.version != '0.0.0' }}
+    - if: ${{ steps.chart.outputs.version != '0.0.0' && steps.tbot.outputs.installed != 'true' }}
       uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
       with:
         version: ${{ steps.tp-version.outputs.version }}
@@ -141,19 +149,29 @@ runs:
         APP_VERSION: ${{ steps.chart.outputs.app-version }}
         PREFIX: ${{ inputs.repositoryPrefix }}
         AWS_REGION: ${{ inputs.awsRegion }}
+        AWS_ROLE_ARN: ${{ inputs.awsRoleArn }}
       run: |
         set -euo pipefail
         repo="${PREFIX}/${NAME}"
-        registry="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${AWS_REGION}.amazonaws.com"
-        if aws ecr describe-images --repository-name "$repo" --image-ids "imageTag=${VERSION}" >/dev/null 2>&1; then
+        # Every aws-cli call is ~2.5 s of Python start-up on a t3a: the account
+        # comes from the role ARN, and one describe-images answers both "is the
+        # version published" and "does the repository exist".
+        IFS=: read -r _ _ _ _ account _ <<<"${AWS_ROLE_ARN}"  # arn:<partition>:iam::<account>:role/<name>
+        [[ "$account" =~ ^[0-9]{12}$ ]] || { echo "::error::awsRoleArn ${AWS_ROLE_ARN} carries no 12-digit account"; exit 1; }
+        registry="${account}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+        if err=$(aws ecr describe-images --repository-name "$repo" --image-ids "imageTag=${VERSION}" 2>&1 >/dev/null); then
           echo "::warning::Chart ${NAME}@${VERSION} already exists in ECR ${AWS_REGION}; skipping push. Bump version in Chart.yaml to release."
           echo "pushed=false" >> "$GITHUB_OUTPUT"
           exit 0
         fi
-        aws ecr describe-repositories --repository-names "$repo" >/dev/null 2>&1 || {
-          bash ./create-repository.sh "$repo"
-          aws ecr set-repository-policy --repository-name "$repo" --policy-text file://ecr-policy.json >/dev/null
-        }
+        case "$err" in
+          *RepositoryNotFoundException*)
+            bash ./create-repository.sh "$repo"
+            aws ecr set-repository-policy --repository-name "$repo" --policy-text file://ecr-policy.json >/dev/null
+            ;;
+          *ImageNotFoundException*) ;;
+          *) echo "$err" >&2; exit 1 ;;
+        esac
         aws ecr get-login-password | helm registry login "$registry" --username AWS --password-stdin
         pkg="$(mktemp -d)"
         helm package --dependency-update "$CHART_PATH" --destination "$pkg" \
