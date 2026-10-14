@@ -44,3 +44,14 @@ for bad in 4.220 v4.220.0 4.220.0-beta "4.220.0 "; do
   if rel "$bad" >/dev/null 2>&1; then echo "FAIL release-version '$bad': accepted"; exit 1; fi
 done
 echo "service-build release: ok"
+
+# shards: test-shards -> matrix of shard indexes, 1..20.
+sh_prog=$(sed -n '/# >>> shards/,/# <<< shards/p' "$wf" | sed 's/^          //')
+[ -n "$sh_prog" ] || { echo "shards block not found in $wf"; exit 1; }
+shards() { TEST_SHARDS="$1" bash -c "set -eo pipefail; $sh_prog"$'\n''echo "$shards"'; }
+eq "$(shards 1)" "[1]" "one shard"
+eq "$(shards 4)" "[1,2,3,4]" "four shards"
+for bad in 0 21 -1 x ""; do
+  if shards "$bad" >/dev/null 2>&1; then echo "FAIL test-shards '$bad': accepted"; exit 1; fi
+done
+echo "service-build shards: ok"

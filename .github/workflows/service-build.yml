@@ -49,6 +49,10 @@
 #                       Docker is available (Testcontainers / docker compose).
 #   docker-test-target  Dockerfile stage that runs the tests instead (built with the
 #                       build secrets, then `docker run`). Both empty = no tests.
+#   test-shards         Run the tests as N parallel `test (i/N)` jobs (default 1, a
+#                       single `test` job). Each gets SHARD_INDEX (1..N) and SHARD_TOTAL
+#                       (test-command env, docker-test-target `-e`) and picks its part,
+#                       e.g. `playwright test --shard=$SHARD_INDEX/$SHARD_TOTAL`.
 #   python-version      actions/setup-python before test-command (empty = skip).
 #   node-version        actions/setup-node before test-command (empty = skip).
 #   test-env            Extra environment for the tests, KEY=VALUE per line, not
@@ -164,6 +168,9 @@ on:
       release-version:
         type: string
         default: ""
+      test-shards:
+        type: number
+        default: 1
     secrets:
       private-packages-token:
         required: false
@@ -191,6 +198,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       release: ${{ steps.v.outputs.release }}
+      shards: ${{ steps.v.outputs.shards }}
       matrix: ${{ steps.v.outputs.matrix }}
       images: ${{ steps.v.outputs.images }}
       service: ${{ steps.v.outputs.service }}
@@ -203,6 +211,7 @@ jobs:
           PREFIX: ${{ vars.RELEASE_PREFIX }}
           RUN_NUMBER: ${{ github.run_number }}
           RELEASE_VERSION: ${{ inputs.release-version }}
+          TEST_SHARDS: ${{ inputs.test-shards }}
           IMAGE_TARGETS: ${{ inputs.image-targets }}
           BAKE: ${{ inputs.bake }}
           DOCKERFILE: ${{ inputs.dockerfile }}
@@ -226,6 +235,12 @@ jobs:
             release="${prefix}.${RUN_NUMBER}"
           fi
           # <<< release
+          # >>> shards (scripts/test-service-build.sh runs this block)
+          if ! [[ "$TEST_SHARDS" =~ ^[0-9]+$ ]] || [ "$TEST_SHARDS" -lt 1 ] || [ "$TEST_SHARDS" -gt 20 ]; then
+            echo "::error::test-shards '$TEST_SHARDS' is not 1..20"; exit 1
+          fi
+          shards=$(seq 1 "$TEST_SHARDS" | jq -sc .)
+          # <<< shards
           # >>> image-targets (scripts/test-service-build.sh runs this block)
           # `image[=target]` / `image=<dockerfile>:<target>[:<context>]`, comma or newline
           # separated -> images matrix. Empty target = last stage. Nothing at all is
@@ -249,6 +264,7 @@ jobs:
           # <<< image-targets
           {
             echo "release=$release"
+            echo "shards=$shards"
             echo "matrix=$matrix"
             echo "images=$(jq -r 'map(.image) | join(",")' <<<"$matrix")"
             echo "service=${SERVICE:-$REPO_NAME}"
@@ -259,8 +275,17 @@ jobs:
 
   test:
     needs: version
-    runs-on: runs-on=${{ github.run_id }}-test/pool=build
+    # One `test` job unless test-shards > 1 (the name is a contract, see the header).
+    name: ${{ inputs.test-shards > 1 && format('test ({0}/{1})', matrix.shard, inputs.test-shards) || 'test' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.version.outputs.shards) }}
+    runs-on: runs-on=${{ github.run_id }}-test-${{ matrix.shard }}/pool=build
     timeout-minutes: 45
+    env:
+      SHARD_INDEX: ${{ matrix.shard }}
+      SHARD_TOTAL: ${{ inputs.test-shards }}
     permissions:
       contents: read
       id-token: write # nora OIDC token
@@ -374,7 +399,7 @@ jobs:
       - if: ${{ inputs.docker-test-target != '' }}
         env:
           TARGET: ${{ inputs.docker-test-target }}
-        run: docker run --rm -e DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=true --env-file "$RUNNER_TEMP/test.env" "local/${TARGET}:latest"
+        run: docker run --rm -e DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=true -e SHARD_INDEX -e SHARD_TOTAL --env-file "$RUNNER_TEMP/test.env" "local/${TARGET}:latest"
 
       # ── test-command on the runner (the repo's GitLab test jobs) ─────────
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' && inputs.python-version != '' }}
