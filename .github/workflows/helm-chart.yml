@@ -14,7 +14,7 @@
 #       branches: [main]
 #   jobs:
 #     chart:
-#       uses: maestra-io/github-actions/.github/workflows/helm-chart.yml@<sha> # vX.Y.Z
+#       uses: maestra-io/github-actions/.github/workflows/helm-chart.yml@main
 #       permissions: { contents: read, id-token: write }
 #
 # Inputs:
@@ -120,3 +120,15 @@ jobs:
       - uses: maestra-io/github-actions/push-helm-chart-to-aws-ecr@v1
         with:
           chartPath: ${{ inputs.chart-path }}
+
+  # Secret scan of the PR's own commits on every pull request (the GitLab
+  # gitleaks-validate MR job), as dotnet-service-build/service-build run it.
+  # gitleaks only: check-encoding and the kustomize build stay with the service builds.
+  pr-checks:
+    if: ${{ github.event_name == 'pull_request' }}
+    uses: maestra-io/github-actions/.github/workflows/pr-checks.yml@main
+    permissions:
+      contents: read
+    with:
+      check-encoding: false
+      kustomize: false

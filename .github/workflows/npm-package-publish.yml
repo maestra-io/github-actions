@@ -6,7 +6,7 @@
 #
 #   jobs:
 #     package:
-#       uses: maestra-io/github-actions/.github/workflows/npm-package-publish.yml@<sha> # vX.Y.Z
+#       uses: maestra-io/github-actions/.github/workflows/npm-package-publish.yml@main
 #       permissions: { contents: write, id-token: write, issues: write, pull-requests: write }
 #
 # Version source: semantic-release, exactly as on GitLab: the job runs the
@@ -284,3 +284,15 @@ jobs:
           # which still names the GitLab project in ported repos: it would push the
           # version commit and tag there (and fail auth). Release where we build.
           npm run "$RELEASE_SCRIPT" -- --repository-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+
+  # Secret scan of the PR's own commits on every pull request (the GitLab
+  # gitleaks-validate MR job), as dotnet-service-build/service-build run it.
+  # gitleaks only: check-encoding and the kustomize build stay with the service builds.
+  pr-checks:
+    if: ${{ github.event_name == 'pull_request' }}
+    uses: maestra-io/github-actions/.github/workflows/pr-checks.yml@main
+    permissions:
+      contents: read
+    with:
+      check-encoding: false
+      kustomize: false

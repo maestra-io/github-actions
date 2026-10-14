@@ -1,8 +1,11 @@
 # Reusable pull-request checks: the GitLab merge-request checks every service had
 # (system/components gitleaks-validate and check-encoding, plus a kustomize build of
 # the overlays), ported to GitHub. dotnet-service-build.yml and service-build.yml call
-# it on pull_request, so every service that releases through them gets it; a repo with
-# its own workflows calls it directly:
+# it on pull_request, so every service that releases through them gets it. The library,
+# frontend and infra workflows (nuget/npm/python-package-publish, mcf-build, helm-chart,
+# frontend-codegen, terraform-pr, ansible-pr) call it with gitleaks only, so every PR
+# of their callers is secret-scanned too. A repo with its own workflows calls it
+# directly:
 #
 #   jobs:
 #     checks:
