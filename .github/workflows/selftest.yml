@@ -63,6 +63,9 @@ jobs:
       - name: push-helm-chart-to-aws-ecr version resolution
         run: bash scripts/test-helm-chart-version.sh
 
+      - name: push-helm-chart-to-aws-ecr package-and-push step (stub aws/helm)
+        run: bash scripts/test-helm-chart-push.sh
+
       - name: tbot-join retries (stub tbot; real 5 s / 15 s backoff, ~70 s)
         run: bash scripts/test-tbot-join.sh
 
