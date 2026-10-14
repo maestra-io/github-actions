@@ -40,7 +40,7 @@ rel() { RELEASE_VERSION="$1" PREFIX="${2:-}" RUN_NUMBER=7 bash -c "set -eo pipef
 eq "$(rel "")" "1.1.7" "default prefix"
 eq "$(rel "" 2.3)" "2.3.7" "RELEASE_PREFIX"
 eq "$(rel 4.220.0 2.3)" "4.220.0" "release-version"
-for bad in 4.220 v4.220.0 4.220.0-beta "4.220.0 "; do
+for bad in 4.220 v4.220.0 4.220.0-beta "4.220.0 " $'4.220.0\nx=1'; do
   if rel "$bad" >/dev/null 2>&1; then echo "FAIL release-version '$bad': accepted"; exit 1; fi
 done
 echo "service-build release: ok"
