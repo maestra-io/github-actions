@@ -34,11 +34,11 @@ printf '#!/usr/bin/env bash\necho "create-repository $*" >> "$CALLS"\n' > "$dir/
 echo '{}' > "$dir/wd/ecr-policy.json"
 
 fails=0
-run() { # <case> <STUB_IMAGE>
+run() { # <case> <STUB_IMAGE> [role ARN]
   : > "$dir/calls"; : > "$dir/out"
   if (cd "$dir/wd" && env PATH="$dir/bin:$PATH" CALLS="$dir/calls" STUB_IMAGE="$2" GITHUB_OUTPUT="$dir/out" \
      CHART_PATH="$dir/chart" NAME=cdp-app-tenant VERSION=4.9318.0 APP_VERSION=4.9318.0 PREFIX=helm-charts \
-     AWS_REGION=us-west-2 AWS_ROLE_ARN=arn:aws:iam::515260921971:role/teleport-image-push \
+     AWS_REGION=us-west-2 AWS_ROLE_ARN="${3:-arn:aws:iam::515260921971:role/teleport-image-push}" \
      bash "$dir/push.sh" >"$dir/stdout" 2>&1); then rc=0; else rc=$?; fi
 }
 expect() { # <case> <condition description> <test...>
@@ -61,6 +61,12 @@ expect noimage "no create-repository" lacks "create-repository"
 expect noimage "registry from the role ARN" has "helm push .*oci://515260921971.dkr.ecr.us-west-2.amazonaws.com/helm-charts"
 expect noimage "two aws calls (describe-images, get-login-password)" [ "$(grep -c '^aws ' "$dir/calls")" -eq 2 ]
 expect noimage "no sts call" lacks "aws sts"
+
+run govcloud noimage arn:aws-us-gov:iam::123456789012:role/x
+expect govcloud "account parsed from a non-aws partition" has "helm push .*oci://123456789012.dkr.ecr.us-west-2.amazonaws.com/helm-charts"
+run badarn noimage arn:aws:iam::nope:role/x
+expect badarn "rc 1" [ "$rc" -eq 1 ]
+expect badarn "no helm push" lacks "helm push"
 
 run norepo norepo
 expect norepo "rc 0" [ "$rc" -eq 0 ]

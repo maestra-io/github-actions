@@ -156,7 +156,8 @@ runs:
         # Every aws-cli call is ~2.5 s of Python start-up on a t3a: the account
         # comes from the role ARN, and one describe-images answers both "is the
         # version published" and "does the repository exist".
-        account="${AWS_ROLE_ARN#arn:aws:iam::}"; account="${account%%:*}"
+        IFS=: read -r _ _ _ _ account _ <<<"${AWS_ROLE_ARN}"  # arn:<partition>:iam::<account>:role/<name>
+        [[ "$account" =~ ^[0-9]{12}$ ]] || { echo "::error::awsRoleArn ${AWS_ROLE_ARN} carries no 12-digit account"; exit 1; }
         registry="${account}.dkr.ecr.${AWS_REGION}.amazonaws.com"
         if err=$(aws ecr describe-images --repository-name "$repo" --image-ids "imageTag=${VERSION}" 2>&1 >/dev/null); then
           echo "::warning::Chart ${NAME}@${VERSION} already exists in ECR ${AWS_REGION}; skipping push. Bump version in Chart.yaml to release."
