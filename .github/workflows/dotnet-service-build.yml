@@ -12,7 +12,7 @@
 #
 #   jobs:
 #     build:
-#       uses: maestra-io/github-actions/.github/workflows/dotnet-service-build.yml@<sha> # vX.Y.Z
+#       uses: maestra-io/github-actions/.github/workflows/dotnet-service-build.yml@main
 #       permissions: { contents: write, id-token: write }
 #       with:
 #         image-targets: processing_debugger_services=services,processing_debugger_chmigrator=chmigrator

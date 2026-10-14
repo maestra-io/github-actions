@@ -13,7 +13,7 @@
 #
 #   jobs:
 #     build:
-#       uses: maestra-io/github-actions/.github/workflows/service-build.yml@<sha> # vX.Y.Z
+#       uses: maestra-io/github-actions/.github/workflows/service-build.yml@main
 #       permissions: { contents: write, id-token: write }
 #       with:
 #         image-targets: ai-assistant-rnd=
