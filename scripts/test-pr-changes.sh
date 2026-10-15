@@ -38,6 +38,9 @@ case_ "similar prefix is not the tree"          true  ./kustomization "" kustomi
 case_ "bakes paths count as trees"              false ./kustomization "$(printf 'svc-a ./deploy/a\nsvc-b ./deploy/b img1,img2')" deploy/a/x.yaml deploy/b/y.yaml
 case_ "file outside every bakes path -> run"    true  ./kustomization "$(printf 'svc-a ./deploy/a')" deploy/a/x.yaml deploy/c/z.yaml
 case_ "bake from repo root never skips"         true  .               "" kustomization/a.yaml
+case_ "a commented-out bakes path is not a tree" true  ./kustomization "$(printf 'svc-a ./deploy/a\n# svc-b src')" src/App.cs
+case_ "root bake among others never skips"      true  ./kustomization "$(printf 'svc-a ./deploy/a\nsvc-root .')" kustomization/a.yaml
+case_ "root bake ./ never skips"                true  ./kustomization "$(printf 'svc-root ./')" kustomization/a.yaml
 case_ "empty diff -> run"                       true  ./kustomization ""
 
 exit $fail

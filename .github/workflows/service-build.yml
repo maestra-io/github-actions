@@ -219,11 +219,15 @@ jobs:
         run: |
           # >>> pr-changes (scripts/test-pr-changes.sh runs this block)
           # kustomization trees: bake-path plus the <bake-path> field of every `bakes` line.
-          dirs=$( { printf '%s\n' "$BAKE_PATH"; printf '%s\n' "$BAKES" | awk 'NF>=2{print $2}'; } \
-            | sed -E 's#^\./##; s#/+$##' | grep -vxE '\.?' | sort -u || true)
+          # Comments are stripped first (a `# src` comment is not a path). A tree that is the repo
+          # root (`.`, `./`, empty) means everything is baked: never skip.
+          raw=$( { printf '%s\n' "$BAKE_PATH"; printf '%s\n' "$BAKES" | sed 's/#.*//' | awk 'NF>=2{print $2}'; } \
+            | sed -E 's#^\./##; s#/+$##; s#^$#.#')
+          dirs=$(grep -vxE '\.?' <<<"$raw" | sort -u || true)
+          root=false; grep -qxE '\.?' <<<"$raw" && root=true
           files=$(git diff --name-only --no-renames HEAD^1 HEAD 2>/dev/null) || files=""
           code=true
-          if [ -n "$files" ] && [ -n "$dirs" ]; then
+          if [ -n "$files" ] && [ -n "$dirs" ] && ! $root; then
             code=false
             while IFS= read -r f; do
               inside=false
