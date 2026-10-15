@@ -200,6 +200,8 @@ jobs:
       release: ${{ steps.v.outputs.release }}
       shards: ${{ steps.v.outputs.shards }}
       matrix: ${{ steps.v.outputs.matrix }}
+      legs: ${{ steps.v.outputs.legs }}
+      specs: ${{ steps.v.outputs.specs }}
       images: ${{ steps.v.outputs.images }}
       service: ${{ steps.v.outputs.service }}
       publish: ${{ steps.v.outputs.publish }}
@@ -266,6 +268,8 @@ jobs:
             echo "release=$release"
             echo "shards=$shards"
             echo "matrix=$matrix"
+            echo "legs=$(jq -c 'map({image, target})' <<<"$matrix")"
+            echo "specs=$(jq -c 'map({key: .image, value: {dockerfile, context}}) | from_entries' <<<"$matrix")"
             echo "images=$(jq -r 'map(.image) | join(",")' <<<"$matrix")"
             echo "service=${SERVICE:-$REPO_NAME}"
             echo "publish=$PUSH"
@@ -438,9 +442,10 @@ jobs:
         run: echo "::notice::no test-command and no docker-test-target, tests skipped"
 
   images:
-    # Explicit: the matrix carries `dockerfile`/`context` too; the check name stays the
-    # default one (`images (<image>, <target>)`, `images (<image>)` for a last-stage build).
-    name: ${{ matrix.target != '' && format('images ({0}, {1})', matrix.image, matrix.target) || format('images ({0})', matrix.image) }}
+    # No `name`: GitHub appends the matrix values, `images (<image>, <target>)` or
+    # `images (<image>)` for a last-stage build, and a skipped job (pull_request) reads
+    # `images` instead of the raw expression a matrix-based `name` leaves when skipped.
+    # So the matrix carries only image/target; dockerfile/context come from `specs`.
     needs: [version, test]
     # Not on pull_request unless pr-images: images are built (and checked) by the
     # release on the default branch and by the workflow_dispatch dry run.
@@ -462,7 +467,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.version.outputs.matrix) }}
+        include: ${{ fromJSON(needs.version.outputs.legs) }}
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -501,7 +506,7 @@ jobs:
       # account's ECR when the Dockerfile names it (instance role, read only).
       - name: ecr login (base images)
         env:
-          DOCKERFILE: ${{ matrix.dockerfile }}
+          DOCKERFILE: ${{ fromJSON(needs.version.outputs.specs)[matrix.image].dockerfile }}
         run: |
           if grep -qsF "$ECR_REGISTRY" "$DOCKERFILE"; then
             aws ecr get-login-password --region "$(cut -d. -f4 <<< "$ECR_REGISTRY")" \
@@ -513,7 +518,7 @@ jobs:
       - name: layer cache
         id: cache
         env:
-          DOCKERFILE: ${{ matrix.dockerfile }}
+          DOCKERFILE: ${{ fromJSON(needs.version.outputs.specs)[matrix.image].dockerfile }}
           SCOPES: |
             ${{ matrix.image }}
             ${{ inputs.docker-test-target }}
@@ -546,8 +551,8 @@ jobs:
       - name: build ${{ matrix.image }} (${{ matrix.target }})
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
+          context: ${{ fromJSON(needs.version.outputs.specs)[matrix.image].context }}
+          file: ${{ fromJSON(needs.version.outputs.specs)[matrix.image].dockerfile }}
           target: ${{ matrix.target }}
           load: true
           push: false
