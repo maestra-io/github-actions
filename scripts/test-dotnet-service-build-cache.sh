@@ -79,15 +79,17 @@ eq "$("$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.nofeed")" "unchanged: 
 # NuGet cache mount: <name> <Dockerfile> <expected> ('' = untouched, a `fix by hand` line)
 S='--mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private'
 cm() { printf -- '--mount=type=cache,id=nuget,target=%s,sharing=locked' "$1"; }
-cachecase() {
+mkdir -p "$work/ctx-cm"  # the build context the script reads project files from
+cachecase() {  # a literal \r in <Dockerfile>/<expected> is a CR
+  set -- "$1" "${2//\\r/$'\r'}" "${3//\\r/$'\r'}"
   printf '%s' "$2" > "$work/Dockerfile.cm"; cp "$work/Dockerfile.cm" "$work/Dockerfile.cm.orig"
-  out=$("$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.cm")
+  out=$(cd "$work/ctx-cm" && "$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.cm")
   if [ -z "$3" ]; then
     grep -q 'fix by hand' <<<"$out" || { echo "$out"; echo "FAIL cache mount $1: not reported"; exit 1; }
     cmp -s "$work/Dockerfile.cm" "$work/Dockerfile.cm.orig" || { cat "$work/Dockerfile.cm"; echo "FAIL cache mount $1: changed"; exit 1; }
   else
     eq "$(cat "$work/Dockerfile.cm")" "$3" "cache mount $1"
-    eq "$("$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.cm")" "unchanged: $work/Dockerfile.cm" "cache mount $1: idempotent"
+    eq "$(cd "$work/ctx-cm" && "$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.cm")" "unchanged: $work/Dockerfile.cm" "cache mount $1: idempotent"
   fi
 }
 # converted earlier (api-mimic): secret mounts only, the publish stage inherits the folder
@@ -141,6 +143,59 @@ COPY . .
 RUN $S $(cm /sln/.nuget) dotnet build \"M.sln\" -c Release --no-restore
 FROM build AS publish
 RUN $S $(cm /sln/.nuget) dotnet publish src/A/A.csproj -c Release -o /dist --no-restore"
+# kraken: publish restores into -p:RestorePackagesPath (CLI property wins like --packages)
+cachecase restore-packages-path "FROM sdk AS build
+ARG P=/nuget
+RUN $S dotnet publish src/A/A.csproj -c Release -p:RestorePackagesPath=/sln/.nuget -o /dist
+FROM sdk AS b
+ARG P=/nuget
+RUN $S dotnet restore /p:Foo=1;RestorePackagesPath=\$P
+RUN $S dotnet build --no-restore
+" "FROM sdk AS build
+ARG P=/nuget
+RUN $S $(cm /sln/.nuget) dotnet publish src/A/A.csproj -c Release -p:RestorePackagesPath=/sln/.nuget -o /dist
+FROM sdk AS b
+ARG P=/nuget
+RUN $S $(cm /nuget) dotnet restore /p:Foo=1;RestorePackagesPath=\$P
+RUN $S $(cm /nuget) dotnet build --no-restore"
+cachecase restore-packages-path-relative "FROM sdk
+WORKDIR /sln
+RUN $S dotnet restore --property:RestorePackagesPath=.nuget
+" ""
+cachecase two-packages-paths "FROM sdk
+RUN $S dotnet restore --packages /a -p:RestorePackagesPath=/b
+" ""
+# <RestorePackagesPath> in a project file of the build context
+printf '<Project><PropertyGroup><RestorePackagesPath>/sln/packages</RestorePackagesPath></PropertyGroup></Project>\n' > "$work/ctx-cm/Directory.Build.props"
+cachecase props-literal "FROM sdk
+RUN $S dotnet restore
+RUN $S dotnet build --no-restore
+" "FROM sdk
+RUN $S $(cm /sln/packages) dotnet restore
+RUN $S $(cm /sln/packages) dotnet build --no-restore"
+cachecase props-cli-wins "FROM sdk
+RUN $S dotnet restore --packages /p
+" "FROM sdk
+RUN $S $(cm /p) dotnet restore --packages /p"
+printf '<Project><PropertyGroup><RestorePackagesPath>$(MSBuildThisFileDirectory)packages</RestorePackagesPath></PropertyGroup></Project>\n' > "$work/ctx-cm/Directory.Build.props"
+cachecase props-msbuild-property "FROM sdk
+RUN $S dotnet restore
+" ""
+mkdir -p "$work/ctx-cm/src/A"; printf '<Project><!-- <NUGET_PACKAGES>/x</NUGET_PACKAGES> --></Project>\n' > "$work/ctx-cm/src/A/A.csproj"
+rm "$work/ctx-cm/Directory.Build.props"
+cachecase props-commented-out "FROM sdk
+RUN $S dotnet restore
+" "FROM sdk
+RUN $S $(cm /root/.nuget/packages) dotnet restore"
+printf '<Project><PropertyGroup Condition="x"><NUGET_PACKAGES>/x</NUGET_PACKAGES></PropertyGroup></Project>\n' > "$work/ctx-cm/src/A/A.csproj"
+cachecase props-conditional "FROM sdk
+RUN $S dotnet restore
+" ""
+printf '<Project><Choose><When Condition="x"><PropertyGroup><RestorePackagesPath>/x</RestorePackagesPath></PropertyGroup></When></Choose></Project>\n' > "$work/ctx-cm/src/A/A.csproj"
+cachecase props-choose-when "FROM sdk
+RUN $S dotnet restore
+" ""
+rm -r "$work/ctx-cm/src"
 cachecase non-root-user "FROM sdk
 USER app
 RUN $S dotnet restore
@@ -149,13 +204,60 @@ cachecase unresolved-packages "FROM sdk
 ARG PackagesPath
 RUN $S dotnet restore --packages \$PackagesPath
 " ""
-# the template's tests stage: `dotnet test --no-build` at container start finds no packages, runs zero tests
+# the template's tests stage: `dotnet test --no-build` at container start reads the packages
+# from the image (without them it silently runs zero tests): copied out of the mount
+cp_run() { printf 'RUN --mount=type=cache,id=nuget,target=/tmp/nuget-cache,sharing=locked mkdir -p %s && cp -a /tmp/nuget-cache/. %s/' "$1" "$1"; }
 cachecase runtime-test "FROM sdk AS build
+WORKDIR /sln
 RUN $S dotnet restore
+COPY . .
 RUN $S dotnet build --no-restore
+FROM build AS tests
+WORKDIR /sln/src/Tests
+ENTRYPOINT [\"dotnet\", \"test\", \"--no-build\"]
+FROM build AS publish
+RUN $S dotnet publish -o /dist --no-restore
+" "FROM sdk AS build
+WORKDIR /sln
+RUN $S $(cm /root/.nuget/packages) dotnet restore
+COPY . .
+RUN $S $(cm /root/.nuget/packages) dotnet build --no-restore
+FROM build AS tests
+WORKDIR /sln/src/Tests
+$(cp_run /root/.nuget/packages)
+ENTRYPOINT [\"dotnet\", \"test\", \"--no-build\"]
+FROM build AS publish
+RUN $S $(cm /root/.nuget/packages) dotnet publish -o /dist --no-restore"
+# one stage: the copy goes after its last dotnet RUN; relative --packages, CRLF kept
+cachecase runtime-test-one-stage "FROM sdk\r
+WORKDIR /sln\r
+RUN $S dotnet restore --packages .nuget\r
+RUN $S dotnet build --no-restore\r
+CMD dotnet test --no-build\r
+" "FROM sdk\r
+WORKDIR /sln\r
+RUN $S $(cm /sln/.nuget) dotnet restore --packages .nuget\r
+RUN $S $(cm /sln/.nuget) dotnet build --no-restore\r
+$(cp_run /sln/.nuget)\r
+CMD dotnet test --no-build\r"
+cachecase runtime-test-two-folders "FROM sdk AS build
+RUN $S dotnet restore a.csproj --packages /a
+RUN $S dotnet restore b.csproj --packages /b
 FROM build AS tests
 ENTRYPOINT [\"dotnet\", \"test\", \"--no-build\"]
 " ""
+# a cache mount alone in a runtime stage is no package copy
+cachecase runtime-test-mount-only "FROM sdk AS build
+RUN $S dotnet restore
+FROM build AS tests
+RUN --mount=type=cache,id=nuget,target=/tmp/nuget-cache,sharing=locked ls /tmp/nuget-cache
+ENTRYPOINT [\"dotnet\", \"test\", \"--no-build\"]
+" "FROM sdk AS build
+RUN $S $(cm /root/.nuget/packages) dotnet restore
+FROM build AS tests
+$(cp_run /root/.nuget/packages)
+RUN --mount=type=cache,id=nuget,target=/tmp/nuget-cache,sharing=locked ls /tmp/nuget-cache
+ENTRYPOINT [\"dotnet\", \"test\", \"--no-build\"]"
 cachecase copy-from-packages "FROM sdk AS build
 WORKDIR /sln
 RUN $S dotnet restore --packages .nuget
@@ -191,7 +293,21 @@ grep -q -- '--builder bk' "$work/docker.args" || { cat "$work/docker.args"; echo
 eq "$(STICKY=true cache_for "$work/Dockerfile.fixed" img)" "|" "sticky disk without the NuGet cache mount"
 eq "$(sed -n 's/^nocache=//p' "$work/out")" "true" "sticky disk, NuGet cache mount GC'd: --no-cache once"
 eq "$(STICKY=true cache_for "$fx/Dockerfile.gitlab" img)" "|" "sticky disk, GitLab-era Dockerfile: no gha cache"
-eq "$(sed -n 's/^nocache=//p' "$work/out")" "true" "sticky disk, GitLab-era Dockerfile: --no-cache, the token layer is never replayed"
+# --no-cache-filter on the token stage, not --no-cache: that would empty the NuGet cache mounts
+eq "$(sed -n 's/^nocache=//p;s/^nocachefilter=/filter=/p' "$work/out" | paste -sd' ' -)" "false filter=build" "sticky disk, GitLab-era Dockerfile: the token stage re-runs"
+printf 'FROM sdk AS base\nFROM base AS pdbuild\nRUN cp a b && dotnet nuget update source private --password x\nFROM sdk AS app\nRUN %s %s dotnet restore\n' "$S" "$nc" > "$work/Dockerfile.pushhub"
+DU_NUGET=1 STICKY=true cache_for "$work/Dockerfile.pushhub" img >/dev/null
+eq "$(sed -n 's/^nocache=//p;s/^nocachefilter=/filter=/p' "$work/out" | paste -sd' ' -)" "false filter=pdbuild" "sticky disk, token stage + NuGet cache mount elsewhere (PushHub)"
+STICKY=true cache_for "$work/Dockerfile.pushhub" img >/dev/null
+eq "$(sed -n 's/^nocache=//p;s/^nocachefilter=/filter=/p' "$work/out" | paste -sd' ' -)" "true filter=" "sticky disk, token stage + NuGet cache mount GC'd: --no-cache once"
+printf 'FROM sdk AS build\nRUN dotnet nuget update source p --password x\nRUN %s dotnet restore\n' "$nc" > "$work/Dockerfile.tokmount"
+DU_NUGET=1 STICKY=true cache_for "$work/Dockerfile.tokmount" img >/dev/null
+eq "$(sed -n 's/^nocache=//p;s/^nocachefilter=/filter=/p' "$work/out" | paste -sd' ' -)" "true filter=" "sticky disk, token stage with its own NuGet cache mount: --no-cache"
+for unnamed in 'FROM sdk\nRUN dotnet nuget update source p --password x\n' 'ARG NPM_TOKEN\nFROM node AS app\n'; do
+  printf "$unnamed" > "$work/Dockerfile.unnamed"
+  STICKY=true cache_for "$work/Dockerfile.unnamed" img >/dev/null
+  eq "$(sed -n 's/^nocache=//p;s/^nocachefilter=/filter=/p' "$work/out" | paste -sd' ' -)" "true filter=" "sticky disk, token outside a named stage: --no-cache"
+done
 for persist in 'ARG PRIVATE_PACKAGES_TOKEN' \
                'RUN --mount=type=secret,id=T npm config set //packages.maestra.io/npm/:_authToken $(cat /run/secrets/T)' \
                'RUN --mount=type=secret,id=T poetry config http-basic.maestra token $(cat /run/secrets/T)' \
@@ -267,6 +383,11 @@ echo "ok GitLab-era Dockerfile + layer cache: publish restore 401 with the repla
 must Dockerfile.gitlab --no-cache
 [ -n "$(leaks gitlab)" ] || { echo "FAIL leak check finds nothing in the GitLab-era image"; exit 1; }
 echo "ok GitLab-era Dockerfile without the layer cache (what the workflow does): passes"
+# Sticky disk: --no-cache-filter re-runs the token stage (and the publish stage FROM it)
+# with the current token; a global --no-cache would empty the NuGet cache mounts.
+C="tok-C-$nonce"; token "$C"; must Dockerfile.gitlab --no-cache-filter build
+grep -q '^200 .*selftest.publish.1.0.0.nupkg' "$work/feed.log" || { cat "$work/feed.log"; echo "FAIL GitLab-era --no-cache-filter: publish did not restore"; exit 1; }
+echo "ok GitLab-era Dockerfile + --no-cache-filter build (sticky disk): passes with the current token"
 
 # Fixed: run 1 fills the NuGet cache mount; run 2 (new commit, token B) reuses the restore
 # layer and fetches no package (publish finds Selftest.Publish in the mount); run 3 with an

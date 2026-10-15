@@ -369,17 +369,39 @@ jobs:
           # >>> layer-cache (scripts/test-dotnet-service-build-cache.sh runs this block)
           persists='--password|ClearTextPassword|_authToken|http-basic|^[[:space:]]*ARG[[:space:]]+[A-Za-z0-9_]*(TOKEN|PASSWORD)'
           nugetcache='--mount=type=cache,[^[:space:]]*id=nuget(,|[[:space:]]|$)'
-          nocache=false
+          nocache=false; nocachefilter=""; mountgone=false
+          # BuildKit's default GC drops a cache mount unused for 48 h, its layers live 60 d:
+          # a cached restore layer then leaves the --no-restore RUNs without packages
+          # (NETSDK1064, every rerun too). One --no-cache build refills the mount.
+          if [ "${STICKY:-}" = true ] && grep -Eq -- "$nugetcache" "$DOCKERFILE" 2>/dev/null \
+             && ! grep -qF 'with id "/nuget"' <<<"$(docker buildx du ${BUILDER:+--builder "$BUILDER"} --verbose --filter type=exec.cachemount 2>/dev/null || true)"; then
+            mountgone=true
+          fi
           if [ "${STICKY:-}" = true ] && grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
             # The persistent builder would replay the token layer exactly like the gha
-            # cache does: build this Dockerfile with --no-cache on the sticky disk.
-            echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer: built with --no-cache on the sticky BuildKit disk; scripts/nuget-secret-mount-fix.sh fixes the Dockerfile"
-            from=""; to=""; nocache=true
-          elif [ "${STICKY:-}" = true ] && grep -Eq -- "$nugetcache" "$DOCKERFILE" 2>/dev/null \
-               && ! grep -qF 'with id "/nuget"' <<<"$(docker buildx du ${BUILDER:+--builder "$BUILDER"} --verbose --filter type=exec.cachemount 2>/dev/null || true)"; then
-            # BuildKit's default GC drops a cache mount unused for 48 h, its layers live 60 d:
-            # a cached restore layer then leaves the --no-restore RUNs without packages
-            # (NETSDK1064, every rerun too). One --no-cache build refills the mount.
+            # cache does: re-run the stages that write it (--no-cache-filter; stages built
+            # FROM them re-run too). A global --no-cache would also start every NuGet cache
+            # mount empty and keep that one (BuildKit 0.33). A match outside a named stage: --no-cache.
+            nocachefilter=$(python3 -I - "$DOCKERFILE" "$persists" <<'PY'
+          import re, sys
+          pat, hit, named, cur, mounts = re.compile(sys.argv[2].replace('[[:space:]]', r'\s'), re.I), [], True, None, set()
+          for l in re.sub(r'\\\r?\n', ' ', open(sys.argv[1]).read()).splitlines():
+              m = re.match(r'\s*FROM\s+(?:--\S+\s+)*\S+(?:\s+AS\s+(\S+))?', l, re.I)
+              if m:
+                  cur = (m.group(1) or '').lower()
+              elif pat.search(l):
+                  named = named and bool(cur)
+                  hit += [cur] if cur and cur not in hit else []
+              if 'type=cache' in l and 'id=nuget' in l:
+                  mounts.add(cur)
+          # a filtered stage would start its NuGet cache mount empty: --no-cache then
+          print(','.join(hit) if named and not mounts & set(hit) else '')
+          PY
+            )
+            [ -n "$nocachefilter" ] && [ "$mountgone" = false ] || { nocache=true; nocachefilter=""; }
+            echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer: built with ${nocachefilter:+--no-cache-filter }${nocachefilter:---no-cache} on the sticky BuildKit disk; scripts/nuget-secret-mount-fix.sh fixes the Dockerfile"
+            from=""; to=""
+          elif [ "$mountgone" = true ]; then
             echo "::notice file=${DOCKERFILE}::no NuGet cache mount on the sticky BuildKit disk (new disk or GC): built with --no-cache once to fill it"
             from=""; to=""; nocache=true
           elif [ "${STICKY:-}" = true ]; then
@@ -396,7 +418,7 @@ jobs:
             from=$(awk '{print "type=gha,scope=" $0}' <<<"$scopes")
             to="type=gha,mode=max,scope=$(head -n1 <<<"$scopes")"
           fi
-          { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; echo "nocache=$nocache"; } >> "$GITHUB_OUTPUT"
+          { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; echo "nocache=$nocache"; echo "nocachefilter=$nocachefilter"; } >> "$GITHUB_OUTPUT"
           # <<< layer-cache
       - if: ${{ inputs.docker-test-target != '' }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -538,17 +560,39 @@ jobs:
           # >>> layer-cache (scripts/test-dotnet-service-build-cache.sh runs this block)
           persists='--password|ClearTextPassword|_authToken|http-basic|^[[:space:]]*ARG[[:space:]]+[A-Za-z0-9_]*(TOKEN|PASSWORD)'
           nugetcache='--mount=type=cache,[^[:space:]]*id=nuget(,|[[:space:]]|$)'
-          nocache=false
+          nocache=false; nocachefilter=""; mountgone=false
+          # BuildKit's default GC drops a cache mount unused for 48 h, its layers live 60 d:
+          # a cached restore layer then leaves the --no-restore RUNs without packages
+          # (NETSDK1064, every rerun too). One --no-cache build refills the mount.
+          if [ "${STICKY:-}" = true ] && grep -Eq -- "$nugetcache" "$DOCKERFILE" 2>/dev/null \
+             && ! grep -qF 'with id "/nuget"' <<<"$(docker buildx du ${BUILDER:+--builder "$BUILDER"} --verbose --filter type=exec.cachemount 2>/dev/null || true)"; then
+            mountgone=true
+          fi
           if [ "${STICKY:-}" = true ] && grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
             # The persistent builder would replay the token layer exactly like the gha
-            # cache does: build this Dockerfile with --no-cache on the sticky disk.
-            echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer: built with --no-cache on the sticky BuildKit disk; scripts/nuget-secret-mount-fix.sh fixes the Dockerfile"
-            from=""; to=""; nocache=true
-          elif [ "${STICKY:-}" = true ] && grep -Eq -- "$nugetcache" "$DOCKERFILE" 2>/dev/null \
-               && ! grep -qF 'with id "/nuget"' <<<"$(docker buildx du ${BUILDER:+--builder "$BUILDER"} --verbose --filter type=exec.cachemount 2>/dev/null || true)"; then
-            # BuildKit's default GC drops a cache mount unused for 48 h, its layers live 60 d:
-            # a cached restore layer then leaves the --no-restore RUNs without packages
-            # (NETSDK1064, every rerun too). One --no-cache build refills the mount.
+            # cache does: re-run the stages that write it (--no-cache-filter; stages built
+            # FROM them re-run too). A global --no-cache would also start every NuGet cache
+            # mount empty and keep that one (BuildKit 0.33). A match outside a named stage: --no-cache.
+            nocachefilter=$(python3 -I - "$DOCKERFILE" "$persists" <<'PY'
+          import re, sys
+          pat, hit, named, cur, mounts = re.compile(sys.argv[2].replace('[[:space:]]', r'\s'), re.I), [], True, None, set()
+          for l in re.sub(r'\\\r?\n', ' ', open(sys.argv[1]).read()).splitlines():
+              m = re.match(r'\s*FROM\s+(?:--\S+\s+)*\S+(?:\s+AS\s+(\S+))?', l, re.I)
+              if m:
+                  cur = (m.group(1) or '').lower()
+              elif pat.search(l):
+                  named = named and bool(cur)
+                  hit += [cur] if cur and cur not in hit else []
+              if 'type=cache' in l and 'id=nuget' in l:
+                  mounts.add(cur)
+          # a filtered stage would start its NuGet cache mount empty: --no-cache then
+          print(','.join(hit) if named and not mounts & set(hit) else '')
+          PY
+            )
+            [ -n "$nocachefilter" ] && [ "$mountgone" = false ] || { nocache=true; nocachefilter=""; }
+            echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer: built with ${nocachefilter:+--no-cache-filter }${nocachefilter:---no-cache} on the sticky BuildKit disk; scripts/nuget-secret-mount-fix.sh fixes the Dockerfile"
+            from=""; to=""
+          elif [ "$mountgone" = true ]; then
             echo "::notice file=${DOCKERFILE}::no NuGet cache mount on the sticky BuildKit disk (new disk or GC): built with --no-cache once to fill it"
             from=""; to=""; nocache=true
           elif [ "${STICKY:-}" = true ]; then
@@ -565,7 +609,7 @@ jobs:
             from=$(awk '{print "type=gha,scope=" $0}' <<<"$scopes")
             to="type=gha,mode=max,scope=$(head -n1 <<<"$scopes")"
           fi
-          { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; echo "nocache=$nocache"; } >> "$GITHUB_OUTPUT"
+          { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; echo "nocache=$nocache"; echo "nocachefilter=$nocachefilter"; } >> "$GITHUB_OUTPUT"
           # <<< layer-cache
 
       # Built into the local daemon as local/<image>:<release>, then pushed by the
