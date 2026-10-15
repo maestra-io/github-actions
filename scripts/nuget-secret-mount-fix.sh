@@ -287,9 +287,12 @@ for path in sys.argv[1:]:
             d, why = cache_target(cmd, st)
             cands.append([a, b, st, d, why, text]); st.at = b
         else:
-            if COPY_CACHE in text and ('project.assets.json' in text or 'cp -a /tmp/nuget-cache/. ' in text):
-                # PR 147's whole-mount `cp -a` and older assets copies are upgraded below
+            # a one-line copy (PR 147's whole-mount `cp -a`, an older assets copy) is upgraded below;
+            # a multiline whole-mount copy gets the assets copy inserted after it, as before
+            if COPY_CACHE in text and 'project.assets.json' in text:
                 st.copies = a if a == b else 'new'
+            elif COPY_CACHE in text and 'cp -a /tmp/nuget-cache/. ' in text and a == b:
+                st.copies = a
             later.append((a, 'run', st, text))
     if re.search(r'--password', ''.join(l for i, l in enumerate(lines) if i not in drop)):
         print(f'still writes a password (fix by hand): {path}')
