@@ -208,7 +208,7 @@ RUN $S dotnet restore --packages \$PackagesPath
 # from the image (without them it silently runs zero tests): copied out of the mount
 # only the <id>/<version> folders of the stage's obj/project.assets.json, not the whole mount
 cp_tpl=$(cat <<'T'
-RUN --mount=type=cache,id=nuget,target=/tmp/nuget-cache,sharing=locked set -e; find / \( -path /proc -o -path /sys -o -path /tmp/nuget-cache -o -path /usr/share/dotnet -o -path @D@ \) -prune -o -path '*/obj/project.assets.json' -print > /tmp/nuget-assets; [ -s /tmp/nuget-assets ] || { echo 'no obj/project.assets.json: no NuGet packages to copy' >&2; exit 1; }; while read -r f; do grep -q '"@D@/"' "$f" || { echo "$f restores outside @D@" >&2; exit 1; }; done < /tmp/nuget-assets; while read -r f; do sed -n '/^ *"type": "package"/,/^ *"path": /s|^ *"path": "\([^"]*\)",*$|\1|p' "$f"; done < /tmp/nuget-assets | sort -u > /tmp/nuget-pkgs; while read -r p; do test -d "/tmp/nuget-cache/$p" || { echo "$p is not in the NuGet cache mount" >&2; exit 1; }; mkdir -p "@D@/$p"; cp -a "/tmp/nuget-cache/$p/." "@D@/$p/"; done < /tmp/nuget-pkgs; echo "copied $(wc -l < /tmp/nuget-pkgs) NuGet packages into @D@"; rm /tmp/nuget-assets /tmp/nuget-pkgs
+RUN --mount=type=cache,id=nuget,target=/tmp/nuget-cache,sharing=locked set -e; find / \( -path /proc -o -path /sys -o -path /tmp/nuget-cache -o -path /usr/share/dotnet -o -path @D@ \) -prune -o -path '*/obj/project.assets.json' -print > /tmp/nuget-assets; [ -s /tmp/nuget-assets ] || { echo 'no obj/project.assets.json: no NuGet packages to copy' >&2; exit 1; }; while read -r f; do grep -q '"@D@/\{0,1\}"' "$f" || { echo "$f restores outside @D@" >&2; exit 1; }; done < /tmp/nuget-assets; while read -r f; do sed -n '/^ *"type": "package"/,/^ *"path": /s|^ *"path": "\([^"]*\)",*$|\1|p' "$f"; done < /tmp/nuget-assets | sort -u > /tmp/nuget-pkgs; while read -r p; do test -d "/tmp/nuget-cache/$p" || { echo "$p is not in the NuGet cache mount" >&2; exit 1; }; mkdir -p "@D@/$p"; cp -a "/tmp/nuget-cache/$p/." "@D@/$p/"; done < /tmp/nuget-pkgs; echo "copied $(wc -l < /tmp/nuget-pkgs) NuGet packages into @D@"; rm /tmp/nuget-assets /tmp/nuget-pkgs
 T
 )
 cp_run() { printf '%s' "${cp_tpl//@D@/$1}"; }
@@ -241,6 +241,14 @@ cat > "$work/project.assets.json" <<'J'
 }
 J
 eq "$(sed -n "$sedexpr" "$work/project.assets.json" | sort -u | paste -sd' ' -)" "example/1.0.0-proj microsoft.extensions.logging/9.0.0" "runtime copy: package list from project.assets.json"
+# "packageFolders" has no trailing slash when restore got `--packages .nuget` (segmentations)
+grepexpr=${cp_tpl#*grep -q \'}; grepexpr=${grepexpr%%\' *}; grepexpr=${grepexpr//@D@//sln/.nuget}
+for pf in '"/sln/.nuget/": {}' '"/sln/.nuget": {}'; do
+  printf '  "packageFolders": {\n    %s\n' "$pf" > "$work/pf.json"
+  grep -q "$grepexpr" "$work/pf.json" || { echo "FAIL runtime copy: packageFolders $pf not recognised"; exit 1; }
+done
+printf '  "packageFolders": {\n    "/root/.nuget/packages/": {}\n' > "$work/pf.json"
+! grep -q "$grepexpr" "$work/pf.json" || { echo "FAIL runtime copy: another packages folder recognised"; exit 1; }
 cachecase runtime-test "FROM sdk AS build
 WORKDIR /sln
 RUN $S dotnet restore
@@ -291,6 +299,19 @@ ENTRYPOINT [\"dotnet\", \"test\", \"--no-build\"]
 RUN $S $(cm /root/.nuget/packages) dotnet restore
 FROM build AS tests
 $(cp_run /root/.nuget/packages)
+ENTRYPOINT [\"dotnet\", \"test\", \"--no-build\"]"
+# PR 149's copy (packageFolders with a trailing slash only) is upgraded in place, the current one is left alone
+cachecase runtime-test-upgrade-149 "FROM sdk AS build
+WORKDIR /sln
+RUN $S $(cm /sln/.nuget) dotnet restore --packages .nuget
+FROM build AS tests
+$(t=${cp_tpl//'\{0,1\}'/}; printf '%s' "${t//@D@//sln/.nuget}")
+ENTRYPOINT [\"dotnet\", \"test\", \"--no-build\"]
+" "FROM sdk AS build
+WORKDIR /sln
+RUN $S $(cm /sln/.nuget) dotnet restore --packages .nuget
+FROM build AS tests
+$(cp_run /sln/.nuget)
 ENTRYPOINT [\"dotnet\", \"test\", \"--no-build\"]"
 # a cache mount alone in a runtime stage is no package copy
 cachecase runtime-test-mount-only "FROM sdk AS build

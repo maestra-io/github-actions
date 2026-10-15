@@ -69,7 +69,7 @@ COPY_CACHE = '--mount=type=cache,id=nuget,target=/tmp/nuget-cache,sharing=locked
 COPY_RUN = ('RUN ' + COPY_CACHE + " set -e; find / \\( -path /proc -o -path /sys -o -path /tmp/nuget-cache"
             " -o -path /usr/share/dotnet -o -path @D@ \\) -prune -o -path '*/obj/project.assets.json' -print"
             " > /tmp/nuget-assets; [ -s /tmp/nuget-assets ] || { echo 'no obj/project.assets.json: no NuGet"
-            " packages to copy' >&2; exit 1; }; while read -r f; do grep -q '\"@D@/\"' \"$f\" || { echo"
+            " packages to copy' >&2; exit 1; }; while read -r f; do grep -q '\"@D@/\\{0,1\\}\"' \"$f\" || { echo"
             " \"$f restores outside @D@\" >&2; exit 1; }; done < /tmp/nuget-assets; while read -r f; do"
             " sed -n '/^ *\"type\": \"package\"/,/^ *\"path\": /s|^ *\"path\": \"\\([^\"]*\\)\",*$|\\1|p' \"$f\";"
             " done < /tmp/nuget-assets | sort -u > /tmp/nuget-pkgs; while read -r p; do test -d \"/tmp/nuget-cache/$p\""
@@ -287,10 +287,12 @@ for path in sys.argv[1:]:
             d, why = cache_target(cmd, st)
             cands.append([a, b, st, d, why, text]); st.at = b
         else:
+            # a one-line copy (PR 147's whole-mount `cp -a`, an older assets copy) is upgraded below;
+            # a multiline whole-mount copy gets the assets copy inserted after it, as before
             if COPY_CACHE in text and 'project.assets.json' in text:
-                st.copies = 'new'
+                st.copies = a if a == b else 'new'
             elif COPY_CACHE in text and 'cp -a /tmp/nuget-cache/. ' in text and a == b:
-                st.copies = a  # PR 147 copied the whole mount: upgraded below
+                st.copies = a
             later.append((a, 'run', st, text))
     if re.search(r'--password', ''.join(l for i, l in enumerate(lines) if i not in drop)):
         print(f'still writes a password (fix by hand): {path}')
@@ -351,7 +353,7 @@ for path in sys.argv[1:]:
                 run = COPY_RUN.replace('@D@', next(iter(dirs)))
                 if s.copies is None:
                     inserts.append((s.at, run))
-                else:
+                elif lines[s.copies].rstrip('\r\n') != run:
                     lines[s.copies] = run + lines[s.copies][len(lines[s.copies].rstrip('\r\n')):]
                     copied += 1
     for i, run in inserts:
