@@ -4,7 +4,8 @@
 # upload Job of the MCF's own kustomization/, not from here.
 #
 #   version ─► install ─► codegen ─► checks, test, build ─► image ─► release ─► bake
-#                                                                            └─► sourcemaps
+#                                                      │                     └─► sourcemaps
+#                                                      └─► hot-test (pull_request)
 #
 # Warehouse refresh: no job here. The GitHub org webhook (workflow_run completed)
 # refreshes every Kargo Warehouse labelled maestra.io/source-repo=<lower-case repo name>
@@ -16,9 +17,12 @@
 #   jobs:
 #     build:
 #       uses: maestra-io/github-actions/.github/workflows/mcf-build.yml@main
-#       permissions: { contents: write, id-token: write, pull-requests: read }
+#       permissions: { contents: write, id-token: write, pull-requests: write }
 #       with:
 #         push: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
+#
+#   pull-requests: write is for the hot-test stand comment on a PR (read: the hotfix
+#   label); without it the hot-test job still publishes the stand and warns.
 #
 # Inputs:
 #   node-version        Exact Node.js version (default 24.19.0, as mcf@3).
@@ -27,6 +31,9 @@
 #   push                Push the image and run release/bake (default true).
 #                       Only from the default branch, never on pull_request.
 #                       false = build-only dry run.
+#   hot-test            On pull_request, publish the hot-test stand of the PR (default true):
+#                       hot-test-publish.yml, https://hot-test-<repo>-pr-<N>.testing-env.omicron.maestra.io.
+#                       Not for renovate/* and LocalizationPull branches or PRs from forks.
 #   image               ECR repository of the static image. Default: repository name.
 #   service             Service name for bake (<service>-manifests). Default: repository name.
 #   auth-jwt-url        auth-jwt the schema token comes from (default the omega one).
@@ -55,11 +62,14 @@
 #             as mcf@3 upload-source-maps [maestra]); key from the central Vault
 #             (jwt-github role mcf-build-sourcemaps-github-ci). Never fails the release.
 #   bake      as in service-build.yml.
+#   hot-test  pull_request only, right after `build`: the PR's static files and an
+#             entry built on them go to the hot-test bucket, one status comment on the PR
+#             (hot-test-publish.yml; mcf@3 hot-test environments, issues-maestra#1574).
 #
 # Not ported from mcf@3: cyrillic (translation-checker, issues-maestra#1581), e2e,
-# functional tests and the -e2e/-with-deps images (issues-maestra#1573), hot testing
-# environments, multi-contour schema loading, and the RU contour jobs (Octopus,
-# phrase, metrics, pipelines release submit, Mindbox Datadog source maps).
+# functional tests and the -e2e/-with-deps images (issues-maestra#1573),
+# multi-contour schema loading, and the RU contour jobs (Octopus, phrase, metrics,
+# pipelines release submit, Mindbox Datadog source maps).
 
 name: mcf-build
 
@@ -76,6 +86,9 @@ on:
         type: string
         default: "40"
       push:
+        type: boolean
+        default: true
+      hot-test:
         type: boolean
         default: true
       image:
@@ -124,6 +137,7 @@ jobs:
     outputs:
       release: ${{ steps.v.outputs.release }}
       publish: ${{ steps.v.outputs.publish }}
+      hot-test: ${{ steps.v.outputs.hot-test }}
       image: ${{ steps.v.outputs.image }}
       service: ${{ steps.v.outputs.service }}
       mcf: ${{ steps.v.outputs.mcf }}
@@ -148,6 +162,7 @@ jobs:
           SERVICE: ${{ inputs.service }}
           PUSH: ${{ inputs.push && github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
           PUSH_REQUESTED: ${{ inputs.push && github.event_name != 'pull_request' }}
+          HOT_TEST: ${{ inputs.hot-test && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && !startsWith(github.head_ref, 'renovate/') && github.head_ref != 'LocalizationPull' }}
         run: |
           if [ "$PUSH_REQUESTED" = true ] && [ "$PUSH" != true ]; then
             echo "::warning::$GITHUB_REF is not the default branch: build only, nothing is published"
@@ -163,12 +178,13 @@ jobs:
           {
             echo "release=${prefix}.${RUN_NUMBER}"
             echo "publish=$PUSH"
+            echo "hot-test=$HOT_TEST"
             echo "image=${IMAGE:-$REPO_NAME}"
             echo "service=${SERVICE:-$REPO_NAME}"
             echo "mcf=$mcf"
             if [ -d kustomization ]; then echo "bake=true"; else echo "bake=false"; fi
           } >> "$GITHUB_OUTPUT"
-          echo "release ${prefix}.${RUN_NUMBER}, mcf $mcf, image ${IMAGE:-$REPO_NAME}, publish=$PUSH, kustomization/ $([ -d kustomization ] && echo present || echo absent)"
+          echo "release ${prefix}.${RUN_NUMBER}, mcf $mcf, image ${IMAGE:-$REPO_NAME}, publish=$PUSH, hot-test=$HOT_TEST, kustomization/ $([ -d kustomization ] && echo present || echo absent)"
 
       # mcf@3 build/create-hotfix-marker: the MF plugin reads LAST_HOTFIX, the newest
       # hotfix/X.Y.Z tag, this release included when its PR carries the `hotfix` label.
@@ -453,7 +469,7 @@ jobs:
           find build -name '*.map' -type f -delete
           tar -czf "$RUNNER_TEMP/static.tgz" -C build v2_static
           du -sh "$out"
-      - if: ${{ needs.version.outputs.publish == 'true' }}
+      - if: ${{ needs.version.outputs.publish == 'true' || needs.version.outputs.hot-test == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: static
@@ -599,6 +615,20 @@ jobs:
           images: ${{ needs.version.outputs.image }}
           tag: ${{ needs.version.outputs.release }}
           teleport-token: ${{ inputs.teleport-token }}
+
+  # Hot-test stand of the PR, right after build (checks and tests do not gate it, as the
+  # GitLab hot-test jobs). No `permissions` here: the called workflow runs with the
+  # caller's grant, so a caller still on pull-requests: read keeps a working
+  # pipeline and gets a warning instead of the PR comment (hot-test-publish.yml header).
+  hot-test:
+    needs: [version, build]
+    if: ${{ needs.version.outputs.hot-test == 'true' }}
+    uses: maestra-io/github-actions/.github/workflows/hot-test-publish.yml@main
+    with:
+      repo: ${{ github.event.repository.name }}
+      pr-number: ${{ github.event.pull_request.number }}
+      mcf: ${{ needs.version.outputs.mcf }}
+      static-artifact: static
 
   # Secret scan of the PR's own commits on every pull request (the GitLab
   # gitleaks-validate MR job), as dotnet-service-build/service-build run it.

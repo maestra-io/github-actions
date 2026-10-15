@@ -16,6 +16,7 @@ on:
       - ".github/workflows/ansible-os-update.yml"
       - ".github/workflows/dotnet-service-build.yml"
       - ".github/workflows/frontend-codegen.yml"
+      - ".github/workflows/hot-test-publish.yml"
       - ".github/workflows/mcf-build.yml"
       - ".github/workflows/npm-package-publish.yml"
       - ".github/workflows/nuget-package-publish.yml"
@@ -89,6 +90,9 @@ jobs:
 
       - name: service-build image-targets parsing (workflow copy)
         run: bash scripts/test-service-build.sh
+
+      - name: hot-test-publish stand names and manifest override (workflow copy)
+        run: bash scripts/test-hot-test-publish.sh
 
       - name: pr-checks check-encoding and kustomize entry points
         run: bash scripts/test-pr-checks.sh
