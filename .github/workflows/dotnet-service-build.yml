@@ -156,7 +156,8 @@
 # PR 31, 14.10.2026: 26 image builds, ~0 bytes from nora). Packages in the mount never
 # reach a layer: every RUN that reads them mounts it, and a stage that runs `dotnet test`
 # at container start (CMD/ENTRYPOINT; without its packages it silently runs zero tests)
-# copies them out of the mount (`cp -a` from id=nuget mounted at /tmp/nuget-cache). Layer
+# copies them out of the mount (id=nuget at /tmp/nuget-cache): only the <id>/<version>
+# folders its obj/project.assets.json files name, not every version the disk holds. Layer
 # cache without the mount (type=gha, a GC'd sticky mount) would fail NETSDK1064: see
 # Cache.
 # A secret's value is not part of the layer cache key: the GitLab-era

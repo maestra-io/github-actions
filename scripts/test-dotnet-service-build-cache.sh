@@ -206,7 +206,12 @@ RUN $S dotnet restore --packages \$PackagesPath
 " ""
 # the template's tests stage: `dotnet test --no-build` at container start reads the packages
 # from the image (without them it silently runs zero tests): copied out of the mount
-cp_run() { printf 'RUN --mount=type=cache,id=nuget,target=/tmp/nuget-cache,sharing=locked mkdir -p %s && cp -a /tmp/nuget-cache/. %s/' "$1" "$1"; }
+# only the <id>/<version> folders of the stage's obj/project.assets.json, not the whole mount
+cp_tpl=$(cat <<'T'
+RUN --mount=type=cache,id=nuget,target=/tmp/nuget-cache,sharing=locked set -e; find / \( -path /proc -o -path /sys -o -path /tmp/nuget-cache -o -path /usr/share/dotnet -o -path @D@ \) -prune -o -path '*/obj/project.assets.json' -print > /tmp/nuget-assets; [ -s /tmp/nuget-assets ] || { echo 'no obj/project.assets.json: no NuGet packages to copy' >&2; exit 1; }; while read -r f; do grep -q '"@D@/"' "$f" || { echo "$f restores outside @D@" >&2; exit 1; }; done < /tmp/nuget-assets; while read -r f; do sed -n 's|^ *"path": "\([^"/]*/[^"/]*\)",*$|\1|p' "$f"; done < /tmp/nuget-assets | sed '/proj$/d' | sort -u > /tmp/nuget-pkgs; while read -r p; do test -d "/tmp/nuget-cache/$p" || { echo "$p is not in the NuGet cache mount" >&2; exit 1; }; mkdir -p "@D@/$p"; cp -a "/tmp/nuget-cache/$p/." "@D@/$p/"; done < /tmp/nuget-pkgs; echo "copied $(wc -l < /tmp/nuget-pkgs) NuGet packages into @D@"; rm /tmp/nuget-assets /tmp/nuget-pkgs
+T
+)
+cp_run() { printf '%s' "${cp_tpl//@D@/$1}"; }
 cachecase runtime-test "FROM sdk AS build
 WORKDIR /sln
 RUN $S dotnet restore
@@ -246,6 +251,18 @@ RUN $S dotnet restore b.csproj --packages /b
 FROM build AS tests
 ENTRYPOINT [\"dotnet\", \"test\", \"--no-build\"]
 " ""
+# PR 147's whole-mount copy is upgraded in place
+old_cp() { printf 'RUN --mount=type=cache,id=nuget,target=/tmp/nuget-cache,sharing=locked mkdir -p %s && cp -a /tmp/nuget-cache/. %s/' "$1" "$1"; }
+cachecase runtime-test-upgrade "FROM sdk AS build
+RUN $S $(cm /root/.nuget/packages) dotnet restore
+FROM build AS tests
+$(old_cp /root/.nuget/packages)
+ENTRYPOINT [\"dotnet\", \"test\", \"--no-build\"]
+" "FROM sdk AS build
+RUN $S $(cm /root/.nuget/packages) dotnet restore
+FROM build AS tests
+$(cp_run /root/.nuget/packages)
+ENTRYPOINT [\"dotnet\", \"test\", \"--no-build\"]"
 # a cache mount alone in a runtime stage is no package copy
 cachecase runtime-test-mount-only "FROM sdk AS build
 RUN $S dotnet restore
@@ -406,5 +423,21 @@ grep -q '^200 .*selftest.build.1.0.0.nupkg' "$work/feed.log" && grep -q '^200 .*
   || { cat "$work/feed.log"; echo "FAIL fixed: a new cache mount did not restore from the feed with the current token"; exit 1; }
 eq "$(leaks fixed)" "" "no token in the fixed image"
 echo "ok fixed Dockerfile: restores with the current token, no token in any layer"
-docker rmi -f local/selftest-token-cache:gitlab local/selftest-token-cache:fixed >/dev/null 2>&1 || true
+
+# Runtime tests stage: the mount also holds an unrelated package; the image gets only the
+# one obj/project.assets.json names (Selftest.Build), not the whole mount.
+{ cat "$fx/Dockerfile.gitlab"; printf 'FROM build AS tests\nENTRYPOINT ["dotnet", "test", "--no-build"]\n'; } > "$work/ctx/Dockerfile.tests"
+(cd "$work/ctx-cm" && "$here/nuget-secret-mount-fix.sh" "$work/ctx/Dockerfile.tests") >/dev/null
+sed -i.bak "s/id=nuget,/id=nuget-$nonce-t,/" "$work/ctx/Dockerfile.tests"
+printf 'FROM mcr.microsoft.com/dotnet/sdk:10.0\nRUN --mount=type=cache,id=nuget-%s-t,target=/c mkdir -p /c/unrelated.pkg/9.9.9 && echo x > /c/unrelated.pkg/9.9.9/x\n' "$nonce" > "$work/ctx/Dockerfile.prefill"
+docker buildx build --progress plain -f "$work/ctx/Dockerfile.prefill" "$work/ctx" >"$work/build.log" 2>&1 || { tail -20 "$work/build.log"; echo "FAIL prefill"; exit 1; }
+# a new csproj: the mount id is not part of the cache key, the restore must run into this mount
+echo "<!-- $nonce-t -->" >> "$work/ctx/App/App.csproj"
+docker buildx build --progress plain --load --add-host host.docker.internal:host-gateway \
+  --secret "id=NUGET_CREDENTIALS,src=$work/e2e/packages-token/NUGET_CREDENTIALS" \
+  -f "$work/ctx/Dockerfile.tests" --target tests -t local/selftest-token-cache:tests "$work/ctx" >"$work/build.log" 2>&1 \
+  || { grep -E "^#[0-9]+ [0-9.]+ " "$work/build.log" | tail -20; echo "FAIL build tests stage"; exit 1; }
+eq "$(docker run --rm --entrypoint sh local/selftest-token-cache:tests -c 'cd /root/.nuget/packages && find . -mindepth 2 -maxdepth 2 -type d | sort')" "./selftest.build/1.0.0" "runtime tests stage: only the restored packages copied"
+echo "ok runtime tests stage: copies the packages of obj/project.assets.json, not the whole mount"
+docker rmi -f local/selftest-token-cache:gitlab local/selftest-token-cache:fixed local/selftest-token-cache:tests >/dev/null 2>&1 || true
 echo "dotnet-service-build packages token: OK"
