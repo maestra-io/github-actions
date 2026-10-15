@@ -15,6 +15,18 @@
 # A Dockerfile converted before #124 (only the restore RUN mounted) gets the mount on
 # its other dotnet RUNs, same source: a --no-restore build without it lets the SDK's
 # workload-manifest check send an empty Basic credential, nora locks the runner out.
+# Every such RUN also gets the NuGet packages folder as a BuildKit cache mount (sticky
+# disk: a restore layer invalidated by `COPY . .` fetches only the delta, DirectCRM PR 31):
+#   RUN --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private --mount=type=cache,id=nuget,target=/root/.nuget/packages,sharing=locked dotnet restore
+# target = the RUN's `--packages <dir>` (ARG/ENV defaults resolved, relative to WORKDIR;
+# a --no-restore RUN reads the folder the last restore of its stage used), else
+# NUGET_PACKAGES, else $HOME/.nuget/packages. Packages in the mount never reach a layer,
+# so it is all or nothing per stage family (FROM <stage> chains): it is left out and
+# reported (fix by hand) when a family has a non-root USER, an unresolvable path, a
+# mount of its own on that folder, a stage running dotnet at container start
+# (CMD/ENTRYPOINT `dotnet test --no-build` silently runs zero tests), or a RUN without
+# the mount / a COPY --from that reads the folder. Dockerfiles converted earlier get
+# the cache mount on their next run.
 # Idempotent: a second run changes nothing.
 #
 # Usage: nuget-secret-mount-fix.sh [file...]   (default: every Dockerfile* in the tree)
@@ -28,11 +40,17 @@ fi
 [ "${#files[@]}" -gt 0 ] || exit 0
 
 python3 -I - "${files[@]}" <<'PY'
-import re, sys
+import json, posixpath, re, shlex, sys
 
 CRED = re.compile(r'^dotnet\s+nuget\s+update\s+source\s+([A-Za-z0-9_.-]+)\s.*--password\b', re.S)
 MOUNTED = re.compile(r'id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_([A-Za-z0-9_]+)')
+SECRET = re.compile(r'--mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_[A-Za-z0-9_]+')
 DOTNET = re.compile(r'\bdotnet["\',\s]+(restore|build|publish|test|pack|msbuild|tool|workload|run)\b')
+RESTORES = re.compile(r'\bdotnet["\',\s]+(restore|build|publish|test|pack|run)\b')  # rewrites obj/project.assets.json
+NOREST = re.compile(r'--no-(restore|build)\b')
+PKG = re.compile(r'--packages(?:=|\s+)("[^"]*"|\'[^\']*\'|\S+)')
+MOUNT = re.compile(r'--mount=(\S+)')
+VAR = re.compile(r'\$(?:\{(\w+)\}|(\w+))')
 FLAG = re.compile(r'^--\S+\s*')
 
 def instructions(lines):
@@ -54,12 +72,134 @@ def joined(lines, a, b):
     t = ' '.join(l.rstrip('\n').rstrip().rstrip('\\') for l in lines[a:b + 1] if not l.strip().startswith('#'))
     return re.sub(r'\s+', ' ', t).strip()
 
+def resolve(v, scope):
+    """$X / ${X} from ARG/ENV defaults; None when anything stays unknown."""
+    if v is None:
+        return None
+    out = VAR.sub(lambda m: scope.get(m.group(1) or m.group(2)) or '\0', v.strip('"\''))
+    return None if '\0' in out or '$' in out else out
+
+def words(s):
+    try:
+        return shlex.split(s)
+    except ValueError:
+        return s.split()
+
+class Stage:
+    def __init__(self, idx, name, parent):
+        self.idx, self.name, self.parent = idx, name, parent
+        self.root = parent.root if parent else self
+        self.env = dict(parent.env) if parent else {}
+        self.user = parent.user if parent else 'root'
+        self.wd = parent.wd if parent else '/'
+        self.pkgdir = parent.pkgdir if parent else None  # where the last restore put packages
+        self.args = {}
+    def scope(self):
+        return {**self.args, **self.env}
+
+def cache_target(cmd, st):
+    """(packages dir the RUN reads/writes, None) or (None, why it cannot be told)."""
+    if resolve(st.user, {}) not in ('root', '0'):
+        return None, f'USER {st.user} is active (a cache mount is root-owned)'
+    scope = st.scope()
+    pk = {m.group(1) for m in PKG.finditer(cmd)}
+    if len(pk) > 1:
+        return None, 'several --packages paths in one RUN'
+    if pk:
+        raw = pk.pop(); p = resolve(raw, scope)
+        if p is None or p.startswith('~'):
+            return None, f'--packages {raw} cannot be resolved from an ARG/ENV default'
+        if not p.startswith('/'):
+            if not st.wd:
+                return None, f'--packages {raw} is relative to an unresolved WORKDIR'
+            p = posixpath.join(st.wd, p)
+        st.pkgdir = posixpath.normpath(p)
+        return st.pkgdir, None
+    if NOREST.search(cmd) and st.pkgdir:
+        return st.pkgdir, None  # reads the folder project.assets.json names
+    if RESTORES.search(cmd):
+        st.pkgdir = None
+    if 'NUGET_PACKAGES' in scope:
+        p = scope['NUGET_PACKAGES']
+        if not p or not p.startswith('/'):
+            return None, 'NUGET_PACKAGES cannot be resolved to an absolute path'
+        return posixpath.normpath(p), None
+    home = scope.get('HOME', '/root')
+    if not home or not home.startswith('/'):
+        return None, 'HOME cannot be resolved'
+    return posixpath.normpath(home + '/.nuget/packages'), None
+
+def mount_targets(text, wd):
+    """{target: type} of the --mount flags of a RUN."""
+    out = {}
+    for m in MOUNT.finditer(text):
+        kv = dict(x.split('=', 1) if '=' in x else (x, '') for x in m.group(1).split(','))
+        t = kv.get('target') or kv.get('dst') or kv.get('destination')
+        if t:
+            out[posixpath.normpath(posixpath.join(wd or '/', t))] = kv.get('type', 'bind')
+    return out
+
+def inside(p, d):
+    return p == d or p.startswith(d.rstrip('/') + '/')
+
 for path in sys.argv[1:]:
     lines = open(path, newline='').read().splitlines(keepends=True)  # keep CRLF files CRLF
     drop, names, runs = set(), [], []
+    stages, byname, gargs, st = [], {}, {}, None
+    cands, later = [], []  # cands: [a, b, stage, dir, why, text]; later: (a, kind, stage, payload)
     for a, b in instructions(lines):
         text = joined(lines, a, b)
-        if not re.match(r'(?i)RUN\s', text):
+        kw, _, rest = text.partition(' ')
+        kw = kw.upper()
+        if kw == 'FROM':
+            w = [x for x in rest.split() if not x.startswith('--')]
+            name = w[2].lower() if len(w) > 2 and w[1].lower() == 'as' else None
+            st = Stage(len(stages), name, byname.get(w[0].lower()) if w else None)
+            stages.append(st); byname[str(st.idx)] = st
+            if name:
+                byname[name] = st
+            continue
+        if kw == 'ARG':
+            for x in words(rest):
+                k, eq, v = x.partition('=')
+                if st is None:
+                    gargs[k] = resolve(v, gargs) if eq else None
+                else:
+                    st.args[k] = resolve(v, st.scope()) if eq else gargs.get(k)
+            continue
+        if st is None:
+            continue
+        if kw == 'ENV':
+            w = words(rest)
+            pairs = [x.partition('=')[::2] for x in w] if w and '=' in w[0] else [(w[0], ' '.join(w[1:]))] if w else []
+            scope = st.scope()
+            for k, v in pairs:
+                st.env[k] = resolve(v, scope)
+            continue
+        if kw == 'USER':
+            st.user = (rest.split() or ['root'])[0].split(':')[0]
+            continue
+        if kw == 'WORKDIR':
+            p = resolve(rest.strip(), st.scope())
+            st.wd = posixpath.normpath(posixpath.join(st.wd or '/', p)) if p and (st.wd or p.startswith('/')) else None
+            continue
+        if kw in ('CMD', 'ENTRYPOINT'):
+            if DOTNET.search(rest):
+                later.append((a, 'start', st, None))
+            continue
+        if kw in ('COPY', 'ADD'):
+            frm = re.search(r'--from=(\S+)', rest)
+            if frm:
+                body = FLAG.sub('', rest)
+                while FLAG.match(body):
+                    body = FLAG.sub('', body, count=1)
+                try:
+                    srcs = json.loads(body)[:-1] if body.startswith('[') else words(body)[:-1]
+                except ValueError:
+                    srcs = words(body)[:-1]
+                later.append((a, 'copy', st, (frm.group(1).lower(), [resolve(x, st.scope()) for x in srcs])))
+            continue
+        if kw != 'RUN':
             continue
         cmd = text[4:].strip()
         while FLAG.match(cmd):
@@ -68,17 +208,23 @@ for path in sys.argv[1:]:
         if m:
             if re.search(r'&&|\|\||;', cmd):
                 print(f'credential RUN does more than update the source (fix by hand): {path}:{a + 1}')
+                cands.append([a, b, st, None, 'the credential RUN above needs a hand fix first', text])
                 continue
             names.append(m.group(1))
             drop.update(range(a, b + 1))
             k = a - 1  # the comment lines right above it explain it: drop them too
             while k >= 0 and lines[k].strip().startswith('#') and not lines[k].strip().startswith('###'):
                 drop.add(k); k -= 1
-        elif DOTNET.search(cmd) and 'id=NUGET_CREDENTIALS' not in text:
-            runs.append(a)
+        elif DOTNET.search(cmd):
+            if 'id=NUGET_CREDENTIALS' not in text:
+                runs.append(a)
+            d, why = cache_target(cmd, st)
+            cands.append([a, b, st, d, why, text])
+        else:
+            later.append((a, 'run', st, text))
     if re.search(r'--password', ''.join(l for i, l in enumerate(lines) if i not in drop)):
         print(f'still writes a password (fix by hand): {path}')
-    if not names and runs:  # converted before #124: reuse the source names already mounted
+    if not names and (runs or cands):  # converted earlier: reuse the source names already mounted
         names = MOUNTED.findall(' '.join(joined(lines, a, b) for a, b in instructions(lines)))
     if not names:
         print(f'unchanged: {path}'); continue
@@ -86,8 +232,51 @@ for path in sys.argv[1:]:
                       for n in dict.fromkeys(names))
     for a in runs:
         lines[a] = re.sub(r'^(\s*RUN)\s+', lambda m: f'{m.group(1)} {mounts} ', lines[a], count=1, flags=re.I)
+
+    # NuGet cache mount. Packages restored into it never reach a layer, so every RUN of
+    # the stage family (FROM <stage> chains) that reads that folder must mount it too,
+    # and nothing may read it outside a mount: else a family is left alone and reported.
+    cached = 0
+    for root in dict.fromkeys(c[2].root for c in cands):
+        fam = [c for c in cands if c[2].root is root]
+        dirs = {c[3] for c in fam if c[3]}
+        first = min(c[0] for c in fam)
+        why = [(c[0], c[4]) for c in fam if c[4]]
+        for c in fam:
+            other = {t: k for t, k in mount_targets(c[5], c[2].wd).items() if c[3] and t == c[3] and k != 'cache'}
+            if other:
+                why.append((c[0], f'it already mounts {c[3]} (type={other[c[3]]})'))
+        for a, kind, s, x in later:
+            if kind == 'start' and s.root is root:
+                why.append((a, 'a stage of it runs dotnet at container start (CMD/ENTRYPOINT): '
+                               'its packages would stay in the cache mount, not in the image'))
+            elif kind == 'run' and s.root is root and a > first and any(
+                    d in x or (d.endswith('/.nuget/packages') and '.nuget/packages' in x) for d in dirs):
+                why.append((a, 'a RUN without the mount reads the packages folder'))
+            elif kind == 'copy' and byname.get(x[0]) is not None and byname[x[0]].root is root and any(
+                    p is None or inside(posixpath.normpath(posixpath.join('/', p)), d) or inside(d, posixpath.normpath(posixpath.join('/', p)))
+                    for p in x[1] for d in dirs):
+                why.append((a, 'COPY --from takes the packages folder (or a parent) out of the stage'))
+        if why:
+            for a, w in dict(sorted(why)).items():
+                print(f'no NuGet cache mount, {w} (fix by hand): {path}:{a + 1}')
+            continue
+        for a, b, s, d, _, text in fam:
+            if re.search(r'--mount=type=cache,\S*(id=nuget[,\s]|target=' + re.escape(d) + r'[,\s])', text + ' ') or \
+               any(t == d for t, k in mount_targets(text, s.wd).items()):
+                continue  # already mounted
+            cache = f'--mount=type=cache,id=nuget,target={d},sharing=locked'
+            for i in range(b, a - 1, -1):
+                hit = list(SECRET.finditer(lines[i]))
+                if hit:
+                    e = hit[-1].end(); lines[i] = f'{lines[i][:e]} {cache}{lines[i][e:]}'; break
+            else:
+                lines[a] = re.sub(r'^(\s*RUN)\s+', lambda m: f'{m.group(1)} {cache} ', lines[a], count=1, flags=re.I)
+            cached += 1
+    if not drop and not runs and not cached:
+        print(f'unchanged: {path}'); continue
     out = ''.join(l for i, l in enumerate(lines) if i not in drop)
     out = re.sub(r'(\r?\n){3,}', r'\1\1', out)
     open(path, 'w', newline='').write(out)
-    print(f'fixed:     {path} (source {", ".join(dict.fromkeys(names))}, {len(runs)} RUN mounted)')
+    print(f'fixed:     {path} (source {", ".join(dict.fromkeys(names))}, {len(runs)} RUN mounted, {cached} cache mount)')
 PY
