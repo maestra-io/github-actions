@@ -34,8 +34,9 @@
 #                       Dockerfiles start `FROM <name>` (GitLab built it first into the
 #                       local daemon, e.g. `local/personalization-base:latest=Dockerfile-base`).
 #                       Built once in `test` to fill the cache (scope base-image), then
-#                       in every `images` leg whose Dockerfile names it, from that cache,
-#                       as an OCI layout handed to the build as the `<name>` build context.
+#                       in every `images` leg whose Dockerfile names it, from that cache
+#                       (sticky-buildkit: from the disk's own layers, same rules as the
+#                       image), as an OCI layout handed to the build as the `<name>` context.
 #                       Context = repo root. Never pushed. Empty = none.
 #   dotnet-version      SDK for the `test` job (setup-dotnet syntax, e.g. 10.0.x).
 #                       Empty = global.json; a global.json that setup-dotnet rejects
@@ -909,6 +910,8 @@ jobs:
         if: ${{ steps.base.outputs.context != '' }}
         env:
           DOCKERFILE: ${{ needs.version.outputs.base-dockerfile }}
+          STICKY: ${{ inputs.sticky-buildkit }}
+          BUILDER: ${{ steps.runs-on.outputs.buildkit-builder }}
           SCOPES: base-image
         run: |
           # >>> layer-cache (scripts/test-dotnet-service-build-cache.sh runs this block)
@@ -952,6 +955,7 @@ jobs:
           target: ${{ needs.version.outputs.base-target }}
           outputs: type=oci,dest=${{ runner.temp }}/base-image,tar=false
           builder: ${{ steps.runs-on.outputs.buildkit-builder }}
+          no-cache: ${{ steps.cache-base.outputs.nocache == 'true' }}
           secret-files: |
             PRIVATE_PACKAGES_TOKEN=${{ runner.temp }}/packages-token/PRIVATE_PACKAGES_TOKEN
             NUGET_CREDENTIALS=${{ runner.temp }}/packages-token/NUGET_CREDENTIALS
