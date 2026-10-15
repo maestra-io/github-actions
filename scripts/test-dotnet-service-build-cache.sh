@@ -11,7 +11,8 @@
 #   3. end to end (docker, a fake feed that accepts only the CURRENT token): the
 #      GitLab-era Dockerfile with the cache fails exactly like billing did, without
 #      the cache it passes; after scripts/nuget-secret-mount-fix.sh it passes WITH the
-#      cache (restore layer reused) and no layer holds a token.
+#      cache (restore layer reused) and no layer holds a token; with its NuGet cache
+#      mount a rebuild fetches no package, an empty mount fetches them with the current token.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 wf="$here/../.github/workflows/dotnet-service-build.yml"
@@ -40,20 +41,30 @@ eq() { [ "$1" = "$2" ] || { printf 'FAIL %s\n  got:  %s\n  want: %s\n' "$3" "$1"
 
 # ── 1. layer-cache ─────────────────────────────────────────────────────────────
 # cache_for <dockerfile> <scopes> -> "<from lines joined by ' '>|<to>"
+# docker stub: `buildx du` lists the nuget cache mount when DU_NUGET is set.
+mkdir -p "$work/bin"
+cat > "$work/bin/docker" <<'D'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$DOCKER_ARGS"
+[ -z "${DU_NUGET:-}" ] || echo 'Description:  cached mount /root/.nuget/packages from exec /bin/sh -c dotnet restore with id "/nuget"'
+D
+chmod +x "$work/bin/docker"
 cache_for() {
   : > "$work/out"
-  DOCKERFILE="$1" SCOPES="$2" GITHUB_OUTPUT="$work/out" bash -c "set -eo pipefail; $cache" >/dev/null
+  PATH="$work/bin:$PATH" DOCKER_ARGS="$work/docker.args" DOCKERFILE="$1" SCOPES="$2" GITHUB_OUTPUT="$work/out" bash -c "set -eo pipefail; $cache" >/dev/null
   from=$(awk '/^from<</{f=1;next} /^__CACHE__$/{f=0} f' "$work/out" | paste -sd' ' -)
   echo "${from}|$(sed -n 's/^to=//p' "$work/out")"
 }
 "$here/nuget-secret-mount-fix.sh" "$(cp "$fx/Dockerfile.gitlab" "$work/Dockerfile.fixed" && echo "$work/Dockerfile.fixed")" >/dev/null
-grep -q 'id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private dotnet publish' "$work/Dockerfile.fixed" \
-  && grep -q 'id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private dotnet build App.csproj -c Release --no-restore' "$work/Dockerfile.fixed" \
-  || { cat "$work/Dockerfile.fixed"; echo "FAIL nuget-secret-mount-fix did not mount the publish and the --no-restore build RUN"; exit 1; }
+nc='--mount=type=cache,id=nuget,target=/root/.nuget/packages,sharing=locked'
+for r in 'dotnet restore App.csproj' 'dotnet build App.csproj -c Release --no-restore' 'dotnet publish'; do
+  grep -qF -- "RUN --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private $nc $r" "$work/Dockerfile.fixed" \
+    || { cat "$work/Dockerfile.fixed"; echo "FAIL nuget-secret-mount-fix: no secret + cache mount on '$r'"; exit 1; }
+done
 eq "$("$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.fixed")" "unchanged: $work/Dockerfile.fixed" "nuget-secret-mount-fix idempotent"
 printf 'FROM sdk\r\nRUN --mount=type=secret,id=PRIVATE_PACKAGES_TOKEN dotnet nuget update source maestra --username ci --password $(cat /run/secrets/PRIVATE_PACKAGES_TOKEN) --store-password-in-clear-text\r\nRUN dotnet restore && dotnet test --no-build\r\n' > "$work/Dockerfile.crlf"
 "$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.crlf" >/dev/null
-eq "$(cat "$work/Dockerfile.crlf")" "$(printf 'FROM sdk\r\nRUN --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_maestra dotnet restore && dotnet test --no-build\r\n')" "nuget-secret-mount-fix: other source name, CRLF kept"
+eq "$(cat "$work/Dockerfile.crlf")" "$(printf 'FROM sdk\r\nRUN --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_maestra %s dotnet restore && dotnet test --no-build\r\n' "$nc")" "nuget-secret-mount-fix: other source name, CRLF kept"
 printf 'FROM sdk\nRUN --mount=type=secret,id=T dotnet nuget update source private --password $(cat /run/secrets/T) && dotnet restore\n' > "$work/Dockerfile.chained"
 cp "$work/Dockerfile.chained" "$work/Dockerfile.chained.orig"
 "$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.chained" | grep -q 'fix by hand' || { echo "FAIL nuget-secret-mount-fix: chained credential RUN not reported"; exit 1; }
@@ -61,16 +72,124 @@ cmp -s "$work/Dockerfile.chained" "$work/Dockerfile.chained.orig" || { echo "FAI
 # converted before #124 (api-mimic): the --no-restore build ran unmounted, the SDK workload check sent an empty Basic
 printf 'FROM sdk\nRUN --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private dotnet restore\nRUN dotnet build -c Release --no-restore\nRUN ls\n' > "$work/Dockerfile.pre124"
 "$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.pre124" >/dev/null
-eq "$(cat "$work/Dockerfile.pre124")" "$(printf 'FROM sdk\nRUN --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private dotnet restore\nRUN --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private dotnet build -c Release --no-restore\nRUN ls')" "nuget-secret-mount-fix: pre-#124 Dockerfile upgraded"
+eq "$(cat "$work/Dockerfile.pre124")" "$(printf 'FROM sdk\nRUN --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private %s dotnet restore\nRUN --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private %s dotnet build -c Release --no-restore\nRUN ls' "$nc" "$nc")" "nuget-secret-mount-fix: pre-#124 Dockerfile upgraded"
 eq "$("$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.pre124")" "unchanged: $work/Dockerfile.pre124" "nuget-secret-mount-fix: pre-#124 upgrade idempotent"
 printf 'FROM sdk\n# RUN --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private dotnet restore\nRUN dotnet build\n' > "$work/Dockerfile.nofeed"
 eq "$("$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.nofeed")" "unchanged: $work/Dockerfile.nofeed" "nuget-secret-mount-fix: no credential anywhere, untouched"
+# NuGet cache mount: <name> <Dockerfile> <expected> ('' = untouched, a `fix by hand` line)
+S='--mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private'
+cm() { printf -- '--mount=type=cache,id=nuget,target=%s,sharing=locked' "$1"; }
+cachecase() {
+  printf '%s' "$2" > "$work/Dockerfile.cm"; cp "$work/Dockerfile.cm" "$work/Dockerfile.cm.orig"
+  out=$("$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.cm")
+  if [ -z "$3" ]; then
+    grep -q 'fix by hand' <<<"$out" || { echo "$out"; echo "FAIL cache mount $1: not reported"; exit 1; }
+    cmp -s "$work/Dockerfile.cm" "$work/Dockerfile.cm.orig" || { cat "$work/Dockerfile.cm"; echo "FAIL cache mount $1: changed"; exit 1; }
+  else
+    eq "$(cat "$work/Dockerfile.cm")" "$3" "cache mount $1"
+    eq "$("$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.cm")" "unchanged: $work/Dockerfile.cm" "cache mount $1: idempotent"
+  fi
+}
+# converted earlier (api-mimic): secret mounts only, the publish stage inherits the folder
+cachecase secret-mounted "FROM sdk AS build
+RUN $S dotnet restore
+COPY . .
+RUN $S dotnet build -c Release --no-restore
+FROM build AS publish
+RUN $S dotnet publish -o /dist --no-restore
+FROM aspnet
+COPY --from=publish /dist .
+ENTRYPOINT [\"dotnet\", \"App.dll\"]
+" "FROM sdk AS build
+RUN $S $(cm /root/.nuget/packages) dotnet restore
+COPY . .
+RUN $S $(cm /root/.nuget/packages) dotnet build -c Release --no-restore
+FROM build AS publish
+RUN $S $(cm /root/.nuget/packages) dotnet publish -o /dist --no-restore
+FROM aspnet
+COPY --from=publish /dist .
+ENTRYPOINT [\"dotnet\", \"App.dll\"]"
+# DirectCRM: --packages from an ARG default
+cachecase arg-packages "FROM sdk
+ARG PackagesPath=/root/.nuget/packages
+RUN $S dotnet restore ./a.csproj --packages \$PackagesPath
+RUN $S dotnet publish ./a.csproj -o /dist --no-restore
+" "FROM sdk
+ARG PackagesPath=/root/.nuget/packages
+RUN $S $(cm /root/.nuget/packages) dotnet restore ./a.csproj --packages \$PackagesPath
+RUN $S $(cm /root/.nuget/packages) dotnet publish ./a.csproj -o /dist --no-restore"
+cachecase nuget-packages-env "FROM sdk
+ENV NUGET_PACKAGES=/nuget
+RUN $S dotnet restore
+RUN $S dotnet build --no-restore
+" "FROM sdk
+ENV NUGET_PACKAGES=/nuget
+RUN $S $(cm /nuget) dotnet restore
+RUN $S $(cm /nuget) dotnet build --no-restore"
+# messaging: relative --packages against WORKDIR; the --no-restore RUNs read the same folder
+cachecase relative-packages "FROM sdk AS build
+WORKDIR /sln
+RUN $S dotnet restore \"M.sln\" --packages .nuget
+COPY . .
+RUN $S dotnet build \"M.sln\" -c Release --no-restore
+FROM build AS publish
+RUN $S dotnet publish src/A/A.csproj -c Release -o /dist --no-restore
+" "FROM sdk AS build
+WORKDIR /sln
+RUN $S $(cm /sln/.nuget) dotnet restore \"M.sln\" --packages .nuget
+COPY . .
+RUN $S $(cm /sln/.nuget) dotnet build \"M.sln\" -c Release --no-restore
+FROM build AS publish
+RUN $S $(cm /sln/.nuget) dotnet publish src/A/A.csproj -c Release -o /dist --no-restore"
+cachecase non-root-user "FROM sdk
+USER app
+RUN $S dotnet restore
+" ""
+cachecase unresolved-packages "FROM sdk
+ARG PackagesPath
+RUN $S dotnet restore --packages \$PackagesPath
+" ""
+# the template's tests stage: `dotnet test --no-build` at container start finds no packages, runs zero tests
+cachecase runtime-test "FROM sdk AS build
+RUN $S dotnet restore
+RUN $S dotnet build --no-restore
+FROM build AS tests
+ENTRYPOINT [\"dotnet\", \"test\", \"--no-build\"]
+" ""
+cachecase copy-from-packages "FROM sdk AS build
+WORKDIR /sln
+RUN $S dotnet restore --packages .nuget
+FROM sdk
+COPY --from=build /sln/.nuget /nuget
+" ""
+cachecase run-reads-packages "FROM sdk
+RUN $S dotnet restore
+RUN ls /root/.nuget/packages
+" ""
+cachecase bind-mounted "FROM sdk
+WORKDIR /sln
+RUN --mount=type=bind,source=.nuget,target=.nuget,rw=true $S dotnet restore --packages .nuget
+" ""
+# a fresh GitLab Dockerfile with a non-root stage: the token is fixed, the cache mount reported
+printf 'FROM sdk\nUSER app\nRUN --mount=type=secret,id=T dotnet nuget update source private --password $(cat /run/secrets/T)\nRUN dotnet restore\n' > "$work/Dockerfile.user"
+out=$("$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.user")
+grep -q 'USER app.*fix by hand' <<<"$out" && grep -q '^fixed: ' <<<"$out" || { echo "$out"; echo "FAIL non-root GitLab Dockerfile"; exit 1; }
+eq "$(cat "$work/Dockerfile.user")" "$(printf 'FROM sdk\nUSER app\nRUN %s dotnet restore' "$S")" "non-root GitLab Dockerfile: secret mount, no cache mount"
+sed 's/ --mount=type=cache[^ ]*//' "$work/Dockerfile.fixed" > "$work/Dockerfile.secretonly"
 eq "$(cache_for "$fx/Dockerfile.gitlab" $'img\ntests')" "|" "GitLab-era Dockerfile: no cache"
-eq "$(cache_for "$work/Dockerfile.fixed" $'img\ntests')" "type=gha,scope=img type=gha,scope=tests|type=gha,mode=max,scope=img" "fixed Dockerfile: cache"
-eq "$(cache_for "$work/Dockerfile.fixed" $'img\n')" "type=gha,scope=img|type=gha,mode=max,scope=img" "no docker-test-target"
-eq "$(cache_for "$work/Dockerfile.fixed" "tests")" "type=gha,scope=tests|type=gha,mode=max,scope=tests" "test job"
-eq "$(STICKY=true cache_for "$work/Dockerfile.fixed" $'img\ntests')" "|" "sticky disk: layers stay on the disk, no gha cache"
-eq "$(sed -n 's/^nocache=//p' "$work/out")" "false" "sticky disk, fixed Dockerfile: builder cache allowed"
+eq "$(cache_for "$work/Dockerfile.secretonly" $'img\ntests')" "type=gha,scope=img type=gha,scope=tests|type=gha,mode=max,scope=img" "secret-mounted Dockerfile: cache"
+eq "$(cache_for "$work/Dockerfile.secretonly" $'img\n')" "type=gha,scope=img|type=gha,mode=max,scope=img" "no docker-test-target"
+eq "$(cache_for "$work/Dockerfile.secretonly" "tests")" "type=gha,scope=tests|type=gha,mode=max,scope=tests" "test job"
+eq "$(cache_for "$work/Dockerfile.fixed" $'img\ntests')" "|" "NuGet cache mount: no gha cache (it never exports the mount, NETSDK1064)"
+eq "$(sed -n 's/^nocache=//p' "$work/out")" "false" "NuGet cache mount without sticky disk: no --no-cache"
+eq "$(STICKY=true cache_for "$work/Dockerfile.secretonly" $'img\ntests')" "|" "sticky disk: layers stay on the disk, no gha cache"
+eq "$(sed -n 's/^nocache=//p' "$work/out")" "false" "sticky disk, secret-mounted Dockerfile: builder cache allowed"
+: > "$work/docker.args"
+eq "$(DU_NUGET=1 BUILDER=bk STICKY=true cache_for "$work/Dockerfile.fixed" img)" "|" "sticky disk with the NuGet cache mount"
+eq "$(sed -n 's/^nocache=//p' "$work/out")" "false" "sticky disk, NuGet cache mount present: builder cache allowed"
+grep -q -- '--builder bk' "$work/docker.args" || { cat "$work/docker.args"; echo "FAIL buildx du not asked on the sticky builder"; exit 1; }
+eq "$(STICKY=true cache_for "$work/Dockerfile.fixed" img)" "|" "sticky disk without the NuGet cache mount"
+eq "$(sed -n 's/^nocache=//p' "$work/out")" "true" "sticky disk, NuGet cache mount GC'd: --no-cache once"
 eq "$(STICKY=true cache_for "$fx/Dockerfile.gitlab" img)" "|" "sticky disk, GitLab-era Dockerfile: no gha cache"
 eq "$(sed -n 's/^nocache=//p' "$work/out")" "true" "sticky disk, GitLab-era Dockerfile: --no-cache, the token layer is never replayed"
 for persist in 'ARG PRIVATE_PACKAGES_TOKEN' \
@@ -114,9 +233,9 @@ echo "ok token-files"
 # ── 3. end to end ──────────────────────────────────────────────────────────────
 port=18737
 cp -R "$fx/." "$work/ctx/" 2>/dev/null || { mkdir -p "$work/ctx"; cp -R "$fx/." "$work/ctx/"; }
-cp "$work/Dockerfile.fixed" "$work/ctx/Dockerfile.fixed"
-# Unique per invocation: the daemon keeps the layer cache of earlier invocations.
+# Unique per invocation: the daemon keeps the layer cache and cache mounts of earlier invocations.
 nonce="$$-$RANDOM"; A="tok-A-$nonce"; B="tok-B-$nonce"
+sed "s/id=nuget,/id=nuget-$nonce,/" "$work/Dockerfile.fixed" > "$work/ctx/Dockerfile.fixed"
 echo "$A" > "$work/token"
 echo "<!-- $nonce -->" >> "$work/ctx/nuget.config" # and a layer chain of its own: no earlier token to replay
 python3 -I "$fx/feed.py" "$port" "$work/token" "$work/feed.log" & feed=$!
@@ -149,12 +268,22 @@ must Dockerfile.gitlab --no-cache
 [ -n "$(leaks gitlab)" ] || { echo "FAIL leak check finds nothing in the GitLab-era image"; exit 1; }
 echo "ok GitLab-era Dockerfile without the layer cache (what the workflow does): passes"
 
-# Fixed: same two runs pass, the restore layer comes from the cache, no token in a layer.
+# Fixed: run 1 fills the NuGet cache mount; run 2 (new commit, token B) reuses the restore
+# layer and fetches no package (publish finds Selftest.Publish in the mount); run 3 with an
+# empty mount fetches every package with the current token. No token in any layer.
 token "$A"; must Dockerfile.fixed
-token "$B"; must Dockerfile.fixed
-if grep -q 'selftest.build' "$work/feed.log"; then cat "$work/feed.log"; echo "FAIL fixed: restore layer not reused from the cache"; exit 1; fi
 grep -q '^200 .*selftest.publish.1.0.0.nupkg' "$work/feed.log" || { cat "$work/feed.log"; echo "FAIL fixed: publish did not restore from the feed"; exit 1; }
+token "$B"; must Dockerfile.fixed
+if grep -q 'nupkg' "$work/feed.log"; then cat "$work/feed.log"; echo "FAIL fixed: a package was fetched again despite the cache mount"; exit 1; fi
+grep -q '#[0-9]* CACHED' "$work/build.log" || { tail -40 "$work/build.log"; echo "FAIL fixed: no layer reused from the cache"; exit 1; }
+echo "ok fixed Dockerfile + NuGet cache mount: a rebuild fetches no package"
+# The mount id is not part of the layer cache key: an empty mount under cached layers is
+# what a GC'd sticky mount looks like, hence --no-cache (the workflow does the same).
+sed -i.bak "s/id=nuget-$nonce,/id=nuget-$nonce-2,/" "$work/ctx/Dockerfile.fixed"
+must Dockerfile.fixed --no-cache
+grep -q '^200 .*selftest.build.1.0.0.nupkg' "$work/feed.log" && grep -q '^200 .*selftest.publish.1.0.0.nupkg' "$work/feed.log" \
+  || { cat "$work/feed.log"; echo "FAIL fixed: a new cache mount did not restore from the feed with the current token"; exit 1; }
 eq "$(leaks fixed)" "" "no token in the fixed image"
-echo "ok fixed Dockerfile + layer cache: publish restores with the current token, no token in any layer"
+echo "ok fixed Dockerfile: restores with the current token, no token in any layer"
 docker rmi -f local/selftest-token-cache:gitlab local/selftest-token-cache:fixed >/dev/null 2>&1 || true
 echo "dotnet-service-build packages token: OK"

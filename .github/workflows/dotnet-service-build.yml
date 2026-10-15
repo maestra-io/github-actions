@@ -34,8 +34,9 @@
 #                       Dockerfiles start `FROM <name>` (GitLab built it first into the
 #                       local daemon, e.g. `local/personalization-base:latest=Dockerfile-base`).
 #                       Built once in `test` to fill the cache (scope base-image), then
-#                       in every `images` leg whose Dockerfile names it, from that cache,
-#                       as an OCI layout handed to the build as the `<name>` build context.
+#                       in every `images` leg whose Dockerfile names it, from that cache
+#                       (sticky-buildkit: from the disk's own layers, same rules as the
+#                       image), as an OCI layout handed to the build as the `<name>` context.
 #                       Context = repo root. Never pushed. Empty = none.
 #   dotnet-version      SDK for the `test` job (setup-dotnet syntax, e.g. 10.0.x).
 #                       Empty = global.json; a global.json that setup-dotnet rejects
@@ -137,14 +138,26 @@
 #                           wins over nuget.config credentials.
 # Dockerfile pattern: mount the token on EVERY `dotnet` RUN (restore; `publish -r <rid>`
 # restores runtime packs; even a --no-restore build can run a target that reaches the
-# feed, e.g. `dotnet tool install`), never write it into a file:
+# feed, e.g. `dotnet tool install`), never write it into a file, and the NuGet packages
+# folder as a BuildKit cache mount on the same RUNs:
 #   RUN --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private \
+#       --mount=type=cache,id=nuget,target=/root/.nuget/packages,sharing=locked \
 #       dotnet restore
 #   FROM build AS publish
 #   RUN --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private \
-#       dotnet publish src/Svc/Svc.csproj -c Release -r linux-x64 -o /dist
-# (`private` = the nuget.config source key). A secret's value is not part of the layer
-# cache key: the GitLab-era `RUN --mount=type=secret,... dotnet nuget update source
+#       --mount=type=cache,id=nuget,target=/root/.nuget/packages,sharing=locked \
+#       dotnet publish src/Svc/Svc.csproj -c Release -r linux-x64 -o /dist --no-restore
+# (`private` = the nuget.config source key; target = where the RUN puts packages:
+# `--packages <dir>` against WORKDIR, else NUGET_PACKAGES, else /root/.nuget/packages).
+# `COPY . .` before restore invalidates the restore layer on every commit and each leg
+# re-downloaded every package (0.3-0.9 GB; nora ~270 GB / 48 h); the cache mount lives
+# in the BuildKit state on the sticky disk, so only the delta is fetched (DirectCRM
+# PR 31, 14.10.2026: 26 image builds, ~0 bytes from nora). Packages in the mount never
+# reach a layer: every RUN that reads them mounts it, and a stage that runs `dotnet test`
+# at container start (CMD/ENTRYPOINT) cannot use it (silently runs zero tests). Layer
+# cache without the mount (type=gha, a GC'd sticky mount) would fail NETSDK1064: see
+# Cache.
+# A secret's value is not part of the layer cache key: the GitLab-era `RUN --mount=type=secret,... dotnet nuget update source
 # private --password $(cat /run/secrets/...)` writes a token into NuGet.Config that the
 # cache replays in later jobs and runs after it expired (401 as soon as a later step
 # restores). Such a Dockerfile (a `--password`, `ClearTextPassword`, `_authToken`,
@@ -162,7 +175,8 @@
 #
 # Cache: buildx `type=gha` per image scope (images also read the docker-test-target
 # scope); RunsOn Magic Cache stores it in S3. Off for a Dockerfile that writes a token
-# into a layer (see Registry token).
+# into a layer (see Registry token), and for one with the NuGet cache mount (gha never
+# exports cache mounts; a sticky disk without the mount builds once with --no-cache).
 #
 # AWS: a fresh RunsOn instance can lack its instance-role credentials for a few seconds
 # (NoCredentials); `test` and `images` wait up to ~40 s for them before any AWS call.
@@ -481,16 +495,28 @@ jobs:
         run: |
           # >>> layer-cache (scripts/test-dotnet-service-build-cache.sh runs this block)
           persists='--password|ClearTextPassword|_authToken|http-basic|^[[:space:]]*ARG[[:space:]]+[A-Za-z0-9_]*(TOKEN|PASSWORD)'
+          nugetcache='--mount=type=cache,[^[:space:]]*id=nuget(,|[[:space:]]|$)'
           nocache=false
           if [ "${STICKY:-}" = true ] && grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
             # The persistent builder would replay the token layer exactly like the gha
             # cache does: build this Dockerfile with --no-cache on the sticky disk.
             echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer: built with --no-cache on the sticky BuildKit disk; scripts/nuget-secret-mount-fix.sh fixes the Dockerfile"
             from=""; to=""; nocache=true
+          elif [ "${STICKY:-}" = true ] && grep -Eq -- "$nugetcache" "$DOCKERFILE" 2>/dev/null \
+               && ! grep -qF 'with id "/nuget"' <<<"$(docker buildx du ${BUILDER:+--builder "$BUILDER"} --verbose --filter type=exec.cachemount 2>/dev/null || true)"; then
+            # BuildKit's default GC drops a cache mount unused for 48 h, its layers live 60 d:
+            # a cached restore layer then leaves the --no-restore RUNs without packages
+            # (NETSDK1064, every rerun too). One --no-cache build refills the mount.
+            echo "::notice file=${DOCKERFILE}::no NuGet cache mount on the sticky BuildKit disk (new disk or GC): built with --no-cache once to fill it"
+            from=""; to=""; nocache=true
           elif [ "${STICKY:-}" = true ]; then
             from=""; to="" # layers live on the job's sticky disk, no gha export/import
           elif grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
             echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer (GitLab-era 'dotnet nuget update source --password'): built WITHOUT the layer cache, a cached layer would replay an expired token. Mount it per RUN instead: --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_<source> (scripts/nuget-secret-mount-fix.sh)."
+            from=""; to=""
+          elif grep -Eq -- "$nugetcache" "$DOCKERFILE" 2>/dev/null; then
+            # type=gha exports layers, never cache mounts: an imported restore layer leaves
+            # the --no-restore RUNs of a fresh runner without packages (NETSDK1064).
             from=""; to=""
           else
             scopes=$(printf '%s\n' "$SCOPES" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . || true)
@@ -675,16 +701,28 @@ jobs:
         run: |
           # >>> layer-cache (scripts/test-dotnet-service-build-cache.sh runs this block)
           persists='--password|ClearTextPassword|_authToken|http-basic|^[[:space:]]*ARG[[:space:]]+[A-Za-z0-9_]*(TOKEN|PASSWORD)'
+          nugetcache='--mount=type=cache,[^[:space:]]*id=nuget(,|[[:space:]]|$)'
           nocache=false
           if [ "${STICKY:-}" = true ] && grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
             # The persistent builder would replay the token layer exactly like the gha
             # cache does: build this Dockerfile with --no-cache on the sticky disk.
             echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer: built with --no-cache on the sticky BuildKit disk; scripts/nuget-secret-mount-fix.sh fixes the Dockerfile"
             from=""; to=""; nocache=true
+          elif [ "${STICKY:-}" = true ] && grep -Eq -- "$nugetcache" "$DOCKERFILE" 2>/dev/null \
+               && ! grep -qF 'with id "/nuget"' <<<"$(docker buildx du ${BUILDER:+--builder "$BUILDER"} --verbose --filter type=exec.cachemount 2>/dev/null || true)"; then
+            # BuildKit's default GC drops a cache mount unused for 48 h, its layers live 60 d:
+            # a cached restore layer then leaves the --no-restore RUNs without packages
+            # (NETSDK1064, every rerun too). One --no-cache build refills the mount.
+            echo "::notice file=${DOCKERFILE}::no NuGet cache mount on the sticky BuildKit disk (new disk or GC): built with --no-cache once to fill it"
+            from=""; to=""; nocache=true
           elif [ "${STICKY:-}" = true ]; then
             from=""; to="" # layers live on the job's sticky disk, no gha export/import
           elif grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
             echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer (GitLab-era 'dotnet nuget update source --password'): built WITHOUT the layer cache, a cached layer would replay an expired token. Mount it per RUN instead: --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_<source> (scripts/nuget-secret-mount-fix.sh)."
+            from=""; to=""
+          elif grep -Eq -- "$nugetcache" "$DOCKERFILE" 2>/dev/null; then
+            # type=gha exports layers, never cache mounts: an imported restore layer leaves
+            # the --no-restore RUNs of a fresh runner without packages (NETSDK1064).
             from=""; to=""
           else
             scopes=$(printf '%s\n' "$SCOPES" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . || true)
@@ -789,22 +827,35 @@ jobs:
         env:
           DOCKERFILE: ${{ matrix.dockerfile }}
           STICKY: ${{ inputs.sticky-buildkit }}
+          BUILDER: ${{ steps.runs-on.outputs.buildkit-builder }}
           SCOPES: |
             ${{ matrix.image }}
             ${{ inputs.docker-test-target }}
         run: |
           # >>> layer-cache (scripts/test-dotnet-service-build-cache.sh runs this block)
           persists='--password|ClearTextPassword|_authToken|http-basic|^[[:space:]]*ARG[[:space:]]+[A-Za-z0-9_]*(TOKEN|PASSWORD)'
+          nugetcache='--mount=type=cache,[^[:space:]]*id=nuget(,|[[:space:]]|$)'
           nocache=false
           if [ "${STICKY:-}" = true ] && grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
             # The persistent builder would replay the token layer exactly like the gha
             # cache does: build this Dockerfile with --no-cache on the sticky disk.
             echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer: built with --no-cache on the sticky BuildKit disk; scripts/nuget-secret-mount-fix.sh fixes the Dockerfile"
             from=""; to=""; nocache=true
+          elif [ "${STICKY:-}" = true ] && grep -Eq -- "$nugetcache" "$DOCKERFILE" 2>/dev/null \
+               && ! grep -qF 'with id "/nuget"' <<<"$(docker buildx du ${BUILDER:+--builder "$BUILDER"} --verbose --filter type=exec.cachemount 2>/dev/null || true)"; then
+            # BuildKit's default GC drops a cache mount unused for 48 h, its layers live 60 d:
+            # a cached restore layer then leaves the --no-restore RUNs without packages
+            # (NETSDK1064, every rerun too). One --no-cache build refills the mount.
+            echo "::notice file=${DOCKERFILE}::no NuGet cache mount on the sticky BuildKit disk (new disk or GC): built with --no-cache once to fill it"
+            from=""; to=""; nocache=true
           elif [ "${STICKY:-}" = true ]; then
             from=""; to="" # layers live on the job's sticky disk, no gha export/import
           elif grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
             echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer (GitLab-era 'dotnet nuget update source --password'): built WITHOUT the layer cache, a cached layer would replay an expired token. Mount it per RUN instead: --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_<source> (scripts/nuget-secret-mount-fix.sh)."
+            from=""; to=""
+          elif grep -Eq -- "$nugetcache" "$DOCKERFILE" 2>/dev/null; then
+            # type=gha exports layers, never cache mounts: an imported restore layer leaves
+            # the --no-restore RUNs of a fresh runner without packages (NETSDK1064).
             from=""; to=""
           else
             scopes=$(printf '%s\n' "$SCOPES" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . || true)
@@ -859,20 +910,34 @@ jobs:
         if: ${{ steps.base.outputs.context != '' }}
         env:
           DOCKERFILE: ${{ needs.version.outputs.base-dockerfile }}
+          STICKY: ${{ inputs.sticky-buildkit }}
+          BUILDER: ${{ steps.runs-on.outputs.buildkit-builder }}
           SCOPES: base-image
         run: |
           # >>> layer-cache (scripts/test-dotnet-service-build-cache.sh runs this block)
           persists='--password|ClearTextPassword|_authToken|http-basic|^[[:space:]]*ARG[[:space:]]+[A-Za-z0-9_]*(TOKEN|PASSWORD)'
+          nugetcache='--mount=type=cache,[^[:space:]]*id=nuget(,|[[:space:]]|$)'
           nocache=false
           if [ "${STICKY:-}" = true ] && grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
             # The persistent builder would replay the token layer exactly like the gha
             # cache does: build this Dockerfile with --no-cache on the sticky disk.
             echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer: built with --no-cache on the sticky BuildKit disk; scripts/nuget-secret-mount-fix.sh fixes the Dockerfile"
             from=""; to=""; nocache=true
+          elif [ "${STICKY:-}" = true ] && grep -Eq -- "$nugetcache" "$DOCKERFILE" 2>/dev/null \
+               && ! grep -qF 'with id "/nuget"' <<<"$(docker buildx du ${BUILDER:+--builder "$BUILDER"} --verbose --filter type=exec.cachemount 2>/dev/null || true)"; then
+            # BuildKit's default GC drops a cache mount unused for 48 h, its layers live 60 d:
+            # a cached restore layer then leaves the --no-restore RUNs without packages
+            # (NETSDK1064, every rerun too). One --no-cache build refills the mount.
+            echo "::notice file=${DOCKERFILE}::no NuGet cache mount on the sticky BuildKit disk (new disk or GC): built with --no-cache once to fill it"
+            from=""; to=""; nocache=true
           elif [ "${STICKY:-}" = true ]; then
             from=""; to="" # layers live on the job's sticky disk, no gha export/import
           elif grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
             echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer (GitLab-era 'dotnet nuget update source --password'): built WITHOUT the layer cache, a cached layer would replay an expired token. Mount it per RUN instead: --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_<source> (scripts/nuget-secret-mount-fix.sh)."
+            from=""; to=""
+          elif grep -Eq -- "$nugetcache" "$DOCKERFILE" 2>/dev/null; then
+            # type=gha exports layers, never cache mounts: an imported restore layer leaves
+            # the --no-restore RUNs of a fresh runner without packages (NETSDK1064).
             from=""; to=""
           else
             scopes=$(printf '%s\n' "$SCOPES" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . || true)
@@ -890,6 +955,7 @@ jobs:
           target: ${{ needs.version.outputs.base-target }}
           outputs: type=oci,dest=${{ runner.temp }}/base-image,tar=false
           builder: ${{ steps.runs-on.outputs.buildkit-builder }}
+          no-cache: ${{ steps.cache-base.outputs.nocache == 'true' }}
           secret-files: |
             PRIVATE_PACKAGES_TOKEN=${{ runner.temp }}/packages-token/PRIVATE_PACKAGES_TOKEN
             NUGET_CREDENTIALS=${{ runner.temp }}/packages-token/NUGET_CREDENTIALS
