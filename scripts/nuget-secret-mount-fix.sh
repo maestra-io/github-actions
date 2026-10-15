@@ -23,10 +23,13 @@
 # NUGET_PACKAGES, else $HOME/.nuget/packages. Packages in the mount never reach a layer,
 # so it is all or nothing per stage family (FROM <stage> chains): it is left out and
 # reported (fix by hand) when a family has a non-root USER, an unresolvable path, a
-# mount of its own on that folder, a stage running dotnet at container start
-# (CMD/ENTRYPOINT `dotnet test --no-build` silently runs zero tests), or a RUN without
-# the mount / a COPY --from that reads the folder. Dockerfiles converted earlier get
-# the cache mount on their next run.
+# mount of its own on that folder, or a RUN without the mount / a COPY --from that
+# reads the folder. A stage running dotnet at container start (the template's tests
+# stage: CMD/ENTRYPOINT `dotnet test --no-build`, which without its packages silently
+# runs zero tests) gets them copied out of the mount into its image, after its
+# FROM/WORKDIR (or its last dotnet RUN):
+#   RUN --mount=type=cache,id=nuget,target=/tmp/nuget-cache,sharing=locked mkdir -p /root/.nuget/packages && cp -a /tmp/nuget-cache/. /root/.nuget/packages/
+# Dockerfiles converted earlier get the cache mount on their next run.
 # Idempotent: a second run changes nothing.
 #
 # Usage: nuget-secret-mount-fix.sh [file...]   (default: every Dockerfile* in the tree)
@@ -52,6 +55,7 @@ PKG = re.compile(r'--packages(?:=|\s+)("[^"]*"|\'[^\']*\'|\S+)')
 MOUNT = re.compile(r'--mount=(\S+)')
 VAR = re.compile(r'\$(?:\{(\w+)\}|(\w+))')
 FLAG = re.compile(r'^--\S+\s*')
+COPY_CACHE = '--mount=type=cache,id=nuget,target=/tmp/nuget-cache,sharing=locked'
 
 def instructions(lines):
     """[(first, last)] line ranges of logical instructions (comments/blanks excluded)."""
@@ -94,6 +98,8 @@ class Stage:
         self.wd = parent.wd if parent else '/'
         self.pkgdir = parent.pkgdir if parent else None  # where the last restore put packages
         self.args = {}
+        self.at = None        # line a runtime package copy goes after: FROM/WORKDIR, then its last dotnet RUN
+        self.copies = False   # already has that copy
     def scope(self):
         return {**self.args, **self.env}
 
@@ -145,7 +151,7 @@ def inside(p, d):
 for path in sys.argv[1:]:
     lines = open(path, newline='').read().splitlines(keepends=True)  # keep CRLF files CRLF
     drop, names, runs = set(), [], []
-    stages, byname, gargs, st = [], {}, {}, None
+    stages, byname, gargs, st, hdr = [], {}, {}, None, False
     cands, later = [], []  # cands: [a, b, stage, dir, why, text]; later: (a, kind, stage, payload)
     for a, b in instructions(lines):
         text = joined(lines, a, b)
@@ -155,7 +161,7 @@ for path in sys.argv[1:]:
             w = [x for x in rest.split() if not x.startswith('--')]
             name = w[2].lower() if len(w) > 2 and w[1].lower() == 'as' else None
             st = Stage(len(stages), name, byname.get(w[0].lower()) if w else None)
-            stages.append(st); byname[str(st.idx)] = st
+            stages.append(st); byname[str(st.idx)] = st; st.at = b; hdr = True
             if name:
                 byname[name] = st
             continue
@@ -169,6 +175,9 @@ for path in sys.argv[1:]:
             continue
         if st is None:
             continue
+        if kw == 'WORKDIR' and hdr:
+            st.at = b
+        hdr = False
         if kw == 'ENV':
             w = words(rest)
             pairs = [x.partition('=')[::2] for x in w] if w and '=' in w[0] else [(w[0], ' '.join(w[1:]))] if w else []
@@ -219,8 +228,9 @@ for path in sys.argv[1:]:
             if 'id=NUGET_CREDENTIALS' not in text:
                 runs.append(a)
             d, why = cache_target(cmd, st)
-            cands.append([a, b, st, d, why, text])
+            cands.append([a, b, st, d, why, text]); st.at = b
         else:
+            st.copies |= COPY_CACHE in text
             later.append((a, 'run', st, text))
     if re.search(r'--password', ''.join(l for i, l in enumerate(lines) if i not in drop)):
         print(f'still writes a password (fix by hand): {path}')
@@ -236,7 +246,7 @@ for path in sys.argv[1:]:
     # NuGet cache mount. Packages restored into it never reach a layer, so every RUN of
     # the stage family (FROM <stage> chains) that reads that folder must mount it too,
     # and nothing may read it outside a mount: else a family is left alone and reported.
-    cached = 0
+    cached, copied, inserts = 0, 0, []
     for root in dict.fromkeys(c[2].root for c in cands):
         fam = [c for c in cands if c[2].root is root]
         dirs = {c[3] for c in fam if c[3]}
@@ -246,11 +256,12 @@ for path in sys.argv[1:]:
             other = {t: k for t, k in mount_targets(c[5], c[2].wd).items() if c[3] and t == c[3] and k != 'cache'}
             if other:
                 why.append((c[0], f'it already mounts {c[3]} (type={other[c[3]]})'))
+        starts = {s for a, kind, s, x in later if kind == 'start' and s.root is root}
+        if starts and len(dirs) > 1:
+            why.append((min(s.at for s in starts), 'a stage runs dotnet at container start and the family '
+                        f'uses several packages folders ({", ".join(sorted(dirs))})'))
         for a, kind, s, x in later:
-            if kind == 'start' and s.root is root:
-                why.append((a, 'a stage of it runs dotnet at container start (CMD/ENTRYPOINT): '
-                               'its packages would stay in the cache mount, not in the image'))
-            elif kind == 'run' and s.root is root and a > first and any(
+            if kind == 'run' and s.root is root and a > first and 'id=nuget' not in x and any(
                     d in x or (d.endswith('/.nuget/packages') and '.nuget/packages' in x) for d in dirs):
                 why.append((a, 'a RUN without the mount reads the packages folder'))
             elif kind == 'copy' and byname.get(x[0]) is not None and byname[x[0]].root is root and any(
@@ -273,10 +284,21 @@ for path in sys.argv[1:]:
             else:
                 lines[a] = re.sub(r'^(\s*RUN)\s+', lambda m: f'{m.group(1)} {cache} ', lines[a], count=1, flags=re.I)
             cached += 1
-    if not drop and not runs and not cached:
+        # A stage that runs `dotnet test --no-build` at container start reads the packages
+        # from its own filesystem: copy them out of the mount into that image.
+        for s in starts:
+            if not s.copies and dirs:
+                d = next(iter(dirs))
+                inserts.append((s.at, f'RUN {COPY_CACHE} mkdir -p {d} && cp -a /tmp/nuget-cache/. {d}/'))
+    for i, run in inserts:
+        nl = next((l[len(l.rstrip('\r\n')):] for l in lines if l.endswith('\n')), '\n')
+        body = lines[i].rstrip('\r\n')
+        lines[i] = f'{body}{nl}{run}{lines[i][len(body):]}'
+        copied += 1
+    if not drop and not runs and not cached and not copied:
         print(f'unchanged: {path}'); continue
     out = ''.join(l for i, l in enumerate(lines) if i not in drop)
     out = re.sub(r'(\r?\n){3,}', r'\1\1', out)
     open(path, 'w', newline='').write(out)
-    print(f'fixed:     {path} (source {", ".join(dict.fromkeys(names))}, {len(runs)} RUN mounted, {cached} cache mount)')
+    print(f'fixed:     {path} (source {", ".join(dict.fromkeys(names))}, {len(runs)} RUN mounted, {cached} cache mount, {copied} runtime package copy)')
 PY
