@@ -30,8 +30,10 @@
 # reads the folder. A stage running dotnet at container start (the template's tests
 # stage: CMD/ENTRYPOINT `dotnet test --no-build`, which without its packages silently
 # runs zero tests) gets them copied out of the mount into its image, after its
-# FROM/WORKDIR (or its last dotnet RUN):
-#   RUN --mount=type=cache,id=nuget,target=/tmp/nuget-cache,sharing=locked mkdir -p /root/.nuget/packages && cp -a /tmp/nuget-cache/. /root/.nuget/packages/
+# FROM/WORKDIR (or its last dotnet RUN): only the <id>/<version> folders its
+# obj/project.assets.json files name (COPY_RUN below), not the whole mount, which on a
+# sticky disk holds every version ever restored (54-354 s copies, unbounded images);
+# the whole-mount `cp -a /tmp/nuget-cache/.` line of PR 147 is upgraded to it.
 # Dockerfiles converted earlier get the cache mount on their next run.
 # Idempotent: a second run changes nothing.
 #
@@ -61,6 +63,19 @@ MOUNT = re.compile(r'--mount=(\S+)')
 VAR = re.compile(r'\$(?:\{(\w+)\}|(\w+))')
 FLAG = re.compile(r'^--\S+\s*')
 COPY_CACHE = '--mount=type=cache,id=nuget,target=/tmp/nuget-cache,sharing=locked'
+# Copies only the packages of this stage's obj/project.assets.json files (the "path",
+# <id>/<version> lowercase, of each "type": "package" library), not the whole mount (every version the disk ever restored);
+# fails when there is no assets file, one restored elsewhere, or a package is missing.
+COPY_RUN = ('RUN ' + COPY_CACHE + " set -e; find / \\( -path /proc -o -path /sys -o -path /tmp/nuget-cache"
+            " -o -path /usr/share/dotnet -o -path @D@ \\) -prune -o -path '*/obj/project.assets.json' -print"
+            " > /tmp/nuget-assets; [ -s /tmp/nuget-assets ] || { echo 'no obj/project.assets.json: no NuGet"
+            " packages to copy' >&2; exit 1; }; while read -r f; do grep -q '\"@D@/\"' \"$f\" || { echo"
+            " \"$f restores outside @D@\" >&2; exit 1; }; done < /tmp/nuget-assets; while read -r f; do"
+            " sed -n '/^ *\"type\": \"package\"/,/^ *\"path\": /s|^ *\"path\": \"\\([^\"]*\\)\",*$|\\1|p' \"$f\";"
+            " done < /tmp/nuget-assets | sort -u > /tmp/nuget-pkgs; while read -r p; do test -d \"/tmp/nuget-cache/$p\""
+            " || { echo \"$p is not in the NuGet cache mount\" >&2; exit 1; }; mkdir -p \"@D@/$p\";"
+            " cp -a \"/tmp/nuget-cache/$p/.\" \"@D@/$p/\"; done < /tmp/nuget-pkgs;"
+            " echo \"copied $(wc -l < /tmp/nuget-pkgs) NuGet packages into @D@\"; rm /tmp/nuget-assets /tmp/nuget-pkgs")
 
 def instructions(lines):
     """[(first, last)] line ranges of logical instructions (comments/blanks excluded)."""
@@ -104,7 +119,7 @@ class Stage:
         self.pkgdir = parent.pkgdir if parent else None  # where the last restore put packages
         self.args = {}
         self.at = None        # line a runtime package copy goes after: FROM/WORKDIR, then its last dotnet RUN
-        self.copies = False   # already has that copy
+        self.copies = None    # that copy: 'new', or the line of an old whole-mount `cp -a`
     def scope(self):
         return {**self.args, **self.env}
 
@@ -272,7 +287,10 @@ for path in sys.argv[1:]:
             d, why = cache_target(cmd, st)
             cands.append([a, b, st, d, why, text]); st.at = b
         else:
-            st.copies |= COPY_CACHE in text and 'cp -a /tmp/nuget-cache/. ' in text
+            if COPY_CACHE in text and 'project.assets.json' in text:
+                st.copies = 'new'
+            elif COPY_CACHE in text and 'cp -a /tmp/nuget-cache/. ' in text and a == b:
+                st.copies = a  # PR 147 copied the whole mount: upgraded below
             later.append((a, 'run', st, text))
     if re.search(r'--password', ''.join(l for i, l in enumerate(lines) if i not in drop)):
         print(f'still writes a password (fix by hand): {path}')
@@ -329,9 +347,13 @@ for path in sys.argv[1:]:
         # A stage that runs `dotnet test --no-build` at container start reads the packages
         # from its own filesystem: copy them out of the mount into that image.
         for s in starts:
-            if not s.copies and dirs:
-                d = next(iter(dirs))
-                inserts.append((s.at, f'RUN {COPY_CACHE} mkdir -p {d} && cp -a /tmp/nuget-cache/. {d}/'))
+            if s.copies != 'new' and dirs:
+                run = COPY_RUN.replace('@D@', next(iter(dirs)))
+                if s.copies is None:
+                    inserts.append((s.at, run))
+                else:
+                    lines[s.copies] = run + lines[s.copies][len(lines[s.copies].rstrip('\r\n')):]
+                    copied += 1
     for i, run in inserts:
         nl = next((l[len(l.rstrip('\r\n')):] for l in lines if l.endswith('\n')), '\n')
         body = lines[i].rstrip('\r\n')
