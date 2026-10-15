@@ -53,6 +53,10 @@
 # is not nora's /-/name-ver.tgz. The rewrite is reverted after install, so a release
 # commit (@semantic-release/git) carries the repository's own lockfile.
 #
+# registry.npmjs.org URLs are rewritten to nora as well: npm 11's
+# `replace-registry-host=npmjs` drops nora's /npm/ for names starting with `npm`
+# (npm-run-path -> https://packages.maestra.io/npm-run-path/..., a 404).
+#
 # `replace-registry-host=npmjs` (npm's default, written explicitly) routes only
 # registry.npmjs.org URLs through nora. `always` also rewrote nora's OWN tarball
 # URLs: npm 10 builds `<registry without slash><pathname>`, so
@@ -174,6 +178,7 @@ jobs:
             sed -i.bak -E \
               -e "s#(\"resolved\": *\")https://artifactory\.mindbox\.ru/artifactory/api/npm/[^/\"]+/#\1${nora}#g" \
               -e "s#(\"resolved\": *\"${nora_re}@[^/\"]+/[^/\"]+/-/)@[^/\"]+/#\1#g" \
+              -e "s#(\"resolved\": *\")https://registry\.npmjs\.org/#\1${nora}#g" \
               "$f"
             rm -f "$f.bak"
           done

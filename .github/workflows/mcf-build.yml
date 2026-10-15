@@ -260,6 +260,7 @@ jobs:
             sed -i.bak -E \
               -e "s#(\"resolved\": *\")https://artifactory\.mindbox\.ru/artifactory/api/npm/[^/\"]+/#\1${nora}#g" \
               -e "s#(\"resolved\": *\"${nora_re}@[^/\"]+/[^/\"]+/-/)@[^/\"]+/#\1#g" \
+              -e "s#(\"resolved\": *\")https://registry\.npmjs\.org/#\1${nora}#g" \
               "$f"
             rm -f "$f.bak"
           done

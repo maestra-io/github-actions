@@ -9,14 +9,16 @@ cat > "$d/package-lock.json" <<'LF'
       "resolved": "https://artifactory.mindbox.ru/artifactory/api/npm/npm-remote/@types/node/-/node-22.0.0.tgz",
       "resolved": "https://registry.npmjs.org/react/-/react-18.3.1.tgz",
       "resolved": "https://registry.npmjs.org/@babel/core/-/core-7.26.0.tgz",
+      "resolved": "https://registry.npmjs.org/npm-run-path/-/npm-run-path-5.3.0.tgz",
       "integrity": "sha512-keep",
 LF
 cat > "$d/want" <<'LF'
       "resolved": "https://packages.maestra.io/npm/@mindbox-cloud/ui-components/-/ui-components-22.1.0.tgz",
       "resolved": "https://packages.maestra.io/npm/npm/-/npm-11.17.0.tgz",
       "resolved": "https://packages.maestra.io/npm/@types/node/-/node-22.0.0.tgz",
-      "resolved": "https://registry.npmjs.org/react/-/react-18.3.1.tgz",
-      "resolved": "https://registry.npmjs.org/@babel/core/-/core-7.26.0.tgz",
+      "resolved": "https://packages.maestra.io/npm/react/-/react-18.3.1.tgz",
+      "resolved": "https://packages.maestra.io/npm/@babel/core/-/core-7.26.0.tgz",
+      "resolved": "https://packages.maestra.io/npm/npm-run-path/-/npm-run-path-5.3.0.tgz",
       "integrity": "sha512-keep",
 LF
 "$here/npm-lockfile-to-nora.sh" "$d/package-lock.json" >/dev/null
@@ -37,6 +39,7 @@ for wf in "$here/../.github/workflows/npm-package-publish.yml" "$here/../.github
       "resolved": "https://artifactory.mindbox.ru/artifactory/api/npm/npm-remote/@types/node/-/node-22.0.0.tgz",
       "resolved": "https://registry.npmjs.org/react/-/react-18.3.1.tgz",
       "resolved": "https://registry.npmjs.org/@babel/core/-/core-7.26.0.tgz",
+      "resolved": "https://registry.npmjs.org/npm-run-path/-/npm-run-path-5.3.0.tgz",
       "integrity": "sha512-keep",
 LF
   (cd "$w" && URL=https://packages.maestra.io bash -c "$prog")
