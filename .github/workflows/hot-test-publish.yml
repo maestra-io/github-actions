@@ -2,11 +2,12 @@
 # port of the GitLab hot-test environments (issues-maestra#1574). The stand
 # https://hot-test-<repo>-pr-<N>.<hot-test-domain> is the admin of the test tenant with this
 # PR's static files on top of the released ones; the routes to it are rendered by
-# the frontend-entry-static-builder chart (ResourceSet per open PR) and vanish when
-# the PR closes. This workflow only fills the PR's folder of the hot-test bucket and
-# keeps one status comment on the PR.
+# the frontend-entry-static-builder chart (ResourceSet per open PR, Flux polls GitHub
+# every ~3 min) and vanish when the PR closes. This workflow fills the PR's folder of
+# the hot-test bucket, waits up to 6 min for the stand to answer 200 and keeps one
+# status comment on the PR (✅ stand up / ⚠️ published, no route yet / ❌ not published).
 #
-#   mcf-build.yml build ─► hot-test: static artifact ─► entry (builder --single-run) ─► Teleport ─► Vault ─► R2 sync ─► PR comment
+#   mcf-build.yml build ─► hot-test: static artifact ─► entry (builder --single-run) ─► Teleport ─► Vault ─► R2 sync ─► wait for the route ─► PR comment
 #
 # Usage (from a reusable workflow, as mcf-build.yml does, or a repo's own pr.yml):
 #
@@ -331,6 +332,27 @@ jobs:
             --delete --cache-control no-cache --no-progress
           echo "synced $(find "$site" -type f | wc -l) files to s3://${BUCKET}/${NAME}/"
 
+      - id: route
+        name: wait for the stand route
+        if: steps.upload.outcome == 'success'
+        env:
+          URL: ${{ steps.names.outputs.url }}
+        run: |
+          # >>> route (scripts/test-hot-test-publish.sh runs this block)
+          interval="${ROUTE_WAIT_INTERVAL:-15}"; timeout="${ROUTE_WAIT_TIMEOUT:-360}"
+          waited=0; up=false
+          while :; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 20 "${URL}/" || true)
+            if [ "$code" = "200" ]; then up=true; break; fi
+            if [ "$waited" -ge "$timeout" ]; then break; fi
+            echo "${URL}/ -> ${code:-no response} after ${waited}s, retrying in ${interval}s"
+            sleep "$interval"; waited=$((waited + interval))
+          done
+          { echo "up=$up"; echo "waited=$waited"; } >> "$GITHUB_OUTPUT"
+          if [ "$up" = true ]; then echo "${URL}/ is up after ${waited}s"
+          else echo "::warning::${URL}/ did not answer 200 within ${timeout}s (last: ${code:-no response})"; fi
+          # <<< route
+
       - name: comment (result)
         if: ${{ always() && steps.names.conclusion == 'success' }}
         continue-on-error: true
@@ -341,6 +363,8 @@ jobs:
           SHA: ${{ steps.names.outputs.sha }}
           MCF: ${{ steps.names.outputs.mcf }}
           OK: ${{ steps.upload.outcome == 'success' }}
+          ROUTE_UP: ${{ steps.route.outputs.up }}
+          WAITED: ${{ steps.route.outputs.waited }}
           FAILED_STATIC: ${{ steps.static.outcome == 'failure' || steps.unpack.outcome == 'failure' }}
           FAILED_ENTRY: ${{ steps.entry.outcome == 'failure' }}
           FAILED_TELEPORT: ${{ steps.tp-version.outcome == 'failure' || steps.teleport-setup.outcome == 'failure' || steps.tbot-config.outcome == 'failure' || steps.teleport.outcome == 'failure' }}
@@ -349,16 +373,19 @@ jobs:
           script: |
             const fs = require('fs');
             const MARKER = '<!-- hot-test -->';
-            const { URL, SHA, MCF, OK } = process.env;
+            const { URL, SHA, MCF, OK, ROUTE_UP, WAITED } = process.env;
             const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const minutes = Math.max(1, Math.round(Number(WAITED || 0) / 60));
             const reason = process.env.FAILED_STATIC === 'true' ? 'the static artifact is missing or incomplete'
               : process.env.FAILED_ENTRY === 'true' ? 'the entry build (frontend-entry-static-builder) failed'
               : process.env.FAILED_TELEPORT === 'true' ? 'the Teleport join failed'
               : process.env.FAILED_UPLOAD === 'true' ? 'the Vault login or the upload to R2 failed'
               : 'the workflow stopped before the upload';
-            const body = OK === 'true'
+            const body = OK !== 'true'
+              ? `${MARKER}\n:x: **Hot-test stand** for ${SHA} was not published: ${reason} ([run](${run})).`
+              : ROUTE_UP === 'true'
               ? `${MARKER}\n:white_check_mark: **Hot-test stand**: ${URL} — ${SHA} ([run](${run}))\n\n\`${MCF}\` from this PR on top of the released admin of the test tenant; the stand is removed when the PR closes.`
-              : `${MARKER}\n:x: **Hot-test stand** for ${SHA} was not published: ${reason} ([run](${run})).`;
+              : `${MARKER}\n:warning: **Hot-test stand** ${URL} — ${SHA}: the static is published, but the stand route did not come up in ${minutes} min ([run](${run})). Most likely \`${MCF}\` is not registered in fluxcd for hot-test stands — see https://github.com/maestra-io/fluxcd/blob/main/base/microfrontend/README.md. Flux creates the route within ~3 min after registration; re-run the job or push a commit to re-check.`;
             fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, body.replace(MARKER, '### hot-test stand') + '\n');
             const { owner, repo } = context.repo;
             const issue_number = Number(process.env.PR);
