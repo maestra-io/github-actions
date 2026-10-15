@@ -208,10 +208,39 @@ RUN $S dotnet restore --packages \$PackagesPath
 # from the image (without them it silently runs zero tests): copied out of the mount
 # only the <id>/<version> folders of the stage's obj/project.assets.json, not the whole mount
 cp_tpl=$(cat <<'T'
-RUN --mount=type=cache,id=nuget,target=/tmp/nuget-cache,sharing=locked set -e; find / \( -path /proc -o -path /sys -o -path /tmp/nuget-cache -o -path /usr/share/dotnet -o -path @D@ \) -prune -o -path '*/obj/project.assets.json' -print > /tmp/nuget-assets; [ -s /tmp/nuget-assets ] || { echo 'no obj/project.assets.json: no NuGet packages to copy' >&2; exit 1; }; while read -r f; do grep -q '"@D@/"' "$f" || { echo "$f restores outside @D@" >&2; exit 1; }; done < /tmp/nuget-assets; while read -r f; do sed -n 's|^ *"path": "\([^"/]*/[^"/]*\)",*$|\1|p' "$f"; done < /tmp/nuget-assets | sed '/proj$/d' | sort -u > /tmp/nuget-pkgs; while read -r p; do test -d "/tmp/nuget-cache/$p" || { echo "$p is not in the NuGet cache mount" >&2; exit 1; }; mkdir -p "@D@/$p"; cp -a "/tmp/nuget-cache/$p/." "@D@/$p/"; done < /tmp/nuget-pkgs; echo "copied $(wc -l < /tmp/nuget-pkgs) NuGet packages into @D@"; rm /tmp/nuget-assets /tmp/nuget-pkgs
+RUN --mount=type=cache,id=nuget,target=/tmp/nuget-cache,sharing=locked set -e; find / \( -path /proc -o -path /sys -o -path /tmp/nuget-cache -o -path /usr/share/dotnet -o -path @D@ \) -prune -o -path '*/obj/project.assets.json' -print > /tmp/nuget-assets; [ -s /tmp/nuget-assets ] || { echo 'no obj/project.assets.json: no NuGet packages to copy' >&2; exit 1; }; while read -r f; do grep -q '"@D@/"' "$f" || { echo "$f restores outside @D@" >&2; exit 1; }; done < /tmp/nuget-assets; while read -r f; do sed -n '/^ *"type": "package"/,/^ *"path": /s|^ *"path": "\([^"]*\)",*$|\1|p' "$f"; done < /tmp/nuget-assets | sort -u > /tmp/nuget-pkgs; while read -r p; do test -d "/tmp/nuget-cache/$p" || { echo "$p is not in the NuGet cache mount" >&2; exit 1; }; mkdir -p "@D@/$p"; cp -a "/tmp/nuget-cache/$p/." "@D@/$p/"; done < /tmp/nuget-pkgs; echo "copied $(wc -l < /tmp/nuget-pkgs) NuGet packages into @D@"; rm /tmp/nuget-assets /tmp/nuget-pkgs
 T
 )
 cp_run() { printf '%s' "${cp_tpl//@D@/$1}"; }
+# its package list: "type": "package" libraries only (a version may end in "proj"),
+# also with "serviceable" between type and path; project references are skipped
+sedexpr=${cp_tpl#*sed -n \'}; sedexpr=${sedexpr%%\' \"\$f\"*}
+cat > "$work/project.assets.json" <<'J'
+{
+  "libraries": {
+    "Example/1.0.0-proj": {
+      "sha512": "x",
+      "type": "package",
+      "path": "example/1.0.0-proj",
+      "files": [ "example.nuspec" ]
+    },
+    "Microsoft.Extensions.Logging/9.0.0": {
+      "sha512": "x",
+      "type": "package",
+      "serviceable": true,
+      "path": "microsoft.extensions.logging/9.0.0",
+      "files": [ "lib/net9.0/Microsoft.Extensions.Logging.dll" ]
+    },
+    "Lib/1.0.0": {
+      "type": "project",
+      "path": "../Lib/Lib.csproj",
+      "msbuildProject": "../Lib/Lib.csproj"
+    }
+  },
+  "packageFolders": { "/root/.nuget/packages/": {} }
+}
+J
+eq "$(sed -n "$sedexpr" "$work/project.assets.json" | sort -u | paste -sd' ' -)" "example/1.0.0-proj microsoft.extensions.logging/9.0.0" "runtime copy: package list from project.assets.json"
 cachecase runtime-test "FROM sdk AS build
 WORKDIR /sln
 RUN $S dotnet restore

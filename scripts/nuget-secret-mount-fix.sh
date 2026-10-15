@@ -63,16 +63,16 @@ MOUNT = re.compile(r'--mount=(\S+)')
 VAR = re.compile(r'\$(?:\{(\w+)\}|(\w+))')
 FLAG = re.compile(r'^--\S+\s*')
 COPY_CACHE = '--mount=type=cache,id=nuget,target=/tmp/nuget-cache,sharing=locked'
-# Copies only the packages of this stage's obj/project.assets.json files (their "path":
-# <id>/<version>, lowercase), not the whole mount (every version the disk ever restored);
+# Copies only the packages of this stage's obj/project.assets.json files (the "path",
+# <id>/<version> lowercase, of each "type": "package" library), not the whole mount (every version the disk ever restored);
 # fails when there is no assets file, one restored elsewhere, or a package is missing.
 COPY_RUN = ('RUN ' + COPY_CACHE + " set -e; find / \\( -path /proc -o -path /sys -o -path /tmp/nuget-cache"
             " -o -path /usr/share/dotnet -o -path @D@ \\) -prune -o -path '*/obj/project.assets.json' -print"
             " > /tmp/nuget-assets; [ -s /tmp/nuget-assets ] || { echo 'no obj/project.assets.json: no NuGet"
             " packages to copy' >&2; exit 1; }; while read -r f; do grep -q '\"@D@/\"' \"$f\" || { echo"
             " \"$f restores outside @D@\" >&2; exit 1; }; done < /tmp/nuget-assets; while read -r f; do"
-            " sed -n 's|^ *\"path\": \"\\([^\"/]*/[^\"/]*\\)\",*$|\\1|p' \"$f\"; done < /tmp/nuget-assets"
-            " | sed '/proj$/d' | sort -u > /tmp/nuget-pkgs; while read -r p; do test -d \"/tmp/nuget-cache/$p\""
+            " sed -n '/^ *\"type\": \"package\"/,/^ *\"path\": /s|^ *\"path\": \"\\([^\"]*\\)\",*$|\\1|p' \"$f\";"
+            " done < /tmp/nuget-assets | sort -u > /tmp/nuget-pkgs; while read -r p; do test -d \"/tmp/nuget-cache/$p\""
             " || { echo \"$p is not in the NuGet cache mount\" >&2; exit 1; }; mkdir -p \"@D@/$p\";"
             " cp -a \"/tmp/nuget-cache/$p/.\" \"@D@/$p/\"; done < /tmp/nuget-pkgs;"
             " echo \"copied $(wc -l < /tmp/nuget-pkgs) NuGet packages into @D@\"; rm /tmp/nuget-assets /tmp/nuget-pkgs")
