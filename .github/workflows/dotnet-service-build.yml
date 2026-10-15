@@ -148,7 +148,8 @@
 #       --mount=type=cache,id=nuget,target=/root/.nuget/packages,sharing=locked \
 #       dotnet publish src/Svc/Svc.csproj -c Release -r linux-x64 -o /dist --no-restore
 # (`private` = the nuget.config source key; target = where the RUN puts packages:
-# `--packages <dir>` against WORKDIR, else NUGET_PACKAGES, else /root/.nuget/packages).
+# `--packages <dir>` against WORKDIR or `-p:RestorePackagesPath=`, else a project file's
+# <RestorePackagesPath>, else NUGET_PACKAGES, else /root/.nuget/packages).
 # `COPY . .` before restore invalidates the restore layer on every commit and each leg
 # re-downloaded every package (0.3-0.9 GB; nora ~270 GB / 48 h); the cache mount lives
 # in the BuildKit state on the sticky disk, so only the delta is fetched (DirectCRM

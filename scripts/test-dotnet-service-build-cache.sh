@@ -79,16 +79,17 @@ eq "$("$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.nofeed")" "unchanged: 
 # NuGet cache mount: <name> <Dockerfile> <expected> ('' = untouched, a `fix by hand` line)
 S='--mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private'
 cm() { printf -- '--mount=type=cache,id=nuget,target=%s,sharing=locked' "$1"; }
+mkdir -p "$work/ctx-cm"  # the build context the script reads project files from
 cachecase() {  # a literal \r in <Dockerfile>/<expected> is a CR
   set -- "$1" "${2//\\r/$'\r'}" "${3//\\r/$'\r'}"
   printf '%s' "$2" > "$work/Dockerfile.cm"; cp "$work/Dockerfile.cm" "$work/Dockerfile.cm.orig"
-  out=$("$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.cm")
+  out=$(cd "$work/ctx-cm" && "$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.cm")
   if [ -z "$3" ]; then
     grep -q 'fix by hand' <<<"$out" || { echo "$out"; echo "FAIL cache mount $1: not reported"; exit 1; }
     cmp -s "$work/Dockerfile.cm" "$work/Dockerfile.cm.orig" || { cat "$work/Dockerfile.cm"; echo "FAIL cache mount $1: changed"; exit 1; }
   else
     eq "$(cat "$work/Dockerfile.cm")" "$3" "cache mount $1"
-    eq "$("$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.cm")" "unchanged: $work/Dockerfile.cm" "cache mount $1: idempotent"
+    eq "$(cd "$work/ctx-cm" && "$here/nuget-secret-mount-fix.sh" "$work/Dockerfile.cm")" "unchanged: $work/Dockerfile.cm" "cache mount $1: idempotent"
   fi
 }
 # converted earlier (api-mimic): secret mounts only, the publish stage inherits the folder
@@ -142,6 +143,55 @@ COPY . .
 RUN $S $(cm /sln/.nuget) dotnet build \"M.sln\" -c Release --no-restore
 FROM build AS publish
 RUN $S $(cm /sln/.nuget) dotnet publish src/A/A.csproj -c Release -o /dist --no-restore"
+# kraken: publish restores into -p:RestorePackagesPath (CLI property wins like --packages)
+cachecase restore-packages-path "FROM sdk AS build
+ARG P=/nuget
+RUN $S dotnet publish src/A/A.csproj -c Release -p:RestorePackagesPath=/sln/.nuget -o /dist
+FROM sdk AS b
+ARG P=/nuget
+RUN $S dotnet restore /p:Foo=1;RestorePackagesPath=\$P
+RUN $S dotnet build --no-restore
+" "FROM sdk AS build
+ARG P=/nuget
+RUN $S $(cm /sln/.nuget) dotnet publish src/A/A.csproj -c Release -p:RestorePackagesPath=/sln/.nuget -o /dist
+FROM sdk AS b
+ARG P=/nuget
+RUN $S $(cm /nuget) dotnet restore /p:Foo=1;RestorePackagesPath=\$P
+RUN $S $(cm /nuget) dotnet build --no-restore"
+cachecase restore-packages-path-relative "FROM sdk
+WORKDIR /sln
+RUN $S dotnet restore --property:RestorePackagesPath=.nuget
+" ""
+cachecase two-packages-paths "FROM sdk
+RUN $S dotnet restore --packages /a -p:RestorePackagesPath=/b
+" ""
+# <RestorePackagesPath> in a project file of the build context
+printf '<Project><PropertyGroup><RestorePackagesPath>/sln/packages</RestorePackagesPath></PropertyGroup></Project>\n' > "$work/ctx-cm/Directory.Build.props"
+cachecase props-literal "FROM sdk
+RUN $S dotnet restore
+RUN $S dotnet build --no-restore
+" "FROM sdk
+RUN $S $(cm /sln/packages) dotnet restore
+RUN $S $(cm /sln/packages) dotnet build --no-restore"
+cachecase props-cli-wins "FROM sdk
+RUN $S dotnet restore --packages /p
+" "FROM sdk
+RUN $S $(cm /p) dotnet restore --packages /p"
+printf '<Project><PropertyGroup><RestorePackagesPath>$(MSBuildThisFileDirectory)packages</RestorePackagesPath></PropertyGroup></Project>\n' > "$work/ctx-cm/Directory.Build.props"
+cachecase props-msbuild-property "FROM sdk
+RUN $S dotnet restore
+" ""
+mkdir -p "$work/ctx-cm/src/A"; printf '<Project><!-- <NUGET_PACKAGES>/x</NUGET_PACKAGES> --></Project>\n' > "$work/ctx-cm/src/A/A.csproj"
+rm "$work/ctx-cm/Directory.Build.props"
+cachecase props-commented-out "FROM sdk
+RUN $S dotnet restore
+" "FROM sdk
+RUN $S $(cm /root/.nuget/packages) dotnet restore"
+printf '<Project><PropertyGroup Condition="x"><NUGET_PACKAGES>/x</NUGET_PACKAGES></PropertyGroup></Project>\n' > "$work/ctx-cm/src/A/A.csproj"
+cachecase props-conditional "FROM sdk
+RUN $S dotnet restore
+" ""
+rm -r "$work/ctx-cm/src"
 cachecase non-root-user "FROM sdk
 USER app
 RUN $S dotnet restore

@@ -18,9 +18,12 @@
 # Every such RUN also gets the NuGet packages folder as a BuildKit cache mount (sticky
 # disk: a restore layer invalidated by `COPY . .` fetches only the delta, DirectCRM PR 31):
 #   RUN --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_private --mount=type=cache,id=nuget,target=/root/.nuget/packages,sharing=locked dotnet restore
-# target = the RUN's `--packages <dir>` (ARG/ENV defaults resolved, relative to WORKDIR;
-# a --no-restore RUN reads the folder the last restore of its stage used), else
-# NUGET_PACKAGES, else $HOME/.nuget/packages. Packages in the mount never reach a layer,
+# target = the RUN's `--packages <dir>` (ARG/ENV defaults resolved, relative to WORKDIR)
+# or `-p:RestorePackagesPath=<dir>` (absolute only: NuGet resolves it against the
+# project); a --no-restore RUN reads the folder the last restore of its stage used;
+# else a literal absolute <RestorePackagesPath>/<NUGET_PACKAGES> in a *.props/*.targets/
+# *.csproj under the current directory (run the script from the build context root),
+# else ENV NUGET_PACKAGES, else $HOME/.nuget/packages. Packages in the mount never reach a layer,
 # so it is all or nothing per stage family (FROM <stage> chains): it is left out and
 # reported (fix by hand) when a family has a non-root USER, an unresolvable path, a
 # mount of its own on that folder, or a RUN without the mount / a COPY --from that
@@ -43,7 +46,7 @@ fi
 [ "${#files[@]}" -gt 0 ] || exit 0
 
 python3 -I - "${files[@]}" <<'PY'
-import json, posixpath, re, shlex, sys
+import json, os, posixpath, re, shlex, sys
 
 CRED = re.compile(r'^dotnet\s+nuget\s+update\s+source\s+([A-Za-z0-9_.-]+)\s.*--password\b', re.S)
 MOUNTED = re.compile(r'id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_([A-Za-z0-9_]+)')
@@ -52,6 +55,8 @@ DOTNET = re.compile(r'\bdotnet["\',\s]+(restore|build|publish|test|pack|msbuild|
 RESTORES = re.compile(r'\bdotnet["\',\s]+(restore|build|publish|test|pack|run)\b')  # rewrites obj/project.assets.json
 NOREST = re.compile(r'--no-(restore|build)\b')
 PKG = re.compile(r'--packages(?:=|\s+)("[^"]*"|\'[^\']*\'|\S+)')
+# -p:/-property:/--property: RestorePackagesPath, also inside a `;` property list
+RPP = re.compile(r'(?:--?|/)p(?:roperty)?:(?:[^\s=;]+=[^\s;]*;)*(?i:RestorePackagesPath)=("[^"]*"|\'[^\']*\'|[^\s;]+)')
 MOUNT = re.compile(r'--mount=(\S+)')
 VAR = re.compile(r'\$(?:\{(\w+)\}|(\w+))')
 FLAG = re.compile(r'^--\S+\s*')
@@ -108,23 +113,30 @@ def cache_target(cmd, st):
     if resolve(st.user, {}) not in ('root', '0'):
         return None, f'USER {st.user} is active (a cache mount is root-owned)'
     scope = st.scope()
-    pk = {m.group(1) for m in PKG.finditer(cmd)}
-    if len(pk) > 1:
-        return None, 'several --packages paths in one RUN'
-    if pk:
-        raw = pk.pop(); p = resolve(raw, scope)
-        if p is None or p.startswith('~'):
-            return None, f'--packages {raw} cannot be resolved from an ARG/ENV default'
-        if not p.startswith('/'):
-            if not st.wd:
-                return None, f'--packages {raw} is relative to an unresolved WORKDIR'
-            p = posixpath.join(st.wd, p)
-        st.pkgdir = posixpath.normpath(p)
+    found = {}  # resolved path -> flag text
+    for rx, flag in ((PKG, '--packages'), (RPP, '-p:RestorePackagesPath=')):
+        for m in rx.finditer(cmd):
+            raw = m.group(1); p = resolve(raw, scope)
+            if p is None or p.startswith('~'):
+                return None, f'{flag}{raw} cannot be resolved from an ARG/ENV default'
+            if not p.startswith('/'):
+                if rx is RPP:  # NuGet resolves it against the project's directory
+                    return None, f'{flag}{raw} is relative to the project directory'
+                if not st.wd:
+                    return None, f'{flag} {raw} is relative to an unresolved WORKDIR'
+                p = posixpath.join(st.wd, p)
+            found[posixpath.normpath(p)] = flag
+    if len(found) > 1:
+        return None, 'several packages paths in one RUN (--packages / RestorePackagesPath)'
+    if found:
+        st.pkgdir = next(iter(found))
         return st.pkgdir, None
     if NOREST.search(cmd) and st.pkgdir:
         return st.pkgdir, None  # reads the folder project.assets.json names
     if RESTORES.search(cmd):
         st.pkgdir = None
+    if PROPS:  # <RestorePackagesPath>/<NUGET_PACKAGES> in a project file of the build context
+        return (PROPS, None) if PROPS.startswith('/') else (None, PROPS)
     if 'NUGET_PACKAGES' in scope:
         p = scope['NUGET_PACKAGES']
         if not p or not p.startswith('/'):
@@ -134,6 +146,33 @@ def cache_target(cmd, st):
     if not home or not home.startswith('/'):
         return None, 'HOME cannot be resolved'
     return posixpath.normpath(home + '/.nuget/packages'), None
+
+def props_packages():
+    """<RestorePackagesPath>/<NUGET_PACKAGES> of the *.props/*.targets/*.csproj under the
+    current directory (the build context): an absolute path, why not (str), or None."""
+    vals = set()
+    for top, dirs, names in os.walk('.'):
+        dirs[:] = [d for d in dirs if d not in ('.git', 'bin', 'obj', 'node_modules')]
+        for n in names:
+            if n.endswith(('.props', '.targets', '.csproj')):
+                try:
+                    x = re.sub(r'<!--.*?-->', '', open(os.path.join(top, n), errors='replace').read(), flags=re.S)
+                except OSError:
+                    continue
+                for m in re.finditer(r'<(?:RestorePackagesPath|NUGET_PACKAGES)(\s[^>]*)?>([^<]*)<', x):
+                    group = re.findall(r'<PropertyGroup\b[^>]*>', x[:m.start()])[-1:]
+                    cond = bool((m.group(1) or '').strip()) or 'Condition' in ''.join(group)
+                    vals.add((os.path.join(top, n)[2:], m.group(2).strip(), cond))
+    if not vals:
+        return None
+    paths = {v for _, v, _ in vals}
+    f = sorted(vals)[0][0]
+    if len(paths) > 1 or any(c for _, _, c in vals):
+        return f'{f}: RestorePackagesPath/NUGET_PACKAGES set several ways or under a Condition'
+    p = paths.pop()
+    if '$' in p or not p.startswith('/'):
+        return f'{f}: RestorePackagesPath/NUGET_PACKAGES {p} is not a literal absolute path'
+    return posixpath.normpath(p)
 
 def mount_targets(text, wd):
     """{target: type} of the --mount flags of a RUN."""
@@ -148,6 +187,7 @@ def mount_targets(text, wd):
 def inside(p, d):
     return p == d or p.startswith(d.rstrip('/') + '/')
 
+PROPS = props_packages()
 for path in sys.argv[1:]:
     lines = open(path, newline='').read().splitlines(keepends=True)  # keep CRLF files CRLF
     drop, names, runs = set(), [], []
