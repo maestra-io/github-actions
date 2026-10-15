@@ -161,7 +161,9 @@ def props_packages():
                     continue
                 for m in re.finditer(r'<(?:RestorePackagesPath|NUGET_PACKAGES)(\s[^>]*)?>([^<]*)<', x):
                     group = re.findall(r'<PropertyGroup\b[^>]*>', x[:m.start()])[-1:]
-                    cond = bool((m.group(1) or '').strip()) or 'Condition' in ''.join(group)
+                    before = x[:m.start()]  # inside <Choose><When Condition=...> counts too
+                    cond = bool((m.group(1) or '').strip()) or 'Condition' in ''.join(group) \
+                        or before.count('<When') > before.count('</When>')
                     vals.add((os.path.join(top, n)[2:], m.group(2).strip(), cond))
     if not vals:
         return None
@@ -270,7 +272,7 @@ for path in sys.argv[1:]:
             d, why = cache_target(cmd, st)
             cands.append([a, b, st, d, why, text]); st.at = b
         else:
-            st.copies |= COPY_CACHE in text
+            st.copies |= COPY_CACHE in text and 'cp -a /tmp/nuget-cache/. ' in text
             later.append((a, 'run', st, text))
     if re.search(r'--password', ''.join(l for i, l in enumerate(lines) if i not in drop)):
         print(f'still writes a password (fix by hand): {path}')

@@ -384,7 +384,7 @@ jobs:
             # mount empty and keep that one (BuildKit 0.33). A match outside a named stage: --no-cache.
             nocachefilter=$(python3 -I - "$DOCKERFILE" "$persists" <<'PY'
           import re, sys
-          pat, hit, named, cur = re.compile(sys.argv[2].replace('[[:space:]]', r'\s'), re.I), [], True, None
+          pat, hit, named, cur, mounts = re.compile(sys.argv[2].replace('[[:space:]]', r'\s'), re.I), [], True, None, set()
           for l in re.sub(r'\\\r?\n', ' ', open(sys.argv[1]).read()).splitlines():
               m = re.match(r'\s*FROM\s+(?:--\S+\s+)*\S+(?:\s+AS\s+(\S+))?', l, re.I)
               if m:
@@ -392,7 +392,10 @@ jobs:
               elif pat.search(l):
                   named = named and bool(cur)
                   hit += [cur] if cur and cur not in hit else []
-          print(','.join(hit) if named else '')
+              if 'type=cache' in l and 'id=nuget' in l:
+                  mounts.add(cur)
+          # a filtered stage would start its NuGet cache mount empty: --no-cache then
+          print(','.join(hit) if named and not mounts & set(hit) else '')
           PY
             )
             [ -n "$nocachefilter" ] && [ "$mountgone" = false ] || { nocache=true; nocachefilter=""; }
@@ -572,7 +575,7 @@ jobs:
             # mount empty and keep that one (BuildKit 0.33). A match outside a named stage: --no-cache.
             nocachefilter=$(python3 -I - "$DOCKERFILE" "$persists" <<'PY'
           import re, sys
-          pat, hit, named, cur = re.compile(sys.argv[2].replace('[[:space:]]', r'\s'), re.I), [], True, None
+          pat, hit, named, cur, mounts = re.compile(sys.argv[2].replace('[[:space:]]', r'\s'), re.I), [], True, None, set()
           for l in re.sub(r'\\\r?\n', ' ', open(sys.argv[1]).read()).splitlines():
               m = re.match(r'\s*FROM\s+(?:--\S+\s+)*\S+(?:\s+AS\s+(\S+))?', l, re.I)
               if m:
@@ -580,7 +583,10 @@ jobs:
               elif pat.search(l):
                   named = named and bool(cur)
                   hit += [cur] if cur and cur not in hit else []
-          print(','.join(hit) if named else '')
+              if 'type=cache' in l and 'id=nuget' in l:
+                  mounts.add(cur)
+          # a filtered stage would start its NuGet cache mount empty: --no-cache then
+          print(','.join(hit) if named and not mounts & set(hit) else '')
           PY
             )
             [ -n "$nocachefilter" ] && [ "$mountgone" = false ] || { nocache=true; nocachefilter=""; }

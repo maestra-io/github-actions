@@ -191,6 +191,10 @@ printf '<Project><PropertyGroup Condition="x"><NUGET_PACKAGES>/x</NUGET_PACKAGES
 cachecase props-conditional "FROM sdk
 RUN $S dotnet restore
 " ""
+printf '<Project><Choose><When Condition="x"><PropertyGroup><RestorePackagesPath>/x</RestorePackagesPath></PropertyGroup></When></Choose></Project>\n' > "$work/ctx-cm/src/A/A.csproj"
+cachecase props-choose-when "FROM sdk
+RUN $S dotnet restore
+" ""
 rm -r "$work/ctx-cm/src"
 cachecase non-root-user "FROM sdk
 USER app
@@ -242,6 +246,18 @@ RUN $S dotnet restore b.csproj --packages /b
 FROM build AS tests
 ENTRYPOINT [\"dotnet\", \"test\", \"--no-build\"]
 " ""
+# a cache mount alone in a runtime stage is no package copy
+cachecase runtime-test-mount-only "FROM sdk AS build
+RUN $S dotnet restore
+FROM build AS tests
+RUN --mount=type=cache,id=nuget,target=/tmp/nuget-cache,sharing=locked ls /tmp/nuget-cache
+ENTRYPOINT [\"dotnet\", \"test\", \"--no-build\"]
+" "FROM sdk AS build
+RUN $S $(cm /root/.nuget/packages) dotnet restore
+FROM build AS tests
+$(cp_run /root/.nuget/packages)
+RUN --mount=type=cache,id=nuget,target=/tmp/nuget-cache,sharing=locked ls /tmp/nuget-cache
+ENTRYPOINT [\"dotnet\", \"test\", \"--no-build\"]"
 cachecase copy-from-packages "FROM sdk AS build
 WORKDIR /sln
 RUN $S dotnet restore --packages .nuget
@@ -284,6 +300,9 @@ DU_NUGET=1 STICKY=true cache_for "$work/Dockerfile.pushhub" img >/dev/null
 eq "$(sed -n 's/^nocache=//p;s/^nocachefilter=/filter=/p' "$work/out" | paste -sd' ' -)" "false filter=pdbuild" "sticky disk, token stage + NuGet cache mount elsewhere (PushHub)"
 STICKY=true cache_for "$work/Dockerfile.pushhub" img >/dev/null
 eq "$(sed -n 's/^nocache=//p;s/^nocachefilter=/filter=/p' "$work/out" | paste -sd' ' -)" "true filter=" "sticky disk, token stage + NuGet cache mount GC'd: --no-cache once"
+printf 'FROM sdk AS build\nRUN dotnet nuget update source p --password x\nRUN %s dotnet restore\n' "$nc" > "$work/Dockerfile.tokmount"
+DU_NUGET=1 STICKY=true cache_for "$work/Dockerfile.tokmount" img >/dev/null
+eq "$(sed -n 's/^nocache=//p;s/^nocachefilter=/filter=/p' "$work/out" | paste -sd' ' -)" "true filter=" "sticky disk, token stage with its own NuGet cache mount: --no-cache"
 for unnamed in 'FROM sdk\nRUN dotnet nuget update source p --password x\n' 'ARG NPM_TOKEN\nFROM node AS app\n'; do
   printf "$unnamed" > "$work/Dockerfile.unnamed"
   STICKY=true cache_for "$work/Dockerfile.unnamed" img >/dev/null
