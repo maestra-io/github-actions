@@ -2,7 +2,7 @@
 #
 # Self-check for hot-test-publish.yml: the stand names (host, bucket folder, mcf
 # defaults, the inputs the ResourceSet template also rejects), the manifest
-# override (publicPath forced, getPublicPath dropped) and the route wait (200 is
+# override (publicPath forced to the stand root, getPublicPath dropped) and the route wait (200 is
 # up, anything else until the timeout is not). Runs the inline blocks of the
 # reusable workflow itself.
 set -euo pipefail
@@ -39,12 +39,12 @@ manifest_prog=$(sed -n '/# >>> manifest/,/# <<< manifest/p' "$wf" | sed 's/^    
 [ -n "$manifest_prog" ] || { echo "manifest block not found in $wf"; exit 1; }
 site="$root/site"; overrides="$root/overrides/manifests"; mkdir -p "$site/v2_static/frontend_homepage" "$overrides"
 cat > "$site/v2_static/frontend_homepage/mf-manifest.json" <<'JSON'
-{"id":"frontend_homepage","name":"frontend_homepage","metaData":{"name":"frontend_homepage","publicPath":null,"getPublicPath":"function() { return window.externalPublicPath || \"/\" }","remoteEntry":{"name":"remoteEntry.js","path":"","type":"global"}},"shared":[],"remotes":[],"exposes":[]}
+{"id":"frontend_homepage","name":"frontend_homepage","metaData":{"name":"frontend_homepage","publicPath":null,"getPublicPath":"function() { return window.externalPublicPath || \"/\" }","remoteEntry":{"name":"v2_static/frontend_homepage/js/remoteEntry.js","path":"","type":"global"}},"shared":[],"remotes":[],"exposes":[]}
 JSON
 HOT_TEST_URL=https://hot-test-frontend-homepage-pr-12.testing-env.omicron.maestra.io MCF=frontend_homepage \
   site="$site" overrides="$overrides" bash -c "set -eo pipefail; $manifest_prog"
 eq "$(jq -c '.metaData | {publicPath, getPublicPath, remoteEntry: .remoteEntry.name}' "$overrides/mf-manifest.json")" \
-  '{"publicPath":"https://hot-test-frontend-homepage-pr-12.testing-env.omicron.maestra.io/v2_static/frontend_homepage/","getPublicPath":null,"remoteEntry":"remoteEntry.js"}' "override manifest"
+  '{"publicPath":"https://hot-test-frontend-homepage-pr-12.testing-env.omicron.maestra.io/","getPublicPath":null,"remoteEntry":"v2_static/frontend_homepage/js/remoteEntry.js"}' "override manifest"
 eq "$(jq -c '{id, shared, remotes, exposes}' "$overrides/mf-manifest.json")" '{"id":"frontend_homepage","shared":[],"remotes":[],"exposes":[]}' "rest of the manifest kept"
 echo "hot-test-publish manifest: ok"
 
