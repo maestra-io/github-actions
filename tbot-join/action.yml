@@ -5,8 +5,8 @@ description: >-
   attempts, 5/15/30 s apart, 45 s each) and failing at once on configuration
   errors. Needs tbot on PATH (teleport-actions/setup) and `id-token: write` for
   join_method github. The composite actions of this repo run tbot-join.sh
-  directly from their own ref; this wrapper is for the reusable workflows,
-  which run in the caller's checkout.
+  directly from their own ref; this wrapper is for workflows (reusable ones
+  run in the caller's checkout and cannot reach the script by path).
 
 inputs:
   config:
@@ -16,7 +16,7 @@ inputs:
     description: "Newline-separated output files that must exist and be non-empty for the join to count."
     required: true
   label:
-    description: "What is joining, for messages (e.g. `token github-actions-kargo-refresh`)."
+    description: "What is joining, for messages (e.g. `token image-push-github-actions-maestra-io`)."
     required: false
     default: ""
   hint:

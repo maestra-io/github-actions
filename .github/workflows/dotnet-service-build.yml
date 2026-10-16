@@ -3,8 +3,13 @@
 # + create-release-number + docker-push-to-all + maestra-bake-oci-manifests +
 # create-gitlab-release), issues-maestra#1442 wave W0c.
 #
-#   version ─► test ─► images (matrix) ─► release ─► bake ─► kargo-refresh
+#   version ─► test ─► images (matrix) ─► release ─► bake
 #   pull_request: version ─► test, checks (pr-checks.yml) ─► pr-gate (the required check)
+#
+# Warehouse refresh: no job here. The GitHub org webhook (workflow_run completed)
+# refreshes every Kargo Warehouse labelled maestra.io/source-repo=<lower-case repo name>
+# (fluxcd iota/us-iota-lw-kube-infra/kargo/webhook-receivers.yaml); Warehouses still
+# poll ECR every 5 min as the fallback.
 #
 # Job names are a contract (required checks, `needs:` in callers): keep them.
 #
@@ -74,30 +79,24 @@
 #   pr-images           Build the images on pull_request too (default false: a PR runs
 #                       tests only; a broken Dockerfile surfaces in the release on the
 #                       default branch, before anything is pushed).
-#   push                Push images and run release/bake/kargo-refresh (default
+#   push                Push images and run release/bake (default
 #                       true). Never on pull_request. false = build-only dry run.
 #   bake                Bake kustomization/ into <service>-manifests:<release> (default false).
-#   service             Service name for bake and Kargo. Default: repository name.
+#   service             Service name for bake (<service>-manifests). Default: repository name.
 #   bake-path           Passed to bake-oci-manifests (default ./kustomization).
 #   bakes               One repo, several warehouses (GitLab: several
 #                       maestra-bake-oci-manifests jobs). One bake per line:
 #                       `<service> <bake-path> [<image>,<image>...]`; images default
 #                       to all of image-targets and must be among them. Each line
 #                       bakes <service>-manifests:<release> (job `bakes`, one leg
-#                       per line, instead of `bake`) and kargo-refresh refreshes
-#                       every kargo-<service>/<service>. Set = service, bake-path,
-#                       kargo-project and kargo-warehouse are ignored.
-#   kargo-refresh       Refresh the Kargo Warehouse after bake (default true; only with bake).
-#   kargo-project       Kargo project. Default kargo-<service>.
-#   kargo-warehouse     Warehouse to refresh. Default <service>.
+#                       per line, instead of `bake`). Set = service and bake-path
+#                       are ignored.
 #   teleport-token      Teleport GitHub join token of the image-push bot, for the
 #                       image push and the bake. Default: the org-wide
 #                       image-push-github-actions-maestra-io (fluxcd
 #                       teleport-maestra/operator-crs/image-push-tokens.yaml: any
 #                       maestra-io repository, refs/heads/main|master only).
 #                       Empty = the per-repo image-push-github-actions-<repo name>.
-#   kargo-teleport-token  Join token of the kargo-refresh bot
-#                       (default kargo-refresh-github-actions-maestra-io).
 #   nuget-source-name   nuget.config source the packages token is set on (default private).
 #   packages-url        Package registry (default https://packages.maestra.io, nora).
 #   packages-audience   `aud` of the GitHub OIDC token nora accepts (default packages.maestra.io).
@@ -246,21 +245,9 @@ on:
       bakes:
         type: string
         default: ""
-      kargo-refresh:
-        type: boolean
-        default: true
-      kargo-project:
-        type: string
-        default: ""
-      kargo-warehouse:
-        type: string
-        default: ""
       teleport-token:
         type: string
         default: image-push-github-actions-maestra-io
-      kargo-teleport-token:
-        type: string
-        default: kargo-refresh-github-actions-maestra-io
       nuget-source-name:
         type: string
         default: private
@@ -292,7 +279,6 @@ permissions:
 
 env:
   ECR_REGISTRY: 515260921971.dkr.ecr.us-west-2.amazonaws.com
-  TELEPORT_FQDN: teleport.maestra.io:443
 
 jobs:
   version:
@@ -303,7 +289,6 @@ jobs:
       matrix: ${{ steps.v.outputs.matrix }}
       images: ${{ steps.v.outputs.images }}
       service: ${{ steps.v.outputs.service }}
-      bakes: ${{ steps.v.outputs.bakes }}
       bake-matrix: ${{ steps.v.outputs.bake-matrix }}
       multi-bake: ${{ steps.v.outputs.multi-bake }}
       base-name: ${{ steps.v.outputs.base-name }}
@@ -323,8 +308,6 @@ jobs:
           BAKE_PATH: ${{ inputs.bake-path }}
           BAKES: ${{ inputs.bakes }}
           BASE_IMAGE: ${{ inputs.base-image }}
-          KARGO_PROJECT: ${{ inputs.kargo-project }}
-          KARGO_WAREHOUSE: ${{ inputs.kargo-warehouse }}
           REPO_NAME: ${{ github.event.repository.name }}
           PUSH: ${{ inputs.push && github.event_name != 'pull_request' }}
           TELEPORT_TOKEN: ${{ inputs.teleport-token }}
@@ -350,13 +333,12 @@ jobs:
           fi
           matrix=$(jq -c 'map(del(.fields))' <<<"$matrix")
           images=$(jq -r 'map(.image) | join(",")' <<<"$matrix")
-          # One bake (service, bake-path, Kargo project/warehouse inputs) or one per
-          # `bakes` line: `<service> <bake-path> [images]`.
+          # One bake (service, bake-path inputs) or one per `bakes` line:
+          # `<service> <bake-path> [images]`.
           if [ -n "$(printf '%s' "$BAKES" | tr -d '[:space:]')" ]; then
             bakes=$(printf '%s\n' "$BAKES" | sed 's/#.*//' | grep -v '^[[:space:]]*$' \
               | jq -Rnc --arg all "$images" '[inputs | [splits("[[:space:]]+")] | map(select(. != ""))
-                  | {service: .[0], "bake-path": .[1], images: (.[2] // $all), extra: .[3],
-                     "kargo-project": ("kargo-" + .[0]), "kargo-warehouse": .[0]}]') || bakes='[]'
+                  | {service: .[0], "bake-path": .[1], images: (.[2] // $all), extra: .[3]}]') || bakes='[]'
             if [ "$(jq 'length' <<<"$bakes")" -eq 0 ] \
                || jq -e 'any(.[]; (.service // "") == "" or (.["bake-path"] // "") == "" or .extra != null)' <<<"$bakes" >/dev/null; then
               echo "::error::bakes lines must be '<service> <bake-path> [image,image...]', got '$BAKES'"; exit 1
@@ -373,8 +355,7 @@ jobs:
           else
             svc="${SERVICE:-$REPO_NAME}"
             bakes=$(jq -nc --arg s "$svc" --arg p "$BAKE_PATH" --arg i "$images" \
-              --arg kp "${KARGO_PROJECT:-kargo-$svc}" --arg kw "${KARGO_WAREHOUSE:-$svc}" \
-              '[{service: $s, "bake-path": $p, images: $i, "kargo-project": $kp, "kargo-warehouse": $kw}]')
+              '[{service: $s, "bake-path": $p, images: $i}]')
             multi=false
           fi
           # `<name>=<dockerfile>[:<target>]` -> base image built before each image that
@@ -396,7 +377,6 @@ jobs:
             echo "matrix=$matrix"
             echo "images=$images"
             echo "service=$(jq -r '.[0].service' <<<"$bakes")"
-            echo "bakes=$bakes"
             echo "bake-matrix=$(jq -c 'map({service, "bake-path", images})' <<<"$bakes")"
             echo "multi-bake=$multi"
             echo "base-name=$base_name"
@@ -1205,116 +1185,6 @@ jobs:
           tag: ${{ needs.version.outputs.release }}
           bake-path: ${{ matrix.bake-path }}
           teleport-token: ${{ needs.version.outputs.teleport-token }}
-
-  # Instant freight: POST /v1beta1/projects/<p>/warehouses/<w>/refresh on Kargo
-  # (us-iota-lw-kube-infra) instead of the Warehouse's 5m poll. Reached from the
-  # AWS runner through Teleport, nothing on iota runs for it:
-  #   1. tbot (github join, bot github-actions-kargo-refresh) writes a kubeconfig
-  #      for us-iota-lw-kube-infra and a client certificate for the Teleport app
-  #      `kargo` (kargo.teleport.maestra.io), in one oneshot run;
-  #   2. kubectl mints a 10-minute token of ServiceAccount kargo/kargo-ci-github
-  #      (the bot may do nothing else on the cluster);
-  #   3. curl with the app certificate + that bearer. Kargo checks `get` on the
-  #      Warehouse as kargo-ci-github (fluxcd ClusterRole kargo-ci-github-refresher),
-  #      then applies the annotation with its own client.
-  # Best effort: the bake is done, a failure here only delays freight by <=5m.
-  kargo-refresh:
-    needs: [version, bake, bakes]
-    # One job for every warehouse (`bakes` = several), after all bakes succeeded.
-    if: >-
-      ${{ !cancelled() && inputs.bake && inputs.kargo-refresh && needs.version.outputs.publish == 'true'
-          && (needs.bake.result == 'success' || needs.bakes.result == 'success') }}
-    runs-on: runs-on=${{ github.run_id }}-kargo-refresh/pool=small
-    timeout-minutes: 8
-    continue-on-error: true
-    permissions:
-      contents: read
-      id-token: write # Teleport join
-    steps:
-      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - id: tp-version
-        run: |
-          v=$(curl -sf --retry 5 --retry-all-errors "https://${TELEPORT_FQDN}/webapi/find" | jq -r '.auto_update.tools_version // .server_version')
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-      # Downloads from cdn.teleport.dev; one retry after a pause (5xx flakes).
-      - id: tp-setup
-        continue-on-error: true
-        uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
-        with:
-          version: ${{ steps.tp-version.outputs.version }}
-          proxy: ${{ env.TELEPORT_FQDN }}
-      - if: ${{ steps.tp-setup.outcome == 'failure' }}
-        run: sleep 20
-      - if: ${{ steps.tp-setup.outcome == 'failure' }}
-        uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
-        with:
-          version: ${{ steps.tp-version.outputs.version }}
-          proxy: ${{ env.TELEPORT_FQDN }}
-      - id: tbot-config
-        env:
-          TOKEN_NAME: ${{ inputs.kargo-teleport-token }}
-        run: |
-          out="$(mktemp -d)"
-          cat > "$out/tbot.yaml" <<EOF
-          version: v2
-          proxy_server: ${TELEPORT_FQDN}
-          onboarding:
-            join_method: github
-            token: ${TOKEN_NAME}
-          oneshot: true
-          storage:
-            type: memory
-          services:
-            - type: kubernetes/v2
-              destination:
-                type: directory
-                path: ${out}/kube
-              selectors:
-                - name: us-iota-lw-kube-infra
-            - type: application
-              app_name: kargo
-              destination:
-                type: directory
-                path: ${out}/app
-          EOF
-          mkdir -p "$out/kube" "$out/app"
-          echo "dir=$out" >> "$GITHUB_OUTPUT"
-      # Retries transient Teleport backend / GitHub OIDC failures (fails at once on
-      # configuration errors) and stops tbot once the files land: its heartbeat can
-      # hang minutes after a oneshot run's outputs (see fluxcd setup-flux-ecr).
-      - uses: maestra-io/github-actions/tbot-join@v1
-        with:
-          config: ${{ steps.tbot-config.outputs.dir }}/tbot.yaml
-          require: |
-            ${{ steps.tbot-config.outputs.dir }}/kube/kubeconfig.yaml
-            ${{ steps.tbot-config.outputs.dir }}/app/tlscert
-            ${{ steps.tbot-config.outputs.dir }}/app/key
-          label: token ${{ inputs.kargo-teleport-token }}
-          hint: "is it a github join token that allows this repository, and does the job have id-token: write? Freight appears on the next Warehouse poll."
-          warn-only: true
-      - env:
-          OUT: ${{ steps.tbot-config.outputs.dir }}
-          BAKES: ${{ needs.version.outputs.bakes }}
-        run: |
-          out="$OUT"
-          bearer=$(kubectl --kubeconfig "$out/kube/kubeconfig.yaml" \
-            --context "teleport.maestra.io-us-iota-lw-kube-infra" \
-            -n kargo create token kargo-ci-github --duration 10m)
-          echo "::add-mask::$bearer"
-          failed=0
-          while IFS=$'\t' read -r project warehouse; do
-            http=$(curl -sS -o "$out/resp" -w '%{http_code}' -X POST \
-              --cert "$out/app/tlscert" --key "$out/app/key" \
-              -H "Authorization: Bearer ${bearer}" \
-              "https://kargo.teleport.maestra.io/v1beta1/projects/${project}/warehouses/${warehouse}/refresh") || http=000
-            if [ "$http" = "200" ]; then
-              echo "Kargo warehouse ${project}/${warehouse} refreshed"
-            else
-              echo "::warning::Kargo warehouse ${project}/${warehouse} refresh failed (HTTP ${http}): $(head -c 300 "$out/resp" 2>/dev/null)"
-              failed=1
-            fi
-          done < <(jq -r '.[] | [.["kargo-project"], .["kargo-warehouse"]] | @tsv' <<<"$BAKES")
-          exit "$failed"
 
   # Pull requests only: the shared PR checks (gitleaks on the PR's commits,
   # check-encoding, kustomize build of a changed overlays tree), then one verdict.
