@@ -3,7 +3,7 @@
 # builds this file after scripts/nuget-secret-mount-fix.sh (the pattern callers get).
 # --allow-insecure-connections only because the fake feed is plain HTTP (update source
 # would drop the nuget.config attribute).
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:11.0 AS build
 WORKDIR /sln
 COPY nuget.config App/App.csproj ./
 RUN --mount=type=secret,id=PRIVATE_PACKAGES_TOKEN \
