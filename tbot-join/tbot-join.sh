@@ -6,9 +6,9 @@
 #   - composite actions (push-to-aws-ecr-repository, push-helm-chart-to-aws-ecr,
 #     bake-oci-manifests) run it as ${GITHUB_ACTION_PATH}/../tbot-join/tbot-join.sh,
 #     i.e. from the same ref as the action itself;
-#   - reusable workflows (kargo-refresh in dotnet-service-build / service-build /
-#     mcf-build) run in the caller's checkout, so they reach it through the
-#     composite action next to this file (maestra-io/github-actions/tbot-join).
+#   - workflows (a reusable one runs in the caller's checkout) reach it through
+#     the composite action next to this file (maestra-io/github-actions/tbot-join).
+#     None in this repo uses it since the build workflows dropped kargo-refresh.
 #
 # usage: tbot-join.sh -c <tbot.yaml> -r <file> [-r <file>...] [-l <label>] [-H <hint>] [-w]
 #   -c  tbot config (directory destinations, `storage: memory`, `oneshot: true`)

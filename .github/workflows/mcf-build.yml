@@ -3,8 +3,13 @@
 # (issues-maestra#1571). The static files reach the buckets at promotion, by the
 # upload Job of the MCF's own kustomization/, not from here.
 #
-#   version ─► install ─► codegen ─► checks, test, build ─► image ─► release ─► bake ─► kargo-refresh
+#   version ─► install ─► codegen ─► checks, test, build ─► image ─► release ─► bake
 #                                                                            └─► sourcemaps
+#
+# Warehouse refresh: no job here. The GitHub org webhook (workflow_run completed)
+# refreshes every Kargo Warehouse labelled maestra.io/source-repo=<lower-case repo name>
+# (fluxcd iota/us-iota-lw-kube-infra/kargo/webhook-receivers.yaml); Warehouses still
+# poll ECR every 5 min as the fallback.
 #
 # Usage (caller, on push to the default branch and on pull_request):
 #
@@ -19,17 +24,14 @@
 #   node-version        Exact Node.js version (default 24.19.0, as mcf@3).
 #   test-max-workers    Vitest workers (default 6, as mcf@3).
 #   min-lines-coverage  Lines coverage floor of `test` (default 40, as mcf@3).
-#   push                Push the image and run release/bake/kargo-refresh (default true).
+#   push                Push the image and run release/bake (default true).
 #                       Only from the default branch, never on pull_request.
 #                       false = build-only dry run.
 #   image               ECR repository of the static image. Default: repository name.
-#   service             Service name for bake and Kargo. Default: repository name.
-#   kargo-project       Kargo project. Default kargo-<service>.
-#   kargo-warehouse     Warehouse to refresh. Default <service>.
+#   service             Service name for bake (<service>-manifests). Default: repository name.
 #   auth-jwt-url        auth-jwt the schema token comes from (default the omega one).
 #   auth-jwt-client     Its client (auth-jwt-terraform terraform/omega/clients.tf).
 #   teleport-token      Join token of the image-push bot (default the org-wide one).
-#   kargo-teleport-token  Join token of the kargo-refresh bot.
 #   packages-url        Package registry (default https://packages.maestra.io, nora).
 #   packages-audience   `aud` of the GitHub OIDC token nora accepts.
 # Outputs:
@@ -52,7 +54,7 @@
 #   sourcemaps  the release's source maps -> Datadog US3 (service <mcf>, version <release>,
 #             as mcf@3 upload-source-maps [maestra]); key from the central Vault
 #             (jwt-github role mcf-build-sourcemaps-github-ci). Never fails the release.
-#   bake, kargo-refresh  as in service-build.yml.
+#   bake      as in service-build.yml.
 #
 # Not ported from mcf@3: cyrillic (translation-checker, issues-maestra#1581), e2e,
 # functional tests and the -e2e/-with-deps images (issues-maestra#1573), hot testing
@@ -82,12 +84,6 @@ on:
       service:
         type: string
         default: ""
-      kargo-project:
-        type: string
-        default: ""
-      kargo-warehouse:
-        type: string
-        default: ""
       auth-jwt-url:
         type: string
         default: https://auth-jwt.maestra.io
@@ -97,9 +93,6 @@ on:
       teleport-token:
         type: string
         default: image-push-github-actions-maestra-io
-      kargo-teleport-token:
-        type: string
-        default: kargo-refresh-github-actions-maestra-io
       packages-url:
         type: string
         default: https://packages.maestra.io
@@ -119,7 +112,6 @@ permissions:
 
 env:
   ECR_REGISTRY: 515260921971.dkr.ecr.us-west-2.amazonaws.com
-  TELEPORT_FQDN: teleport.maestra.io:443
   HUSKY: "0"
 
 jobs:
@@ -607,92 +599,6 @@ jobs:
           images: ${{ needs.version.outputs.image }}
           tag: ${{ needs.version.outputs.release }}
           teleport-token: ${{ inputs.teleport-token }}
-
-  # Instant freight instead of the Warehouse's 5m poll; the same Teleport path as
-  # service-build.yml kargo-refresh (see there). Best effort.
-  kargo-refresh:
-    needs: [version, bake]
-    runs-on: runs-on=${{ github.run_id }}-kargo-refresh/pool=small
-    timeout-minutes: 8
-    continue-on-error: true
-    permissions:
-      contents: read
-      id-token: write # Teleport join
-    steps:
-      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - id: tp-version
-        run: |
-          v=$(curl -sf "https://${TELEPORT_FQDN}/webapi/find" | jq -r '.auto_update.tools_version // .server_version')
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-      - uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
-        with:
-          version: ${{ steps.tp-version.outputs.version }}
-          proxy: ${{ env.TELEPORT_FQDN }}
-      - id: tbot-config
-        env:
-          TOKEN_NAME: ${{ inputs.kargo-teleport-token }}
-        run: |
-          out="$(mktemp -d)"
-          cat > "$out/tbot.yaml" <<EOF
-          version: v2
-          proxy_server: ${TELEPORT_FQDN}
-          onboarding:
-            join_method: github
-            token: ${TOKEN_NAME}
-          oneshot: true
-          storage:
-            type: memory
-          services:
-            - type: kubernetes/v2
-              destination:
-                type: directory
-                path: ${out}/kube
-              selectors:
-                - name: us-iota-lw-kube-infra
-            - type: application
-              app_name: kargo
-              destination:
-                type: directory
-                path: ${out}/app
-          EOF
-          mkdir -p "$out/kube" "$out/app"
-          echo "dir=$out" >> "$GITHUB_OUTPUT"
-      # Retries transient Teleport backend / GitHub OIDC failures (fails at once on
-      # configuration errors) and stops tbot once the files land: its heartbeat can
-      # hang minutes after a oneshot run's outputs (see fluxcd setup-flux-ecr).
-      - uses: maestra-io/github-actions/tbot-join@v1
-        with:
-          config: ${{ steps.tbot-config.outputs.dir }}/tbot.yaml
-          require: |
-            ${{ steps.tbot-config.outputs.dir }}/kube/kubeconfig.yaml
-            ${{ steps.tbot-config.outputs.dir }}/app/tlscert
-            ${{ steps.tbot-config.outputs.dir }}/app/key
-          label: token ${{ inputs.kargo-teleport-token }}
-          hint: "is it a github join token that allows this repository, and does the job have id-token: write? Freight appears on the next Warehouse poll."
-          warn-only: true
-      - env:
-          OUT: ${{ steps.tbot-config.outputs.dir }}
-          SERVICE: ${{ needs.version.outputs.service }}
-          PROJECT: ${{ inputs.kargo-project }}
-          WAREHOUSE: ${{ inputs.kargo-warehouse }}
-        run: |
-          out="$OUT"
-          bearer=$(kubectl --kubeconfig "$out/kube/kubeconfig.yaml" \
-            --context "teleport.maestra.io-us-iota-lw-kube-infra" \
-            -n kargo create token kargo-ci-github --duration 10m)
-          echo "::add-mask::$bearer"
-          project="${PROJECT:-kargo-${SERVICE}}"
-          warehouse="${WAREHOUSE:-${SERVICE}}"
-          http=$(curl -sS -o "$out/resp" -w '%{http_code}' -X POST \
-            --cert "$out/app/tlscert" --key "$out/app/key" \
-            -H "Authorization: Bearer ${bearer}" \
-            "https://kargo.teleport.maestra.io/v1beta1/projects/${project}/warehouses/${warehouse}/refresh") || http=000
-          if [ "$http" = "200" ]; then
-            echo "Kargo warehouse ${project}/${warehouse} refreshed"
-          else
-            echo "::warning::Kargo warehouse ${project}/${warehouse} refresh failed (HTTP ${http}): $(head -c 300 "$out/resp" 2>/dev/null)"
-            exit 1
-          fi
 
   # Secret scan of the PR's own commits on every pull request (the GitLab
   # gitleaks-validate MR job), as dotnet-service-build/service-build run it.

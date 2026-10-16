@@ -4,8 +4,13 @@
 # + docker-push-to-all + maestra-bake-oci-manifests + create-gitlab-release, with the
 # repo's own test jobs (issues-maestra#1442 W3, #1568).
 #
-#   version ─► test ─► images (matrix) ─► release ─► bake ─► kargo-refresh
+#   version ─► test ─► images (matrix) ─► release ─► bake
 #   pull_request: version ─► test, checks (pr-checks.yml) ─► pr-gate (the required check)
+#
+# Warehouse refresh: no job here. The GitHub org webhook (workflow_run completed)
+# refreshes every Kargo Warehouse labelled maestra.io/source-repo=<lower-case repo name>
+# (fluxcd iota/us-iota-lw-kube-infra/kargo/webhook-receivers.yaml); Warehouses still
+# poll ECR every 5 min as the fallback.
 #
 # Job names are a contract (required checks, `needs:` in callers): keep them.
 #
@@ -32,7 +37,7 @@
 #                       (GitLab IMAGE_TARGETS_PAIRS). Empty only with `bake: true`:
 #                       a bake-only repo (GitLab `images: ""`, e.g. a kustomize or
 #                       terraform tree with no image of its own) runs version -> test
-#                       -> release -> bake -> kargo-refresh, no `images` job. <image> is the ECR repository,
+#                       -> release -> bake, no `images` job. <image> is the ECR repository,
 #                       <target> the Dockerfile stage; `image=` (or bare `image`)
 #                       builds the Dockerfile's last stage. As in dotnet-service-build:
 #                       `image=<dockerfile>:<target>` builds from another Dockerfile
@@ -67,18 +72,13 @@
 #   pr-images           Build the images on pull_request too (default false: a PR runs
 #                       tests only; a broken Dockerfile surfaces in the release on the
 #                       default branch, before anything is pushed).
-#   push                Push images and run release/bake/kargo-refresh (default
+#   push                Push images and run release/bake (default
 #                       true). Never on pull_request. false = build-only dry run.
 #   bake                Bake kustomization/ into <service>-manifests:<release> (default false).
-#   service             Service name for bake and Kargo. Default: repository name.
+#   service             Service name for bake (<service>-manifests). Default: repository name.
 #   bake-path           Passed to bake-oci-manifests (default ./kustomization).
-#   kargo-refresh       Refresh the Kargo Warehouse after bake (default true; only with bake).
-#   kargo-project       Kargo project. Default kargo-<service>.
-#   kargo-warehouse     Warehouse to refresh. Default <service>.
 #   teleport-token      Teleport GitHub join token of the image-push bot (default the
 #                       org-wide image-push-github-actions-maestra-io; empty = per-repo).
-#   kargo-teleport-token  Join token of the kargo-refresh bot
-#                       (default kargo-refresh-github-actions-maestra-io).
 #   packages-url        Package registry (default https://packages.maestra.io, nora).
 #   packages-audience   `aud` of the GitHub OIDC token nora accepts (default packages.maestra.io).
 #   release-version     Release number set by the caller instead of RELEASE_PREFIX.run_number,
@@ -144,21 +144,9 @@ on:
       bake-path:
         type: string
         default: ./kustomization
-      kargo-refresh:
-        type: boolean
-        default: true
-      kargo-project:
-        type: string
-        default: ""
-      kargo-warehouse:
-        type: string
-        default: ""
       teleport-token:
         type: string
         default: image-push-github-actions-maestra-io
-      kargo-teleport-token:
-        type: string
-        default: kargo-refresh-github-actions-maestra-io
       packages-url:
         type: string
         default: https://packages.maestra.io
@@ -190,7 +178,6 @@ permissions:
 
 env:
   ECR_REGISTRY: 515260921971.dkr.ecr.us-west-2.amazonaws.com
-  TELEPORT_FQDN: teleport.maestra.io:443
 
 jobs:
   version:
@@ -690,103 +677,6 @@ jobs:
           tag: ${{ needs.version.outputs.release }}
           bake-path: ${{ inputs.bake-path }}
           teleport-token: ${{ needs.version.outputs.teleport-token }}
-
-  # Instant freight: POST /v1beta1/projects/<p>/warehouses/<w>/refresh on Kargo
-  # (us-iota-lw-kube-infra) instead of the Warehouse's 5m poll. Reached from the
-  # AWS runner through Teleport, nothing on iota runs for it:
-  #   1. tbot (github join, bot github-actions-kargo-refresh) writes a kubeconfig
-  #      for us-iota-lw-kube-infra and a client certificate for the Teleport app
-  #      `kargo` (kargo.teleport.maestra.io), in one oneshot run;
-  #   2. kubectl mints a 10-minute token of ServiceAccount kargo/kargo-ci-github
-  #      (the bot may do nothing else on the cluster);
-  #   3. curl with the app certificate + that bearer. Kargo checks `get` on the
-  #      Warehouse as kargo-ci-github (fluxcd ClusterRole kargo-ci-github-refresher),
-  #      then applies the annotation with its own client.
-  # Best effort: the bake is done, a failure here only delays freight by <=5m.
-  kargo-refresh:
-    needs: [version, bake]
-    if: ${{ !cancelled() && inputs.bake && inputs.kargo-refresh && needs.version.outputs.publish == 'true' && needs.bake.result == 'success' }}
-    runs-on: runs-on=${{ github.run_id }}-kargo-refresh/pool=small
-    timeout-minutes: 8
-    continue-on-error: true
-    permissions:
-      contents: read
-      id-token: write # Teleport join
-    steps:
-      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - id: tp-version
-        run: |
-          v=$(curl -sf "https://${TELEPORT_FQDN}/webapi/find" | jq -r '.auto_update.tools_version // .server_version')
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-      - uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
-        with:
-          version: ${{ steps.tp-version.outputs.version }}
-          proxy: ${{ env.TELEPORT_FQDN }}
-      - id: tbot-config
-        env:
-          TOKEN_NAME: ${{ inputs.kargo-teleport-token }}
-        run: |
-          out="$(mktemp -d)"
-          cat > "$out/tbot.yaml" <<EOF
-          version: v2
-          proxy_server: ${TELEPORT_FQDN}
-          onboarding:
-            join_method: github
-            token: ${TOKEN_NAME}
-          oneshot: true
-          storage:
-            type: memory
-          services:
-            - type: kubernetes/v2
-              destination:
-                type: directory
-                path: ${out}/kube
-              selectors:
-                - name: us-iota-lw-kube-infra
-            - type: application
-              app_name: kargo
-              destination:
-                type: directory
-                path: ${out}/app
-          EOF
-          mkdir -p "$out/kube" "$out/app"
-          echo "dir=$out" >> "$GITHUB_OUTPUT"
-      # Retries transient Teleport backend / GitHub OIDC failures (fails at once on
-      # configuration errors) and stops tbot once the files land: its heartbeat can
-      # hang minutes after a oneshot run's outputs (see fluxcd setup-flux-ecr).
-      - uses: maestra-io/github-actions/tbot-join@v1
-        with:
-          config: ${{ steps.tbot-config.outputs.dir }}/tbot.yaml
-          require: |
-            ${{ steps.tbot-config.outputs.dir }}/kube/kubeconfig.yaml
-            ${{ steps.tbot-config.outputs.dir }}/app/tlscert
-            ${{ steps.tbot-config.outputs.dir }}/app/key
-          label: token ${{ inputs.kargo-teleport-token }}
-          hint: "is it a github join token that allows this repository, and does the job have id-token: write? Freight appears on the next Warehouse poll."
-          warn-only: true
-      - env:
-          OUT: ${{ steps.tbot-config.outputs.dir }}
-          SERVICE: ${{ needs.version.outputs.service }}
-          PROJECT: ${{ inputs.kargo-project }}
-          WAREHOUSE: ${{ inputs.kargo-warehouse }}
-        run: |
-          out="$OUT"
-          bearer=$(kubectl --kubeconfig "$out/kube/kubeconfig.yaml" \
-            --context "teleport.maestra.io-us-iota-lw-kube-infra" \
-            -n kargo create token kargo-ci-github --duration 10m)
-          echo "::add-mask::$bearer"
-          project="${PROJECT:-kargo-${SERVICE}}"
-          warehouse="${WAREHOUSE:-${SERVICE}}"
-          http=$(curl -sS -o "$out/resp" -w '%{http_code}' -X POST \
-            --cert "$out/app/tlscert" --key "$out/app/key" \
-            -H "Authorization: Bearer ${bearer}" \
-            "https://kargo.teleport.maestra.io/v1beta1/projects/${project}/warehouses/${warehouse}/refresh") || http=000
-          if [ "$http" = "200" ]; then
-            echo "Kargo warehouse ${project}/${warehouse} refreshed"
-          else
-            echo "::warning::Kargo warehouse ${project}/${warehouse} refresh failed (HTTP ${http}): $(head -c 300 "$out/resp" 2>/dev/null)"
-            exit 1
-          fi
 
   # Pull requests only: the shared PR checks (gitleaks on the PR's commits,
   # check-encoding, kustomize build of a changed overlays tree), then one verdict.

@@ -404,14 +404,14 @@ import) comes from the `us-west-2` **registry** policy, which grants it org-wide
 ## Teleport join with retries (`tbot-join`)
 
 Every `tbot` join in this repo (the image-push JWT SVID in `push-to-aws-ecr-repository`,
-`push-helm-chart-to-aws-ecr` and `bake-oci-manifests`, the Kargo refresh credentials in the
-build workflows) goes through [`tbot-join/tbot-join.sh`](tbot-join/tbot-join.sh): up to 4
+`push-helm-chart-to-aws-ecr` and `bake-oci-manifests`) goes through [`tbot-join/tbot-join.sh`](tbot-join/tbot-join.sh): up to 4
 attempts, 5 s / 15 s / 30 s apart, 45 s each (`timeout -k 5 45`), success only when every
 expected output is non-empty. Transient failures (Teleport backend switchover, GitHub's OIDC
 endpoint or discovery timing out, network) are retried; configuration errors (`token expired or
 not found`, `id token claims did not match any allow rules`, `access denied`, a job without
 `id-token: write`) fail at once with that reason. The composite actions call the script from
-their own ref (`${GITHUB_ACTION_PATH}/../tbot-join/tbot-join.sh`); a workflow uses the wrapper:
+their own ref (`${GITHUB_ACTION_PATH}/../tbot-join/tbot-join.sh`); a workflow (none in this repo
+since the build workflows dropped their `kargo-refresh` job) uses the wrapper:
 
 ```yaml
 - uses: maestra-io/github-actions/tbot-join@v1
@@ -452,14 +452,16 @@ top of each file.
 
 | workflow | does | GitLab original |
 | --- | --- | --- |
-| [`dotnet-service-build.yml`](.github/workflows/dotnet-service-build.yml) | `version` → `test` → `images` (matrix) → `release` → `bake` → `kargo-refresh` | dotnet-service-cicd-components release-template, create-release-number, docker-push-to-all, maestra-bake-oci-manifests |
+| [`dotnet-service-build.yml`](.github/workflows/dotnet-service-build.yml) | `version` → `test` → `images` (matrix) → `release` → `bake` | dotnet-service-cicd-components release-template, create-release-number, docker-push-to-all, maestra-bake-oci-manifests |
 | [`service-build.yml`](.github/workflows/service-build.yml) | same jobs as `dotnet-service-build.yml` for any language: `test` runs the repo's `test-command` (optional `python-version` / `node-version`) or a Dockerfile `docker-test-target`; build secrets under the Dockerfile's own ids (`build-secret-ids`) | docker-push-to-all, maestra-bake-oci-manifests, create-release-number, the repo's own GitLab test jobs |
 | [`nuget-package-publish.yml`](.github/workflows/nuget-package-publish.yml) | restore, build, test, pack, `dotnet nuget push` | dotnet-nuget-cicd-components |
 | [`npm-package-publish.yml`](.github/workflows/npm-package-publish.yml) | `npm ci`, lib@3 checks (`checks` input: graphql-codegen, check-types, check-scripts, check-styles, test; `--if-present`, all reported), optional PR coverage comment (`report-coverage`), `npm run release` (semantic-release); RunsOn `pool` input `small` (default) or `build` | frontend-ci-components `templates/lib` |
 | [`python-package-publish.yml`](.github/workflows/python-package-publish.yml) | poetry/uv build, test, `twine upload` | — |
-| [`mcf-build.yml`](.github/workflows/mcf-build.yml) | micro-frontends: `install` (node_modules cached by lockfile hash, `npm ci` only on a miss) → `codegen` (GitHub OIDC → auth-jwt omega JWT) → `checks`, `test`, `build` → `image` (rclone + `v2_static/<mcf>`) → `release` → `bake` → `kargo-refresh`, `sourcemaps` (Datadog US3, key from the central Vault); the bucket upload runs at promotion from the MCF's own `kustomization/` | frontend-ci-components `templates/mcf` (mcf@3) |
+| [`mcf-build.yml`](.github/workflows/mcf-build.yml) | micro-frontends: `install` (node_modules cached by lockfile hash, `npm ci` only on a miss) → `codegen` (GitHub OIDC → auth-jwt omega JWT) → `checks`, `test`, `build` → `image` (rclone + `v2_static/<mcf>`) → `release` → `bake`, `sourcemaps` (Datadog US3, key from the central Vault); the bucket upload runs at promotion from the MCF's own `kustomization/` | frontend-ci-components `templates/mcf` (mcf@3) |
 | [`frontend-codegen.yml`](.github/workflows/frontend-codegen.yml) | one job `codegen` for a frontend with its own pipeline (maestra-io/frontend): restores the `install` job's `node_modules` cache, GitHub OIDC → auth-jwt omega JWT (client `github-frontend-graphql-schema`, bound to this workflow at `@refs/heads/main`) → `npm run graphql-codegen`; artifact `codegen`. The same job as `codegen` in `mcf-build.yml` | frontend-ci-components graphql-codegen |
 | [`helm-chart.yml`](.github/workflows/helm-chart.yml) | PR: `check` (version bump, CHANGELOG, lint, helm-unittest); main: `release` → ECR `helm-charts/<name>` ([`push-helm-chart-to-aws-ecr`](push-helm-chart-to-aws-ecr/action.yml)) | system/components/helm-ci helm-merge-request + helm-release |
+
+Warehouse refresh: GitHub org webhook → Kargo cluster receiver, see fluxcd `iota/us-iota-lw-kube-infra/kargo/webhook-receivers.yaml`; Warehouses still poll every 5 min as fallback.
 
 [`scripts/dockerfile-from-fix.sh`](scripts/dockerfile-from-fix.sh) drops the
 `cr.yandex/crp2cvbrp76d7dmfegco/` mirror prefix from `FROM` lines (idempotent);

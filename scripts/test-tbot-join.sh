@@ -4,7 +4,7 @@
 # failures then success (real 5 s / 15 s backoff, fresh outputs and work dir per
 # attempt), configuration errors (no retry, accurate message), per-attempt
 # timeout (a stub that never exits, one that ignores SIGTERM), a tbot that hangs
-# after writing its outputs (kargo-refresh), all attempts transient, stale outputs.
+# after writing its outputs (heartbeat after a oneshot run), all attempts transient, stale outputs.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 script="${here}/../tbot-join/tbot-join.sh"
@@ -122,7 +122,7 @@ expect timeout "reported as transient timeout, without the config hint" \
 run timeout-ignores-term hang-ignore-term TBOT_JOIN_ATTEMPTS=2 TBOT_JOIN_TIMEOUT=2 TBOT_JOIN_KILL_AFTER=1 TBOT_JOIN_BACKOFF="1"
 expect timeout-ignores-term "SIGKILLed after -k: 2 x (2+1) s + 1 s" test "$rc" -eq 1 -a "$calls" -eq 2 -a "$secs" -ge 7 -a "$secs" -le 11
 
-# 5. tbot hangs after writing (kargo-refresh heartbeat): success without waiting for the timeout
+# 5. tbot hangs after writing (oneshot heartbeat): success without waiting for the timeout
 run hang-after-write hang-after-write TBOT_JOIN_TIMEOUT=30
 expect hang-after-write "exit 0, one call, stopped within the grace, not the 30 s timeout" test "$rc" -eq 0 -a "$calls" -eq 1 -a "$secs" -le 6
 
