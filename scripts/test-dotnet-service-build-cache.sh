@@ -12,7 +12,10 @@
 #      GitLab-era Dockerfile with the cache fails exactly like billing did, without
 #      the cache it passes; after scripts/nuget-secret-mount-fix.sh it passes WITH the
 #      cache (restore layer reused) and no layer holds a token; with its NuGet cache
-#      mount a rebuild fetches no package, an empty mount fetches them with the current token.
+#      mount a rebuild fetches no package, an empty mount fetches them with the current token;
+#   4. nuget-mount-seed/extract (docker, two new builders = two fresh test runners): the
+#      NuGet cache mount copied out of one builder and into the other leaves the second
+#      build nothing to fetch; an empty mount is not saved.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 wf="$here/../.github/workflows/dotnet-service-build.yml"
@@ -35,7 +38,12 @@ same token-files "$wf" 2
 
 work=$(mktemp -d)
 feed=""
-cleanup() { [ -z "$feed" ] || kill "$feed" 2>/dev/null || true; rm -rf "$work"; }
+builders=()
+cleanup() {
+  [ -z "$feed" ] || kill "$feed" 2>/dev/null || true
+  for b in "${builders[@]}"; do docker buildx rm -f "$b" >/dev/null 2>&1 || true; done
+  rm -rf "$work"
+}
 trap cleanup EXIT
 eq() { [ "$1" = "$2" ] || { printf 'FAIL %s\n  got:  %s\n  want: %s\n' "$3" "$1" "$2"; exit 1; }; }
 
@@ -489,5 +497,43 @@ docker buildx build --progress plain --load --add-host host.docker.internal:host
   || { grep -E "^#[0-9]+ [0-9.]+ " "$work/build.log" | tail -20; echo "FAIL build tests stage"; exit 1; }
 eq "$(docker run --rm --entrypoint sh local/selftest-token-cache:tests -c 'cd /root/.nuget/packages && find . -mindepth 2 -maxdepth 2 -type d | sort')" "./selftest.build/1.0.0" "runtime tests stage: only the restored packages copied"
 echo "ok runtime tests stage: copies the packages of obj/project.assets.json, not the whole mount"
+# ── 4. NuGet cache mount on the Magic Cache (test job, docker-test-target) ─────────
+seed=$(block nuget-mount-seed "$wf"); extract=$(block nuget-mount-extract "$wf")
+[ -n "$seed" ] && [ -n "$extract" ] || { echo "nuget-mount-seed/extract block not found in $wf"; exit 1; }
+# Builders of their own (id=nuget as in the workflow, nothing shared with other runs).
+for b in a b c; do
+  builders+=("selftest-nuget-mount-$b-$nonce")
+  docker buildx create --name "selftest-nuget-mount-$b-$nonce" --driver docker-container >/dev/null
+done
+cp "$work/Dockerfile.fixed" "$work/ctx/Dockerfile.mount"
+# The docker-container driver has no host-gateway: the docker daemon resolves it.
+gw=$(docker run --rm --add-host gw:host-gateway mcr.microsoft.com/azurelinux/busybox:1.36 awk '$2=="gw"{print $1; exit}' /etc/hosts)
+mbuild() { # <builder>: a new commit, target publish
+  echo "// $RANDOM$RANDOM" >> "$work/ctx/App/Program.cs"
+  : > "$work/feed.log"
+  docker buildx build --builder "$1" --progress plain --add-host "host.docker.internal:$gw" \
+    --secret "id=NUGET_CREDENTIALS,src=$work/e2e/packages-token/NUGET_CREDENTIALS" \
+    -f "$work/ctx/Dockerfile.mount" --target publish "$work/ctx" >"$work/build.log" 2>&1 \
+    || { grep -E "error|401" "$work/build.log" | tail -20; cat "$work/feed.log"; echo "FAIL build on $1"; exit 1; }
+}
+D="$work/nuget-mount"
+token "$A"; mbuild "${builders[0]}"
+grep -q '^200 .*selftest.publish.1.0.0.nupkg' "$work/feed.log" || { cat "$work/feed.log"; echo "FAIL mount: the first runner did not restore from the feed"; exit 1; }
+: > "$work/out"
+DIR="$D" BUILDER="${builders[0]}" GITHUB_OUTPUT="$work/out" bash -c "set -eo pipefail; $extract" >"$work/build.log" 2>&1 \
+  || { tail -20 "$work/build.log"; echo "FAIL nuget-mount-extract"; exit 1; }
+eq "$(cat "$work/out")" "save=true" "nuget-mount-extract: saves a filled mount"
+eq "$(cd "$D" && find . -mindepth 2 -maxdepth 2 -type d | sort | paste -sd' ' -)" "./selftest.build/1.0.0 ./selftest.publish/1.0.0" "nuget-mount-extract: the mount's packages"
+DIR="$D" BUILDER="${builders[1]}" bash -c "set -eo pipefail; $seed" >"$work/build.log" 2>&1 \
+  || { tail -20 "$work/build.log"; echo "FAIL nuget-mount-seed"; exit 1; }
+token "$B"; mbuild "${builders[1]}"
+if grep -q 'nupkg' "$work/feed.log"; then cat "$work/feed.log"; echo "FAIL mount: the seeded runner fetched a package again"; exit 1; fi
+grep -q 'Restored .*App.csproj' "$work/build.log" || { tail -30 "$work/build.log"; echo "FAIL mount: the seeded runner did not run the restore"; exit 1; }
+: > "$work/out"
+DIR="$work/nuget-mount-empty" BUILDER="${builders[2]}" GITHUB_OUTPUT="$work/out" bash -c "set -eo pipefail; $extract" >"$work/build.log" 2>&1 \
+  || { tail -20 "$work/build.log"; echo "FAIL nuget-mount-extract (empty)"; exit 1; }
+eq "$(cat "$work/out")" "" "nuget-mount-extract: an empty mount is not saved"
+echo "ok NuGet cache mount: copied out of one fresh builder and into another, the restore fetches no package"
+
 docker rmi -f local/selftest-token-cache:gitlab local/selftest-token-cache:fixed local/selftest-token-cache:tests >/dev/null 2>&1 || true
 echo "dotnet-service-build packages token: OK"

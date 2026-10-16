@@ -183,6 +183,7 @@
 # scope); RunsOn Magic Cache stores it in S3. Off for a Dockerfile that writes a token
 # into a layer (see Registry token), and for one with the NuGet cache mount (gha never
 # exports cache mounts; a sticky disk without the mount builds once with --no-cache).
+# The docker-test-target build copies that mount to and from the Magic Cache itself.
 #
 # AWS: a fresh RunsOn instance can lack its instance-role credentials for a few seconds
 # (NoCredentials); `test` and `images` wait up to ~40 s for them before any AWS call.
@@ -486,6 +487,7 @@ jobs:
 
       # ── Dockerfile stage (GitLab .run-docker-test) ───────────────────────
       - if: ${{ inputs.docker-test-target != '' }}
+        id: buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - if: ${{ inputs.docker-test-target != '' }}
         # GitLab Dockerfiles bind-mount the CI NuGet cache dir; it must exist.
@@ -579,6 +581,42 @@ jobs:
           # not masked (no workflow commands after the step): never print a secret in a RUN.
           ( while sleep 60; do t=$(mint) && [ -n "$t" ] && write "$t"; done ) </dev/null >/dev/null 2>&1 &
           # <<< token-files
+      # NuGet cache mount (id=nuget) of the docker-test-target build on the Magic Cache, like
+      # ~/.nuget/packages of the host path below: this runner's builder is new, its mount
+      # starts empty and gha never exports it, so every run re-downloaded every package
+      # (~210 MB per job from nora, 16.10.2026). Restored into the mount before the build,
+      # copied out and saved after it unless the key matched exactly. A cache mount is found
+      # by its id, whatever the Dockerfile's target (/root/.nuget/packages, /sln/.nuget...).
+      - if: ${{ inputs.docker-test-target != '' }}
+        name: nuget cache mount?
+        id: mount
+        env:
+          DOCKERFILE: ${{ inputs.dockerfile }}
+        run: |
+          if grep -Eq -- '--mount=type=cache,[^[:space:]]*id=nuget(,|[[:space:]]|$)' "$DOCKERFILE" 2>/dev/null; then
+            echo "dir=$RUNNER_TEMP/nuget-mount" >> "$GITHUB_OUTPUT"
+          fi
+      - if: ${{ steps.mount.outputs.dir != '' }}
+        id: mount-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/nuget-mount
+          key: nuget-mount-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/*.props', '**/packages.lock.json', '**/nuget.config', 'global.json', inputs.dockerfile) }}
+          restore-keys: nuget-mount-${{ runner.os }}-
+      - if: ${{ steps.mount-cache.outputs.cache-matched-key != '' }}
+        name: nuget cache mount (restore)
+        env:
+          DIR: ${{ runner.temp }}/nuget-mount
+          BUILDER: ${{ steps.buildx.outputs.name }}
+        run: |
+          # >>> nuget-mount-seed (scripts/test-dotnet-service-build-cache.sh runs this block)
+          # STAMP keeps the RUN out of the layer cache. Never --no-cache: it starts every
+          # cache mount empty (header, Registry token).
+          printf 'FROM %s\nARG STAMP\nRUN --mount=type=cache,id=nuget,target=/m,sharing=locked --mount=type=bind,target=/s cp -R /s/. /m/\n' \
+              mcr.microsoft.com/azurelinux/busybox:1.36@sha256:f395e5c5642ddbdfb10e04ef3d4d13610315606719ffcb2255d3182e2a066c33 \
+            | docker buildx build ${BUILDER:+--builder "$BUILDER"} --progress plain --build-arg "STAMP=$(date +%s%N)" -f - "$DIR"
+          echo "NuGet cache mount: restored $(find "$DIR" -mindepth 2 -maxdepth 2 -type d | wc -l) package versions"
+          # <<< nuget-mount-seed
       - if: ${{ inputs.docker-test-target != '' }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -592,6 +630,29 @@ jobs:
             NUGET_CREDENTIALS=${{ runner.temp }}/packages-token/NUGET_CREDENTIALS
           cache-from: ${{ steps.cache.outputs.from }}
           cache-to: ${{ steps.cache.outputs.to }}
+      # Saved before the tests run: a red PR still keeps its packages for the next push.
+      - if: ${{ steps.mount.outputs.dir != '' && steps.mount-cache.outputs.cache-hit != 'true' }}
+        name: nuget cache mount (copy out)
+        id: mount-out
+        env:
+          DIR: ${{ runner.temp }}/nuget-mount
+          BUILDER: ${{ steps.buildx.outputs.name }}
+        run: |
+          # >>> nuget-mount-extract (scripts/test-dotnet-service-build-cache.sh runs this block)
+          rm -rf "$DIR"; mkdir -p "$DIR"
+          printf 'FROM %s AS m\nARG STAMP\nRUN --mount=type=cache,id=nuget,target=/m,sharing=locked mkdir /o && cp -R /m/. /o/\nFROM scratch\nCOPY --from=m /o /\n' \
+              mcr.microsoft.com/azurelinux/busybox:1.36@sha256:f395e5c5642ddbdfb10e04ef3d4d13610315606719ffcb2255d3182e2a066c33 \
+            | docker buildx build ${BUILDER:+--builder "$BUILDER"} --progress plain --build-arg "STAMP=$(date +%s%N)" \
+                --output "type=local,dest=$DIR" -f - "$(mktemp -d)"
+          n=$(find "$DIR" -mindepth 2 -maxdepth 2 -type d | wc -l)
+          echo "NuGet cache mount: $n package versions, $(du -sh "$DIR" | cut -f1)"
+          if [ "$n" -gt 0 ]; then echo "save=true" >> "$GITHUB_OUTPUT"; fi
+          # <<< nuget-mount-extract
+      - if: ${{ steps.mount-out.outputs.save == 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/nuget-mount
+          key: ${{ steps.mount-cache.outputs.cache-primary-key }}
       # No packages token at test time: the .NET SDK workload-manifest check would send an
       # empty Basic credential to the feed and nora locks the runner out (13.10.2026).
       # TRX without touching the stage's CMD (flaky-test telemetry, maestra-io/issues-maestra#1592):
@@ -605,6 +666,19 @@ jobs:
           docker run --rm -e DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=true \
             -v "$RUNNER_TEMP/test-results:/test-results" -e VSTestLogger=trx -e VSTestResultsDirectory=/test-results \
             --env-file "$RUNNER_TEMP/test.env" "local/${TARGET}:latest"
+
+      # NuGet global-packages folder on the Magic Cache (S3 next to the runner): the
+      # host-side restore re-downloaded every package on every job (~35 s in quizzes,
+      # api-mimic, 13.10.2026). Keyed on what decides the package graph; a partial key
+      # still restores the previous folder and only the delta is fetched. Also for a
+      # test-command on the runner in a .NET repo (processing-orders' run-tests.sh: ~500 MB
+      # from nora per job, 16.10.2026). The docker-test-target path has its own above.
+      - if: ${{ inputs.docker-test-target == '' && (inputs.test-command == '' || (inputs.test-image == '' && hashFiles('**/*.csproj') != '')) }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/*.props', '**/packages.lock.json', '**/nuget.config', 'global.json') }}
+          restore-keys: nuget-${{ runner.os }}-
 
       # ── test-command (non-.NET repos) ───────────────────────────────────
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
@@ -649,17 +723,6 @@ jobs:
         with:
           dotnet-version: ${{ steps.sdk.outputs.version }}
           global-json-file: ${{ steps.sdk.outputs.file }}
-      # NuGet global-packages folder on the Magic Cache (S3 next to the runner): the
-      # host-side restore re-downloaded every package on every job (~35 s in quizzes,
-      # api-mimic, 13.10.2026). Keyed on what decides the package graph; a partial key
-      # still restores the previous folder and only the delta is fetched. The docker
-      # paths above keep their restore inside the layer cache instead.
-      - if: ${{ inputs.docker-test-target == '' && inputs.test-command == '' }}
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.nuget/packages
-          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/*.props', '**/packages.lock.json', '**/nuget.config', 'global.json') }}
-          restore-keys: nuget-${{ runner.os }}-
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command == '' }}
         env:
           TOKEN: ${{ steps.token.outputs.token }}
@@ -781,8 +844,10 @@ jobs:
           fi
           { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; echo "nocache=$nocache"; echo "nocachefilter=$nocachefilter"; } >> "$GITHUB_OUTPUT"
           # <<< layer-cache
+      # Only when it exports a gha cache: without one (a NuGet cache mount, a token layer)
+      # this build filled nothing the images legs read and re-downloaded every package.
       - name: base image ${{ needs.version.outputs.base-name }}
-        if: ${{ needs.version.outputs.base-name != '' && (github.event_name != 'pull_request' || inputs.pr-images) }}
+        if: ${{ needs.version.outputs.base-name != '' && (github.event_name != 'pull_request' || inputs.pr-images) && steps.cache-base.outputs.to != '' }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
