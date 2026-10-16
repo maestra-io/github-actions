@@ -57,6 +57,7 @@
 # mcf-build.yml requests read (a request above the caller's grant fails the whole run)
 # and the comment steps warn; the stand URL is always in the step summary. The comment
 # appears once every caller and mcf-build.yml grant pull-requests: write.
+# The PR shows the stand as a deployment of environment hot-test: no token permission, created on first run.
 # Credentials: the Teleport bot's app certificate reaches Vault omicron, whose role
 # hot-test-static-publish issues 10-minute editor keys for this bucket only.
 
@@ -112,6 +113,9 @@ jobs:
   publish:
     runs-on: runs-on=${{ github.run_id }}-hot-test-publish/pool=small
     timeout-minutes: 20
+    environment:
+      name: hot-test
+      url: ${{ steps.names.outputs.url }}
     outputs:
       url: ${{ steps.names.outputs.url }}
     steps:
