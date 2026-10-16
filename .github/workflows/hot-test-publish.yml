@@ -4,10 +4,11 @@
 # PR's static files on top of the released ones; the routes to it are rendered by
 # the frontend-entry-static-builder chart (ResourceSet per open PR, Flux polls GitHub
 # every ~3 min) and vanish when the PR closes. This workflow fills the PR's folder of
-# the hot-test bucket, waits up to 6 min for the stand's /entry/index.html to answer 200 and keeps one
-# status comment on the PR (✅ stand up / ⚠️ published, no route yet / ❌ not published).
+# the hot-test bucket and waits up to 6 min for the stand's /entry/index.html to answer 200.
+# The link is the hot-test deployment in the PR; the step summary carries the status
+# (✅ stand up / ⚠️ published, no route yet / ❌ not published).
 #
-#   mcf-build.yml build ─► hot-test: static artifact ─► entry (builder --single-run) ─► Teleport ─► Vault ─► R2 sync ─► wait for the route ─► PR comment
+#   mcf-build.yml build ─► hot-test: static artifact ─► entry (builder --single-run) ─► Teleport ─► Vault ─► R2 sync ─► wait for the route ─► summary
 #
 # Usage (from a reusable workflow, as mcf-build.yml does, or a repo's own pr.yml):
 #
@@ -52,11 +53,8 @@
 # stand reports nothing.
 #
 # Permissions: none are declared here on purpose; the job runs with what the calling
-# job grants: contents: read, id-token: write (Teleport join) and pull-requests. The PR
-# comment is best-effort: the MCF callers' pr.yml grant pull-requests: read today, so
-# mcf-build.yml requests read (a request above the caller's grant fails the whole run)
-# and the comment steps warn; the stand URL is always in the step summary. The comment
-# appears once every caller and mcf-build.yml grant pull-requests: write.
+# job grants: contents: read and id-token: write (Teleport join). The PR shows the stand
+# as a deployment of environment hot-test: no token permission, created on first run.
 # Credentials: the Teleport bot's app certificate reaches Vault omicron, whose role
 # hot-test-static-publish issues 10-minute editor keys for this bucket only.
 
@@ -112,6 +110,9 @@ jobs:
   publish:
     runs-on: runs-on=${{ github.run_id }}-hot-test-publish/pool=small
     timeout-minutes: 20
+    environment:
+      name: hot-test
+      url: ${{ steps.names.outputs.url }}
     outputs:
       url: ${{ steps.names.outputs.url }}
     steps:
@@ -147,29 +148,6 @@ jobs:
             echo "sha=${HEAD_SHA:0:7}"
           } >> "$GITHUB_OUTPUT"
           echo "stand https://$host, bucket folder $name/, mcf $mcf"
-
-      - name: comment (building)
-        continue-on-error: true
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          PR: ${{ steps.names.outputs.pr }}
-          BODY: |
-            :hourglass_flowing_sand: **Hot-test stand** for ${{ steps.names.outputs.sha }} is building ([run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}))…
-        with:
-          script: |
-            const MARKER = '<!-- hot-test -->';
-            const { owner, repo } = context.repo;
-            const issue_number = Number(process.env.PR);
-            const body = `${MARKER}\n${process.env.BODY}`;
-            try {
-              const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
-              const existing = comments.find(c => c.body && c.body.includes(MARKER));
-              if (existing) await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
-              else await github.rest.issues.createComment({ owner, repo, issue_number, body });
-            } catch (e) {
-              if (e.status !== 403) throw e;
-              core.warning(`no comment on PR #${issue_number}: the calling job needs pull-requests: write (${e.message})`);
-            }
 
       - id: static
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -356,12 +334,9 @@ jobs:
           else echo "::warning::${probe} did not answer 200 within ${timeout}s (last: ${code:-no response})"; fi
           # <<< route
 
-      - name: comment (result)
+      - name: summary
         if: ${{ !cancelled() && steps.names.conclusion == 'success' }}
-        continue-on-error: true
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          PR: ${{ steps.names.outputs.pr }}
           URL: ${{ steps.names.outputs.url }}
           SHA: ${{ steps.names.outputs.sha }}
           MCF: ${{ steps.names.outputs.mcf }}
@@ -372,32 +347,19 @@ jobs:
           FAILED_ENTRY: ${{ steps.entry.outcome == 'failure' }}
           FAILED_TELEPORT: ${{ steps.tp-version.outcome == 'failure' || steps.teleport-setup.outcome == 'failure' || steps.tbot-config.outcome == 'failure' || steps.teleport.outcome == 'failure' }}
           FAILED_UPLOAD: ${{ steps.upload.outcome == 'failure' }}
-        with:
-          script: |
-            const fs = require('fs');
-            const MARKER = '<!-- hot-test -->';
-            const { URL, SHA, MCF, OK, ROUTE_UP, WAITED } = process.env;
-            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const minutes = Math.max(1, Math.round(Number(WAITED || 0) / 60));
-            const reason = process.env.FAILED_STATIC === 'true' ? 'the static artifact is missing or incomplete'
-              : process.env.FAILED_ENTRY === 'true' ? 'the entry build (frontend-entry-static-builder) failed'
-              : process.env.FAILED_TELEPORT === 'true' ? 'the Teleport join failed'
-              : process.env.FAILED_UPLOAD === 'true' ? 'the Vault login or the upload to R2 failed'
-              : 'the workflow stopped before the upload';
-            const body = OK !== 'true'
-              ? `${MARKER}\n:x: **Hot-test stand** for ${SHA} was not published: ${reason} ([run](${run})).`
-              : ROUTE_UP === 'true'
-              ? `${MARKER}\n:white_check_mark: **Hot-test stand**: ${URL} — ${SHA} ([run](${run}))\n\n\`${MCF}\` from this PR on top of the released admin of the test tenant; the stand is removed when the PR closes.`
-              : `${MARKER}\n:warning: **Hot-test stand** ${URL} — ${SHA}: the static is published, but the stand route did not come up in ${minutes} min ([run](${run})). Most likely \`${MCF}\` is not registered in fluxcd for hot-test stands — see https://github.com/maestra-io/fluxcd/blob/main/base/microfrontend/README.md. Flux creates the route within ~3 min after registration; re-run the job or push a commit to re-check.`;
-            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, body.replace(MARKER, '### hot-test stand') + '\n');
-            const { owner, repo } = context.repo;
-            const issue_number = Number(process.env.PR);
-            try {
-              const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
-              const existing = comments.find(c => c.body && c.body.includes(MARKER));
-              if (existing) await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
-              else await github.rest.issues.createComment({ owner, repo, issue_number, body });
-            } catch (e) {
-              if (e.status !== 403) throw e;
-              core.warning(`no comment on PR #${issue_number}: the calling job needs pull-requests: write (${e.message})`);
-            }
+        run: |
+          run="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          minutes=$(( (${WAITED:-0} + 30) / 60 )); [ "$minutes" -ge 1 ] || minutes=1
+          if [ "$FAILED_STATIC" = true ]; then reason='the static artifact is missing or incomplete'
+          elif [ "$FAILED_ENTRY" = true ]; then reason='the entry build (frontend-entry-static-builder) failed'
+          elif [ "$FAILED_TELEPORT" = true ]; then reason='the Teleport join failed'
+          elif [ "$FAILED_UPLOAD" = true ]; then reason='the Vault login or the upload to R2 failed'
+          else reason='the workflow stopped before the upload'; fi
+          if [ "$OK" != true ]; then
+            body=":x: **Hot-test stand** for ${SHA} was not published: ${reason} ([run](${run}))."
+          elif [ "$ROUTE_UP" = true ]; then
+            body=":white_check_mark: **Hot-test stand**: ${URL} — ${SHA} ([run](${run}))"$'\n\n'"\`${MCF}\` from this PR on top of the released admin of the test tenant; the stand is removed when the PR closes."
+          else
+            body=":warning: **Hot-test stand** ${URL} — ${SHA}: the static is published, but the stand route did not come up in ${minutes} min ([run](${run})). Most likely \`${MCF}\` is not registered in fluxcd for hot-test stands — see https://github.com/maestra-io/fluxcd/blob/main/base/microfrontend/README.md. Flux creates the route within ~3 min after registration; re-run the job or push a commit to re-check."
+          fi
+          printf '### hot-test stand\n%s\n' "$body" >> "$GITHUB_STEP_SUMMARY"

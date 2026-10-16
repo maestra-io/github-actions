@@ -17,13 +17,12 @@
 #   jobs:
 #     build:
 #       uses: maestra-io/github-actions/.github/workflows/mcf-build.yml@main
-#       permissions: { contents: write, id-token: write, pull-requests: write }
+#       permissions: { contents: write, id-token: write, pull-requests: read }
 #       with:
 #         push: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
 #
-#   pull-requests: write is for the hot-test stand comment on a PR (read: the hotfix
-#   label); the hot-test job requests it only once every caller grants it — until then
-#   the stand is published and its URL is in the job's step summary.
+#   pull-requests: read is for the hotfix label; the hot-test stand link reaches the PR
+#   as a deployment of environment hot-test.
 #
 # Inputs:
 #   node-version        Exact Node.js version (default 24.19.0, as mcf@3).
@@ -64,8 +63,8 @@
 #             (jwt-github role mcf-build-sourcemaps-github-ci). Never fails the release.
 #   bake      as in service-build.yml.
 #   hot-test  pull_request only, right after `build`: the PR's static files and an
-#             entry built on them go to the hot-test bucket, one status comment on the PR
-#             (hot-test-publish.yml; mcf@3 hot-test environments, issues-maestra#1574).
+#             entry built on them go to the hot-test bucket, the PR gets the hot-test
+#             deployment (hot-test-publish.yml; mcf@3 hot-test environments, issues-maestra#1574).
 #
 # Not ported from mcf@3: cyrillic (translation-checker, issues-maestra#1581), e2e,
 # functional tests and the -e2e/-with-deps images (issues-maestra#1573),
@@ -618,9 +617,7 @@ jobs:
           teleport-token: ${{ inputs.teleport-token }}
 
   # Hot-test stand of the PR, right after build (checks and tests do not gate it, as the
-  # GitLab hot-test jobs). The PR comment needs pull-requests: write, raised here only once
-  # every caller's pr.yml grants it (a request above the caller's grant fails the run);
-  # until then the stand URL is in the step summary (hot-test-publish.yml header).
+  # GitLab hot-test jobs).
   hot-test:
     needs: [version, build]
     if: ${{ needs.version.outputs.hot-test == 'true' }}
@@ -628,7 +625,6 @@ jobs:
     permissions:
       contents: read
       id-token: write # Teleport join
-      pull-requests: read
     with:
       repo: ${{ github.event.repository.name }}
       pr-number: ${{ github.event.pull_request.number }}
