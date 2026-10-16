@@ -193,7 +193,56 @@ env:
   TELEPORT_FQDN: teleport.maestra.io:443
 
 jobs:
+  # Pull requests that change only the kustomization tree(s) skip version/test/images:
+  # nothing that is built or tested changed. checks still runs (gitleaks + the kustomize
+  # build of the changed overlays) and pr-gate stays green (skipped jobs pass). Any doubt
+  # (no merge commit, git failure, bake from the repo root) means code=true: everything runs.
+  changes:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: runs-on=${{ github.run_id }}-changes/pool=small
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      code: ${{ steps.c.outputs.code }}
+    steps:
+      - uses: runs-on/action@v2.5.0
+      # The test merge commit and its first parent, the base branch tip (HEAD^1).
+      - uses: actions/checkout@v6.1.0
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: c
+        env:
+          BAKE_PATH: ${{ inputs.bake-path }}
+          BAKES: ""
+        run: |
+          # >>> pr-changes (scripts/test-pr-changes.sh runs this block)
+          # kustomization trees: bake-path plus the <bake-path> field of every `bakes` line.
+          # Comments are stripped first (a `# src` comment is not a path). A tree that is the repo
+          # root (`.`, `./`, empty) means everything is baked: never skip.
+          raw=$( { printf '%s\n' "$BAKE_PATH"; printf '%s\n' "$BAKES" | sed 's/#.*//' | awk 'NF>=2{print $2}'; } \
+            | sed -E 's#^\./##; s#/+$##; s#^$#.#')
+          dirs=$(grep -vxE '\.?' <<<"$raw" | sort -u || true)
+          root=false; grep -qxE '\.?' <<<"$raw" && root=true
+          files=$(git diff --name-only --no-renames HEAD^1 HEAD 2>/dev/null) || files=""
+          code=true
+          if [ -n "$files" ] && [ -n "$dirs" ] && ! $root; then
+            code=false
+            while IFS= read -r f; do
+              inside=false
+              while IFS= read -r d; do case "$f" in "$d"/*) inside=true; break ;; esac; done <<<"$dirs"
+              if ! $inside; then code=true; break; fi
+            done <<<"$files"
+          fi
+          echo "kustomization trees: $(tr '\n' ' ' <<<"$dirs")"
+          echo "changed files: $(wc -l <<<"$files" | tr -d ' ') -> code=$code"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          # <<< pr-changes
+
   version:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: runs-on=${{ github.run_id }}-version/pool=small
     timeout-minutes: 5
     outputs:
