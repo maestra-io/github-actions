@@ -59,11 +59,11 @@ route() {
 }
 free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
 
-www="$root/www"; mkdir -p "$www"; echo '<html>stand</html>' > "$www/index.html"
+www="$root/www"; mkdir -p "$www/entry"; echo '<html>stand</html>' > "$www/entry/index.html"
 port=$(free_port)
 python3 -m http.server "$port" --bind 127.0.0.1 --directory "$www" >/dev/null 2>&1 &
 server_pid=$!
-for _ in $(seq 1 50); do curl -sf -o /dev/null "http://127.0.0.1:$port/" && break; sleep 0.1; done
+for _ in $(seq 1 50); do curl -sf -o /dev/null "http://127.0.0.1:$port/entry/index.html" && break; sleep 0.1; done
 eq "$(route "http://127.0.0.1:$port" 10 1)" "up=true waited=0" "route answers 200"
 eq "$(route "http://127.0.0.1:$port/missing" 2 1)" "up=false waited=2" "404 is not up"
 kill "$server_pid"; wait "$server_pid" 2>/dev/null || true; server_pid=""
