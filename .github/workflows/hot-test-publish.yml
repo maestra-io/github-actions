@@ -4,7 +4,7 @@
 # PR's static files on top of the released ones; the routes to it are rendered by
 # the frontend-entry-static-builder chart (ResourceSet per open PR, Flux polls GitHub
 # every ~3 min) and vanish when the PR closes. This workflow fills the PR's folder of
-# the hot-test bucket, waits up to 6 min for the stand to answer 200 and keeps one
+# the hot-test bucket, waits up to 6 min for the stand's /entry/index.html to answer 200 and keeps one
 # status comment on the PR (✅ stand up / ⚠️ published, no route yet / ❌ not published).
 #
 #   mcf-build.yml build ─► hot-test: static artifact ─► entry (builder --single-run) ─► Teleport ─► Vault ─► R2 sync ─► wait for the route ─► PR comment
@@ -341,17 +341,18 @@ jobs:
         run: |
           # >>> route (scripts/test-hot-test-publish.sh runs this block)
           interval="${ROUTE_WAIT_INTERVAL:-15}"; timeout="${ROUTE_WAIT_TIMEOUT:-360}"
+          probe="${URL}/entry/index.html"
           waited=0; up=false
           while :; do
-            code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 20 "${URL}/" || true)
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 20 "$probe" || true)
             if [ "$code" = "200" ]; then up=true; break; fi
             if [ "$waited" -ge "$timeout" ]; then break; fi
-            echo "${URL}/ -> ${code:-no response} after ${waited}s, retrying in ${interval}s"
+            echo "${probe} -> ${code:-no response} after ${waited}s, retrying in ${interval}s"
             sleep "$interval"; waited=$((waited + interval))
           done
           { echo "up=$up"; echo "waited=$waited"; } >> "$GITHUB_OUTPUT"
-          if [ "$up" = true ]; then echo "${URL}/ is up after ${waited}s"
-          else echo "::warning::${URL}/ did not answer 200 within ${timeout}s (last: ${code:-no response})"; fi
+          if [ "$up" = true ]; then echo "${probe} is up after ${waited}s"
+          else echo "::warning::${probe} did not answer 200 within ${timeout}s (last: ${code:-no response})"; fi
           # <<< route
 
       - name: comment (result)
