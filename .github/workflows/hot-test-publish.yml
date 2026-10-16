@@ -51,11 +51,12 @@
 # VERSION_CHECKER_ENABLED=false, no DataDog RUM and no transaction manager: a PR
 # stand reports nothing.
 #
-# Permissions: none are declared here on purpose. A called workflow that asks for
-# pull-requests: write fails the whole run of a caller granting only read, and the
-# MCF callers are moved to write one by one. The job runs with the caller's grant:
-# id-token: write (Teleport join) is what every caller has; without pull-requests:
-# write the comment steps warn and the stand URL is still in the step summary.
+# Permissions: none are declared here on purpose; the job runs with what the calling
+# job grants: contents: read, id-token: write (Teleport join) and pull-requests. The PR
+# comment is best-effort: the MCF callers' pr.yml grant pull-requests: read today, so
+# mcf-build.yml requests read (a request above the caller's grant fails the whole run)
+# and the comment steps warn; the stand URL is always in the step summary. The comment
+# appears once every caller and mcf-build.yml grant pull-requests: write.
 # Credentials: the Teleport bot's app certificate reaches Vault omicron, whose role
 # hot-test-static-publish issues 10-minute editor keys for this bucket only.
 
@@ -354,7 +355,7 @@ jobs:
           # <<< route
 
       - name: comment (result)
-        if: ${{ always() && steps.names.conclusion == 'success' }}
+        if: ${{ !cancelled() && steps.names.conclusion == 'success' }}
         continue-on-error: true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:

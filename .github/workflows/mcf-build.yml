@@ -22,7 +22,8 @@
 #         push: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
 #
 #   pull-requests: write is for the hot-test stand comment on a PR (read: the hotfix
-#   label); without it the hot-test job still publishes the stand and warns.
+#   label); the hot-test job requests it only once every caller grants it — until then
+#   the stand is published and its URL is in the job's step summary.
 #
 # Inputs:
 #   node-version        Exact Node.js version (default 24.19.0, as mcf@3).
@@ -617,13 +618,17 @@ jobs:
           teleport-token: ${{ inputs.teleport-token }}
 
   # Hot-test stand of the PR, right after build (checks and tests do not gate it, as the
-  # GitLab hot-test jobs). No `permissions` here: the called workflow runs with the
-  # caller's grant, so a caller still on pull-requests: read keeps a working
-  # pipeline and gets a warning instead of the PR comment (hot-test-publish.yml header).
+  # GitLab hot-test jobs). The PR comment needs pull-requests: write, raised here only once
+  # every caller's pr.yml grants it (a request above the caller's grant fails the run);
+  # until then the stand URL is in the step summary (hot-test-publish.yml header).
   hot-test:
     needs: [version, build]
     if: ${{ needs.version.outputs.hot-test == 'true' }}
     uses: maestra-io/github-actions/.github/workflows/hot-test-publish.yml@main
+    permissions:
+      contents: read
+      id-token: write # Teleport join
+      pull-requests: read
     with:
       repo: ${{ github.event.repository.name }}
       pr-number: ${{ github.event.pull_request.number }}
