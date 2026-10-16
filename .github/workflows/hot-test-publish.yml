@@ -1,0 +1,401 @@
+# Reusable hot-test stand publish for a pull request of a frontend repository: the US
+# port of the GitLab hot-test environments (issues-maestra#1574). The stand
+# https://hot-test-<repo>-pr-<N>.<hot-test-domain> is the admin of the test tenant with this
+# PR's static files on top of the released ones; the routes to it are rendered by
+# the frontend-entry-static-builder chart (ResourceSet per open PR, Flux polls GitHub
+# every ~3 min) and vanish when the PR closes. This workflow fills the PR's folder of
+# the hot-test bucket, waits up to 6 min for the stand to answer 200 and keeps one
+# status comment on the PR (✅ stand up / ⚠️ published, no route yet / ❌ not published).
+#
+#   mcf-build.yml build ─► hot-test: static artifact ─► entry (builder --single-run) ─► Teleport ─► Vault ─► R2 sync ─► wait for the route ─► PR comment
+#
+# Usage (from a reusable workflow, as mcf-build.yml does, or a repo's own pr.yml):
+#
+#   jobs:
+#     hot-test:
+#       needs: build
+#       if: github.event_name == 'pull_request'
+#       uses: maestra-io/github-actions/.github/workflows/hot-test-publish.yml@main
+#       with:
+#         static-artifact: static
+#
+# Inputs:
+#   repo             Repository name, the <repo> of the host (default: this repository).
+#   pr-number        Pull request number (default: the pull_request event's).
+#   static-artifact  Artifact with static.tgz, the bucket layout of the PR's own
+#                    files: v2_static/<mcf>/... with mf-manifest.json (default static,
+#                    the mcf-build.yml artifact). Source maps must not be in it.
+#   mcf              Folder under v2_static (default: repo with - replaced by _).
+#   hot-test-domain  Domain of the stands (default testing-env.omicron.maestra.io).
+#   bucket           R2 bucket of the stands (default admin-hot-test-static-omicron).
+#   base-static-url  Released static the entry is built from: its entry/mcf-manifests.json,
+#                    v2_static/core and transaction-manager (default admin-static-omega).
+#   backend-host     LEGACY_SERVICE_HOST of the entry (default https://test-maestra.maestra.io).
+#   teleport-token   Teleport GitHub join token (default github-actions-hot-test-static-publish:
+#                    repository_owner maestra-io, ref refs/pull/*/merge).
+#   builder-image    frontend-entry-static-builder image, pinned tag (ECR of this account:
+#                    pulled with the runner's instance role, no Teleport).
+#
+# Bucket layout written under hot-test-<repo>-pr-<N>/ (the routes of step 4 read it):
+#   v2_static/<mcf>/...          the artifact as is
+#   entry/index.html             builder output; mcf-manifests.{js,json}, entry-info.json
+#   hot-test.json                repo, pr, sha, ref, run, updated_at
+# Everything is Cache-Control: no-cache and the sync deletes what the PR no longer
+# builds. The bucket lifecycle deletes the folder 7 days after the last upload.
+#
+# Entry: the builder runs in --single-run --output-target fs with the released
+# manifests from base-static-url and this MCF's manifest as the override, its
+# publicPath forced to https://<host>/v2_static/<mcf>/ (GitLab build-entry);
+# CDN_URL=https://<host> so every other MCF loads through the stand's host too
+# (the common route layer sends /v2_static to the released bucket);
+# VERSION_CHECKER_ENABLED=false, no DataDog RUM and no transaction manager: a PR
+# stand reports nothing.
+#
+# Permissions: none are declared here on purpose; the job runs with what the calling
+# job grants: contents: read, id-token: write (Teleport join) and pull-requests. The PR
+# comment is best-effort: the MCF callers' pr.yml grant pull-requests: read today, so
+# mcf-build.yml requests read (a request above the caller's grant fails the whole run)
+# and the comment steps warn; the stand URL is always in the step summary. The comment
+# appears once every caller and mcf-build.yml grant pull-requests: write.
+# Credentials: the Teleport bot's app certificate reaches Vault omicron, whose role
+# hot-test-static-publish issues 10-minute editor keys for this bucket only.
+
+name: hot-test-publish
+
+on:
+  workflow_call:
+    inputs:
+      repo:
+        type: string
+        default: ""
+      pr-number:
+        type: string
+        default: ""
+      static-artifact:
+        type: string
+        default: static
+      mcf:
+        type: string
+        default: ""
+      hot-test-domain:
+        type: string
+        default: testing-env.omicron.maestra.io
+      bucket:
+        type: string
+        default: admin-hot-test-static-omicron
+      base-static-url:
+        type: string
+        default: https://admin-static-omega.maestra-static.io
+      backend-host:
+        type: string
+        default: https://test-maestra.maestra.io
+      teleport-token:
+        type: string
+        default: github-actions-hot-test-static-publish
+      builder-image:
+        type: string
+        default: 515260921971.dkr.ecr.us-west-2.amazonaws.com/frontend-entry-static-builder:1.1.6
+    outputs:
+      url:
+        value: ${{ jobs.publish.outputs.url }}
+
+env:
+  TELEPORT_FQDN: teleport.maestra.io:443
+  TELEPORT_WORKLOAD_IDENTITY: hot-test-static-publish
+  VAULT_APP: vault-omicron
+  VAULT_URL: https://vault-omicron.teleport.maestra.io
+  VAULT_JWT_MOUNT: jwt-teleport-bots
+  VAULT_JWT_ROLE: hot-test-static-publish
+  VAULT_JWT_AUDIENCE: http://vault.vault.svc.cluster.local:8200
+
+jobs:
+  publish:
+    runs-on: runs-on=${{ github.run_id }}-hot-test-publish/pool=small
+    timeout-minutes: 20
+    outputs:
+      url: ${{ steps.names.outputs.url }}
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - id: names
+        env:
+          REPO: ${{ inputs.repo }}
+          PR_NUMBER: ${{ inputs.pr-number }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          MCF: ${{ inputs.mcf }}
+          HOT_TEST_DOMAIN: ${{ inputs.hot-test-domain }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          # >>> names (scripts/test-hot-test-publish.sh runs this block)
+          repo="${REPO:-${GITHUB_REPOSITORY##*/}}"
+          pr="${PR_NUMBER:-$EVENT_PR_NUMBER}"
+          mcf="${MCF:-${repo//-/_}}"
+          [[ "$repo" =~ ^[a-z0-9-]+$ ]] || { echo "::error::repo '$repo' is not [a-z0-9-]+"; exit 1; }
+          [[ "$pr" =~ ^[0-9]+$ ]] || { echo "::error::pr-number '$pr' is not a number"; exit 1; }
+          [[ "$mcf" =~ ^[a-z0-9_]+$ ]] || { echo "::error::mcf '$mcf' is not [a-z0-9_]+"; exit 1; }
+          # haproxy-cdp sends every host containing -services to the kube-services backend.
+          [[ "$repo" != *-services* ]] || { echo "::error::repo '$repo' contains -services: haproxy-cdp would never route its hot-test host"; exit 1; }
+          name="hot-test-${repo}-pr-${pr}"
+          host="${name}.${HOT_TEST_DOMAIN}"
+          # <<< names
+          {
+            echo "repo=$repo"
+            echo "pr=$pr"
+            echo "mcf=$mcf"
+            echo "name=$name"
+            echo "host=$host"
+            echo "url=https://$host"
+            echo "sha=${HEAD_SHA:0:7}"
+          } >> "$GITHUB_OUTPUT"
+          echo "stand https://$host, bucket folder $name/, mcf $mcf"
+
+      - name: comment (building)
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PR: ${{ steps.names.outputs.pr }}
+          BODY: |
+            :hourglass_flowing_sand: **Hot-test stand** for ${{ steps.names.outputs.sha }} is building ([run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}))…
+        with:
+          script: |
+            const MARKER = '<!-- hot-test -->';
+            const { owner, repo } = context.repo;
+            const issue_number = Number(process.env.PR);
+            const body = `${MARKER}\n${process.env.BODY}`;
+            try {
+              const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+              const existing = comments.find(c => c.body && c.body.includes(MARKER));
+              if (existing) await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+              else await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            } catch (e) {
+              if (e.status !== 403) throw e;
+              core.warning(`no comment on PR #${issue_number}: the calling job needs pull-requests: write (${e.message})`);
+            }
+
+      - id: static
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.static-artifact }}
+          path: ${{ runner.temp }}/artifact
+      - id: unpack
+        name: unpack static
+        env:
+          MCF: ${{ steps.names.outputs.mcf }}
+        run: |
+          site="$RUNNER_TEMP/site"; mkdir -p "$site"
+          tar -xzf "$RUNNER_TEMP/artifact/static.tgz" -C "$site"
+          manifest="$site/v2_static/$MCF/mf-manifest.json"
+          [ -f "$manifest" ] || { echo "::error::v2_static/$MCF/mf-manifest.json is not in the static artifact"; exit 1; }
+          if find "$site" -name '*.map' -type f | grep -q .; then
+            echo "::error::the static artifact contains source maps; drop them before publishing"; exit 1
+          fi
+          du -sh "$site/v2_static/$MCF"
+
+      - id: entry
+        name: build entry (${{ inputs.builder-image }})
+        env:
+          IMAGE: ${{ inputs.builder-image }}
+          MCF: ${{ steps.names.outputs.mcf }}
+          HOT_TEST_URL: ${{ steps.names.outputs.url }}
+          BASE_STATIC_URL: ${{ inputs.base-static-url }}
+          BACKEND_HOST: ${{ inputs.backend-host }}
+        run: |
+          site="$RUNNER_TEMP/site"
+          overrides="$RUNNER_TEMP/overrides/manifests"; mkdir -p "$overrides" "$site/entry"
+          # >>> manifest (scripts/test-hot-test-publish.sh runs this block)
+          # The MF plugin reads getPublicPath before publicPath: only the override's
+          # absolute publicPath may stay (GitLab build-entry).
+          jq --arg p "${HOT_TEST_URL}/v2_static/${MCF}/" \
+            '.metaData |= (del(.getPublicPath) | .publicPath = $p)' \
+            "$site/v2_static/$MCF/mf-manifest.json" > "$overrides/mf-manifest.json"
+          # <<< manifest
+          registry="${IMAGE%%/*}"
+          if [[ "$registry" == *.dkr.ecr.* ]]; then
+            aws ecr get-login-password --region "$(cut -d. -f4 <<< "$registry")" \
+              | docker login --username AWS --password-stdin "$registry"
+          fi
+          base="${BASE_STATIC_URL%/}"
+          bucket_name=$(sed -E 's#^https?://##; s#[./].*$##' <<< "$base")
+          # The S3 variables are required by the builder but single-run only reads
+          # over HTTP from S3_BUCKET_PUBLIC_URL.
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$RUNNER_TEMP/overrides:/app/overrides:ro" \
+            -v "$site/entry:/app/result" \
+            -e "S3_BUCKET_NAME=$bucket_name" \
+            -e "S3_ENDPOINT=$base" \
+            -e "S3_BUCKET_PUBLIC_URL=$base" \
+            -e "LEGACY_SERVICE_HOST=$BACKEND_HOST" \
+            -e "CDN_URL=$HOT_TEST_URL" \
+            -e VERSION_CHECKER_ENABLED=false \
+            -e CONTOUR=foreign \
+            --entrypoint node "$IMAGE" ./build/index.js --single-run --output-target fs
+          for f in index.html mcf-manifests.json mcf-manifests.js; do
+            [ -s "$site/entry/$f" ] || { echo "::error::the builder wrote no entry/$f"; exit 1; }
+          done
+          grep -qF "${HOT_TEST_URL}/v2_static/${MCF}/" "$site/entry/index.html" \
+            || { echo "::error::entry/index.html does not carry the PR manifest (${HOT_TEST_URL}/v2_static/${MCF}/)"; exit 1; }
+          grep -qF 'mindbox-version-checker-enabled" content="false"' "$site/entry/index.html" \
+            || { echo "::error::entry/index.html does not switch the version checker off"; exit 1; }
+          ls -la "$site/entry"
+
+      - id: tp-version
+        run: |
+          v=$(curl -sf "https://${TELEPORT_FQDN}/webapi/find" | jq -r '.auto_update.tools_version // .server_version')
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - id: teleport-setup
+        uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
+        with:
+          version: ${{ steps.tp-version.outputs.version }}
+          proxy: ${{ env.TELEPORT_FQDN }}
+      - id: tbot-config
+        env:
+          TOKEN_NAME: ${{ inputs.teleport-token }}
+        run: |
+          out="$(mktemp -d)"
+          cat > "$out/tbot.yaml" <<EOF
+          version: v2
+          proxy_server: ${TELEPORT_FQDN}
+          onboarding:
+            join_method: github
+            token: ${TOKEN_NAME}
+          oneshot: true
+          storage:
+            type: memory
+          services:
+            - type: workload-identity-jwt
+              selector:
+                name: ${TELEPORT_WORKLOAD_IDENTITY}
+              audiences: ["${VAULT_JWT_AUDIENCE}"]
+              destination:
+                type: directory
+                path: ${out}/wi
+            - type: application
+              app_name: ${VAULT_APP}
+              destination:
+                type: directory
+                path: ${out}/app
+          EOF
+          mkdir -p "$out/wi" "$out/app"
+          echo "dir=$out" >> "$GITHUB_OUTPUT"
+      - id: teleport
+        uses: maestra-io/github-actions/tbot-join@v1
+        with:
+          config: ${{ steps.tbot-config.outputs.dir }}/tbot.yaml
+          require: |
+            ${{ steps.tbot-config.outputs.dir }}/wi/jwt_svid
+            ${{ steps.tbot-config.outputs.dir }}/app/tlscert
+            ${{ steps.tbot-config.outputs.dir }}/app/key
+          label: token ${{ inputs.teleport-token }}
+          hint: "does the token allow this repository's refs/pull/*/merge, and does the calling job have id-token: write?"
+
+      # Vault token and R2 keys stay inside this step.
+      - id: upload
+        name: Vault -> R2 sync
+        env:
+          OUT: ${{ steps.tbot-config.outputs.dir }}
+          BUCKET: ${{ inputs.bucket }}
+          NAME: ${{ steps.names.outputs.name }}
+          REPO: ${{ steps.names.outputs.repo }}
+          PR: ${{ steps.names.outputs.pr }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          HEAD_REF: ${{ github.head_ref || github.ref_name }}
+        run: |
+          site="$RUNNER_TEMP/site"
+          vault_api() { # <method> <path> [curl args]
+            local method=$1 path=$2; shift 2
+            curl -sS --fail-with-body --connect-timeout 10 --max-time 60 --retry 3 --retry-all-errors \
+              --cert "$OUT/app/tlscert" --key "$OUT/app/key" \
+              -X "$method" "${VAULT_URL}/v1/${path}" "$@"
+          }
+          jwt=$(cat "$OUT/wi/jwt_svid")
+          echo "::add-mask::$jwt"
+          token=$(jq -cn --arg r "$VAULT_JWT_ROLE" --arg j "$jwt" '{role: $r, jwt: $j}' \
+            | vault_api POST "auth/${VAULT_JWT_MOUNT}/login" -H 'Content-Type: application/json' --data-binary @- \
+            | jq -er '.auth.client_token') || { echo "::error::Vault login as ${VAULT_JWT_ROLE} failed"; exit 1; }
+          echo "::add-mask::$token"
+          creds=$(vault_api GET "cloudflare/r2/creds/omicron/${BUCKET}/editor" -H "X-Vault-Token: $token") \
+            || { echo "::error::Vault did not issue R2 keys for ${BUCKET}"; exit 1; }
+          AWS_ACCESS_KEY_ID=$(jq -er '.data.access_key_id' <<< "$creds")
+          AWS_SECRET_ACCESS_KEY=$(jq -er '.data.secret_access_key' <<< "$creds")
+          AWS_SESSION_TOKEN=$(jq -er '.data.session_token' <<< "$creds")
+          endpoint=$(jq -er '.data.endpoint' <<< "$creds")
+          echo "::add-mask::$AWS_ACCESS_KEY_ID"; echo "::add-mask::$AWS_SECRET_ACCESS_KEY"; echo "::add-mask::$AWS_SESSION_TOKEN"
+          export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+          unset token creds jwt
+          jq -n --arg repo "$REPO" --arg pr "$PR" --arg sha "$HEAD_SHA" --arg ref "$HEAD_REF" \
+            --arg run "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{repo: $repo, pr: ($pr | tonumber), sha: $sha, ref: $ref, run: $run, updated_at: $at}' > "$site/hot-test.json"
+          # R2: region auto, no trailing checksums (as the builder chart's targets).
+          export AWS_REGION=auto AWS_DEFAULT_REGION=auto
+          export AWS_REQUEST_CHECKSUM_CALCULATION=when_required AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
+          export AWS_MAX_ATTEMPTS=5 AWS_RETRY_MODE=standard
+          aws --endpoint-url "$endpoint" s3 sync "$site/" "s3://${BUCKET}/${NAME}/" \
+            --delete --cache-control no-cache --no-progress
+          echo "synced $(find "$site" -type f | wc -l) files to s3://${BUCKET}/${NAME}/"
+
+      - id: route
+        name: wait for the stand route
+        if: steps.upload.outcome == 'success'
+        env:
+          URL: ${{ steps.names.outputs.url }}
+        run: |
+          # >>> route (scripts/test-hot-test-publish.sh runs this block)
+          interval="${ROUTE_WAIT_INTERVAL:-15}"; timeout="${ROUTE_WAIT_TIMEOUT:-360}"
+          waited=0; up=false
+          while :; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 20 "${URL}/" || true)
+            if [ "$code" = "200" ]; then up=true; break; fi
+            if [ "$waited" -ge "$timeout" ]; then break; fi
+            echo "${URL}/ -> ${code:-no response} after ${waited}s, retrying in ${interval}s"
+            sleep "$interval"; waited=$((waited + interval))
+          done
+          { echo "up=$up"; echo "waited=$waited"; } >> "$GITHUB_OUTPUT"
+          if [ "$up" = true ]; then echo "${URL}/ is up after ${waited}s"
+          else echo "::warning::${URL}/ did not answer 200 within ${timeout}s (last: ${code:-no response})"; fi
+          # <<< route
+
+      - name: comment (result)
+        if: ${{ !cancelled() && steps.names.conclusion == 'success' }}
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PR: ${{ steps.names.outputs.pr }}
+          URL: ${{ steps.names.outputs.url }}
+          SHA: ${{ steps.names.outputs.sha }}
+          MCF: ${{ steps.names.outputs.mcf }}
+          OK: ${{ steps.upload.outcome == 'success' }}
+          ROUTE_UP: ${{ steps.route.outputs.up }}
+          WAITED: ${{ steps.route.outputs.waited }}
+          FAILED_STATIC: ${{ steps.static.outcome == 'failure' || steps.unpack.outcome == 'failure' }}
+          FAILED_ENTRY: ${{ steps.entry.outcome == 'failure' }}
+          FAILED_TELEPORT: ${{ steps.tp-version.outcome == 'failure' || steps.teleport-setup.outcome == 'failure' || steps.tbot-config.outcome == 'failure' || steps.teleport.outcome == 'failure' }}
+          FAILED_UPLOAD: ${{ steps.upload.outcome == 'failure' }}
+        with:
+          script: |
+            const fs = require('fs');
+            const MARKER = '<!-- hot-test -->';
+            const { URL, SHA, MCF, OK, ROUTE_UP, WAITED } = process.env;
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const minutes = Math.max(1, Math.round(Number(WAITED || 0) / 60));
+            const reason = process.env.FAILED_STATIC === 'true' ? 'the static artifact is missing or incomplete'
+              : process.env.FAILED_ENTRY === 'true' ? 'the entry build (frontend-entry-static-builder) failed'
+              : process.env.FAILED_TELEPORT === 'true' ? 'the Teleport join failed'
+              : process.env.FAILED_UPLOAD === 'true' ? 'the Vault login or the upload to R2 failed'
+              : 'the workflow stopped before the upload';
+            const body = OK !== 'true'
+              ? `${MARKER}\n:x: **Hot-test stand** for ${SHA} was not published: ${reason} ([run](${run})).`
+              : ROUTE_UP === 'true'
+              ? `${MARKER}\n:white_check_mark: **Hot-test stand**: ${URL} — ${SHA} ([run](${run}))\n\n\`${MCF}\` from this PR on top of the released admin of the test tenant; the stand is removed when the PR closes.`
+              : `${MARKER}\n:warning: **Hot-test stand** ${URL} — ${SHA}: the static is published, but the stand route did not come up in ${minutes} min ([run](${run})). Most likely \`${MCF}\` is not registered in fluxcd for hot-test stands — see https://github.com/maestra-io/fluxcd/blob/main/base/microfrontend/README.md. Flux creates the route within ~3 min after registration; re-run the job or push a commit to re-check.`;
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, body.replace(MARKER, '### hot-test stand') + '\n');
+            const { owner, repo } = context.repo;
+            const issue_number = Number(process.env.PR);
+            try {
+              const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+              const existing = comments.find(c => c.body && c.body.includes(MARKER));
+              if (existing) await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+              else await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            } catch (e) {
+              if (e.status !== 403) throw e;
+              core.warning(`no comment on PR #${issue_number}: the calling job needs pull-requests: write (${e.message})`);
+            }
