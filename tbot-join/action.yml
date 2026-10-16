@@ -6,7 +6,8 @@ description: >-
   errors. Needs tbot on PATH (teleport-actions/setup) and `id-token: write` for
   join_method github. The composite actions of this repo run tbot-join.sh
   directly from their own ref; this wrapper is for workflows (reusable ones
-  run in the caller's checkout and cannot reach the script by path).
+  run in the caller's checkout and cannot reach the script by path) - used by
+  hot-test-publish.yml here and maestra-io/dockerfiles release.yml.
 
 inputs:
   config:
