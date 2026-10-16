@@ -2,7 +2,7 @@
 #
 # Self-check for hot-test-publish.yml: the stand names (host, bucket folder, mcf
 # defaults, the inputs the ResourceSet template also rejects), the manifest
-# override (publicPath forced to the stand root, getPublicPath dropped) and the route wait (200 is
+# override (the PR manifest byte for byte) and the route wait (200 is
 # up, anything else until the timeout is not). Runs the inline blocks of the
 # reusable workflow itself.
 set -euo pipefail
@@ -43,9 +43,8 @@ cat > "$site/v2_static/frontend_homepage/mf-manifest.json" <<'JSON'
 JSON
 HOT_TEST_URL=https://hot-test-frontend-homepage-pr-12.testing-env.omicron.maestra.io MCF=frontend_homepage \
   site="$site" overrides="$overrides" bash -c "set -eo pipefail; $manifest_prog"
-eq "$(jq -c '.metaData | {publicPath, getPublicPath, remoteEntry: .remoteEntry.name}' "$overrides/mf-manifest.json")" \
-  '{"publicPath":"https://hot-test-frontend-homepage-pr-12.testing-env.omicron.maestra.io/","getPublicPath":null,"remoteEntry":"v2_static/frontend_homepage/js/remoteEntry.js"}' "override manifest"
-eq "$(jq -c '{id, shared, remotes, exposes}' "$overrides/mf-manifest.json")" '{"id":"frontend_homepage","shared":[],"remotes":[],"exposes":[]}' "rest of the manifest kept"
+cmp -s "$site/v2_static/frontend_homepage/mf-manifest.json" "$overrides/mf-manifest.json" \
+  || { echo "FAIL override manifest differs from the PR manifest"; exit 1; }
 echo "hot-test-publish manifest: ok"
 
 route_prog=$(sed -n '/# >>> route/,/# <<< route/p' "$wf" | sed 's/^          //')

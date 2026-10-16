@@ -44,8 +44,8 @@
 # builds. The bucket lifecycle deletes the folder 7 days after the last upload.
 #
 # Entry: the builder runs in --single-run --output-target fs with the released
-# manifests from base-static-url and this MCF's manifest as the override, its
-# publicPath forced to https://<host>/ (asset names already carry v2_static/<mcf>/);
+# manifests from base-static-url and this MCF's manifest as the override unchanged:
+# its getPublicPath resolves to window.externalPublicPath, which is CDN_URL;
 # CDN_URL=https://<host> so every other MCF loads through the stand's host too
 # (the common route layer sends /v2_static to the released bucket);
 # VERSION_CHECKER_ENABLED=false, no DataDog RUM and no transaction manager: a PR
@@ -202,11 +202,7 @@ jobs:
           site="$RUNNER_TEMP/site"
           overrides="$RUNNER_TEMP/overrides/manifests"; mkdir -p "$overrides" "$site/entry"
           # >>> manifest (scripts/test-hot-test-publish.sh runs this block)
-          # The MF plugin reads getPublicPath before publicPath: only the override's
-          # absolute publicPath may stay (GitLab build-entry).
-          jq --arg p "${HOT_TEST_URL}/" \
-            '.metaData |= (del(.getPublicPath) | .publicPath = $p)' \
-            "$site/v2_static/$MCF/mf-manifest.json" > "$overrides/mf-manifest.json"
+          cp "$site/v2_static/$MCF/mf-manifest.json" "$overrides/mf-manifest.json"
           # <<< manifest
           registry="${IMAGE%%/*}"
           if [[ "$registry" == *.dkr.ecr.* ]]; then
@@ -231,10 +227,13 @@ jobs:
           for f in index.html mcf-manifests.json mcf-manifests.js; do
             [ -s "$site/entry/$f" ] || { echo "::error::the builder wrote no entry/$f"; exit 1; }
           done
-          jq -e --arg m "$MCF" --arg p "${HOT_TEST_URL}/" \
-            'any(.[]; .id == $m and .metaData.publicPath == $p and .metaData.getPublicPath == null)' \
+          remote_entry=$(jq -r '.metaData.remoteEntry.name' "$site/v2_static/$MCF/mf-manifest.json")
+          jq -e --arg m "$MCF" --arg r "$remote_entry" \
+            'any(.[]; .id == $m and .metaData.remoteEntry.name == $r)' \
             "$site/entry/mcf-manifests.json" >/dev/null \
-            || { echo "::error::entry/mcf-manifests.json does not carry the PR manifest $MCF with publicPath ${HOT_TEST_URL}/"; exit 1; }
+            || { echo "::error::entry/mcf-manifests.json does not carry the PR manifest of $MCF (remoteEntry $remote_entry)"; exit 1; }
+          grep -qF "$HOT_TEST_URL/" "$site/entry/index.html" \
+            || { echo "::error::entry/index.html does not use $HOT_TEST_URL/ as the static source (CDN_URL)"; exit 1; }
           grep -qF 'mindbox-version-checker-enabled" content="false"' "$site/entry/index.html" \
             || { echo "::error::entry/index.html does not switch the version checker off"; exit 1; }
           ls -la "$site/entry"
