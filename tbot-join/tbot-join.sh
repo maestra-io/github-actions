@@ -8,7 +8,7 @@
 #     i.e. from the same ref as the action itself;
 #   - workflows (a reusable one runs in the caller's checkout) reach it through
 #     the composite action next to this file (maestra-io/github-actions/tbot-join).
-#     None in this repo uses it since the build workflows dropped kargo-refresh.
+#     Used by .github/workflows/hot-test-publish.yml (and maestra-io/dockerfiles).
 #
 # usage: tbot-join.sh -c <tbot.yaml> -r <file> [-r <file>...] [-l <label>] [-H <hint>] [-w]
 #   -c  tbot config (directory destinations, `storage: memory`, `oneshot: true`)

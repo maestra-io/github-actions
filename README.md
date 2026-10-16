@@ -410,8 +410,12 @@ expected output is non-empty. Transient failures (Teleport backend switchover, G
 endpoint or discovery timing out, network) are retried; configuration errors (`token expired or
 not found`, `id token claims did not match any allow rules`, `access denied`, a job without
 `id-token: write`) fail at once with that reason. The composite actions call the script from
-their own ref (`${GITHUB_ACTION_PATH}/../tbot-join/tbot-join.sh`); a workflow (none in this repo
-since the build workflows dropped their `kargo-refresh` job) uses the wrapper:
+their own ref (`${GITHUB_ACTION_PATH}/../tbot-join/tbot-join.sh`); a workflow uses the wrapper.
+Consumers (org-wide code search, confirmed on default branches 2026-10-16):
+[`hot-test-publish.yml`](.github/workflows/hot-test-publish.yml) here (`@v1`, Workload Identity +
+Vault app join for PR hot-test stands) and `maestra-io/dockerfiles` `.github/workflows/release.yml`
+(`@main`, image-push SVID). The build workflows' `kargo-refresh` job, its first user, was removed
+2026-10-16 (Warehouses are refreshed by the GitHub org webhook now).
 
 ```yaml
 - uses: maestra-io/github-actions/tbot-join@v1
