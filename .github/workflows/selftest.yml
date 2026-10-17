@@ -91,7 +91,7 @@ jobs:
       - name: service-build image-targets parsing (workflow copy)
         run: bash scripts/test-service-build.sh
 
-      - name: hot-test-publish stand names, manifest override and route wait (workflow copy)
+      - name: hot-test-publish stand names, manifest override, route wait, release bucket check, summary (workflow copy)
         run: bash scripts/test-hot-test-publish.sh
 
       - name: pr-checks check-encoding and kustomize entry points

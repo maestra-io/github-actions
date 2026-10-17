@@ -2,9 +2,10 @@
 #
 # Self-check for hot-test-publish.yml: the stand names (host, bucket folder, mcf
 # defaults, the inputs the ResourceSet template also rejects), the manifest
-# override (the PR manifest byte for byte) and the route wait (200 is
-# up, anything else until the timeout is not). Runs the inline blocks of the
-# reusable workflow itself.
+# override (the PR manifest byte for byte), the route wait (200 is
+# up, anything else until the timeout is not), the release bucket check (the
+# stand's core manifest equals base-static-url's, else the step fails) and the
+# summary it leads to. Runs the inline blocks of the reusable workflow itself.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 wf="$here/../.github/workflows/hot-test-publish.yml"
@@ -69,3 +70,58 @@ kill "$server_pid"; wait "$server_pid" 2>/dev/null || true; server_pid=""
 eq "$(route "http://127.0.0.1:$port" 2 1)" "up=false waited=2" "closed port is not up"
 grep -q '^::warning::' "$root/route.log" || { echo "FAIL route timeout emits no ::warning::"; cat "$root/route.log"; exit 1; }
 echo "hot-test-publish route: ok"
+
+release_prog=$(sed -n '/# >>> release/,/# <<< release/p' "$wf" | sed 's/^          //')
+[ -n "$release_prog" ] || { echo "release block not found in $wf"; exit 1; }
+# release <stand url> <base-static-url>; prints the step outputs and "exit=<code>"
+release() {
+  : > "$root/release.out"; rc=0
+  URL="$1" BASE_STATIC_URL="$2" RUNNER_TEMP="$root" GITHUB_OUTPUT="$root/release.out" \
+    bash -c "set -eo pipefail; $release_prog" > "$root/release.log" 2>&1 || rc=$?
+  { tr '\n' ' ' < "$root/release.out"; echo "exit=$rc"; }
+}
+core='{"main":[{"path":"v2_static/core/main-1.js"}]}'
+for d in base stand other; do mkdir -p "$www/$d/v2_static/core"; done
+echo "$core" > "$www/base/v2_static/core/manifest.json"
+echo "$core" > "$www/stand/v2_static/core/manifest.json"
+echo '{"main":[{"path":"v2_static/core/main-2.js"}]}' > "$www/other/v2_static/core/manifest.json"
+port=$(free_port)
+python3 -m http.server "$port" --bind 127.0.0.1 --directory "$www" >/dev/null 2>&1 &
+server_pid=$!
+for _ in $(seq 1 50); do curl -sf -o /dev/null "http://127.0.0.1:$port/base/v2_static/core/manifest.json" && break; sleep 0.1; done
+srv="http://127.0.0.1:$port"
+core_path=v2_static/core/manifest.json
+eq "$(release "$srv/stand" "$srv/base/")" "same=true stand=$srv/stand/$core_path base=$srv/base/$core_path exit=0" "same release bucket"
+eq "$(release "$srv/stand" "$srv/other")" "same=false stand=$srv/stand/$core_path base=$srv/other/$core_path exit=1" "another release bucket"
+grep -q '^::error::.*baseStaticDomain' "$root/release.log" || { echo "FAIL release mismatch emits no ::error::"; cat "$root/release.log"; exit 1; }
+eq "$(release "$srv/missing" "$srv/base")" "same=false stand=$srv/missing/$core_path base=$srv/base/$core_path exit=1" "stand without the core manifest"
+eq "$(release "$srv/stand" "$srv/missing")" "exit=1" "unreadable base-static-url"
+kill "$server_pid"; wait "$server_pid" 2>/dev/null || true; server_pid=""
+echo "hot-test-publish release: ok"
+
+summary_prog=$(sed -n '/# >>> summary/,/# <<< summary/p' "$wf" | sed 's/^          //')
+[ -n "$summary_prog" ] || { echo "summary block not found in $wf"; exit 1; }
+# summary <route up> <release ok> <release same>; prints the summary body
+summary() {
+  : > "$root/summary.md"
+  URL=https://stand SHA=abc1234 MCF=frontend_homepage OK=true WAITED=30 \
+    ROUTE_UP="$1" RELEASE_OK="$2" RELEASE_SAME="$3" RELEASE_STAND="https://stand/$core_path" RELEASE_BASE="https://base/$core_path" \
+    FAILED_STATIC=false FAILED_ENTRY=false FAILED_TELEPORT=false FAILED_UPLOAD=false \
+    GITHUB_SERVER_URL=https://github.com GITHUB_REPOSITORY=maestra-io/frontend-homepage GITHUB_RUN_ID=1 \
+    GITHUB_STEP_SUMMARY="$root/summary.md" bash -c "set -eo pipefail; $summary_prog"
+  sed -n 2p "$root/summary.md"
+}
+case "$(summary true true true)" in ":white_check_mark: "*) ;; *) echo "FAIL summary: same release bucket is not ✅"; exit 1;; esac
+case "$(summary false false "")" in ":warning: "*) ;; *) echo "FAIL summary: route timeout is not ⚠️"; exit 1;; esac
+body=$(summary true false false)
+case "$body" in ":x: "*"(\`baseStaticDomain\` провайдера hot-test) разный: https://stand/$core_path ≠ https://base/$core_path"*) ;;
+  *) printf 'FAIL summary: another release bucket\n  got: %s\n' "$body"; exit 1;; esac
+case "$(summary true false "")" in ":x: "*) ;; *) echo "FAIL summary: failed release check is not ❌"; exit 1;; esac
+echo "hot-test-publish summary: ok"
+
+if grep -rnE 'backend-host|BACKEND_HOST' "$here/.." --exclude-dir=.git --exclude="$(basename "$0")"; then
+  echo "FAIL the removed input backend-host is still referenced"; exit 1
+fi
+# shellcheck disable=SC2016
+grep -qF -- '-e "LEGACY_SERVICE_HOST=$HOT_TEST_URL"' "$wf" || { echo "FAIL LEGACY_SERVICE_HOST is not the stand URL"; exit 1; }
+echo "hot-test-publish inputs: ok"
