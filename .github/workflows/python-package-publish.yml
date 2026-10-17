@@ -94,14 +94,14 @@ jobs:
       id-token: write # nora OIDC token (upload)
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ inputs.python-version }}
       - if: ${{ inputs.build-tool == 'uv' }}
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
 
       - name: build
         env:
@@ -167,7 +167,7 @@ jobs:
   # gitleaks only: check-encoding and the kustomize build stay with the service builds.
   pr-checks:
     if: ${{ github.event_name == 'pull_request' }}
-    uses: maestra-io/github-actions/.github/workflows/pr-checks.yml@main
+    uses: maestra-io/github-actions/.github/workflows/pr-checks.yml@22c4fbd6055be483405e67dc25c82bd66e48d51e # main
     permissions:
       contents: read
     with:

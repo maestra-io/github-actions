@@ -41,7 +41,7 @@ runs:
         echo "package-path=./packages/${{ inputs.octopusProject }}.${{ inputs.version }}.zip" >> $GITHUB_OUTPUT
 
     - name: Create and upload octopus package
-      uses: docker://octopusdeploy/octo
+      uses: docker://octopusdeploy/octo@sha256:0ca92b9e81e6b3ec29fcca0b89765f35065db1e30e6898dee03e6ddc0ca92054
       with:
         args: >-
           pack
@@ -57,7 +57,7 @@ runs:
         OCTOPUS_CLI_SERVER: ${{ inputs.OCTOPUS_CLI_SERVER }}
 
     - name: Upload octopus package
-      uses: docker://octopusdeploy/octo
+      uses: docker://octopusdeploy/octo@sha256:0ca92b9e81e6b3ec29fcca0b89765f35065db1e30e6898dee03e6ddc0ca92054
       with:
         args: >-
           push
@@ -68,7 +68,7 @@ runs:
         OCTOPUS_CLI_SERVER: ${{ inputs.OCTOPUS_CLI_SERVER }}
 
     - name: Create octopus release
-      uses: docker://octopusdeploy/octo
+      uses: docker://octopusdeploy/octo@sha256:0ca92b9e81e6b3ec29fcca0b89765f35065db1e30e6898dee03e6ddc0ca92054
       with:
         args: >-
           create-release
