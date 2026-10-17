@@ -71,7 +71,7 @@ jobs:
             asset: mc
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -123,7 +123,7 @@ jobs:
 
       - name: push ${{ matrix.repository }}:${{ matrix.tag }}
         if: ${{ steps.exists.outputs.found != 'true' }}
-        uses: maestra-io/github-actions/push-to-aws-ecr-repository@99eb9820934759823cb9d9efff74932c0203c211 # v1.5.3
+        uses: maestra-io/github-actions/push-to-aws-ecr-repository@22c4fbd6055be483405e67dc25c82bd66e48d51e # v1.32.0
         with:
           awsRegion: us-west-2
           repositories: ${{ matrix.repository }}

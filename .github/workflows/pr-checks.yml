@@ -77,14 +77,14 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: runs-on/action@v2.5.0
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       # The test merge commit and its first parent, the base branch tip (HEAD^1). No
       # token left in git config: the steps below read the PR's own files.
-      - uses: actions/checkout@v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 2
           persist-credentials: false
-      - uses: actions/checkout@v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: maestra-io/github-actions
           ref: ${{ inputs.ref }}

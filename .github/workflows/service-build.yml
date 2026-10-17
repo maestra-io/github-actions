@@ -283,7 +283,7 @@ jobs:
       packages: read  # only for a private-packages-token: GITHUB_TOKEN override (GitHub Packages)
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -428,11 +428,11 @@ jobs:
 
       # ── test-command on the runner (the repo's GitLab test jobs) ─────────
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' && inputs.python-version != '' }}
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ inputs.python-version }}
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' && inputs.node-version != '' }}
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ inputs.node-version }}
       # The GitHub OIDC token lives minutes: a test-command that installs packages more
@@ -491,7 +491,7 @@ jobs:
         include: ${{ fromJSON(needs.version.outputs.legs) }}
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -626,7 +626,7 @@ jobs:
 
       - name: push ${{ matrix.image }}:${{ needs.version.outputs.release }}
         if: ${{ needs.version.outputs.publish == 'true' }}
-        uses: maestra-io/github-actions/push-to-aws-ecr-repository@v1
+        uses: maestra-io/github-actions/push-to-aws-ecr-repository@22c4fbd6055be483405e67dc25c82bd66e48d51e # v1
         with:
           awsRegion: us-west-2
           repositories: ${{ matrix.image }}
@@ -670,7 +670,7 @@ jobs:
       id-token: write # Teleport join + cosign keyless
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: maestra-io/github-actions/bake-oci-manifests@v1
+      - uses: maestra-io/github-actions/bake-oci-manifests@22c4fbd6055be483405e67dc25c82bd66e48d51e # v1
         with:
           service: ${{ needs.version.outputs.service }}
           images: ${{ needs.version.outputs.images }}
@@ -682,7 +682,7 @@ jobs:
   # check-encoding, kustomize build of a changed overlays tree), then one verdict.
   checks:
     if: ${{ github.event_name == 'pull_request' }}
-    uses: maestra-io/github-actions/.github/workflows/pr-checks.yml@main
+    uses: maestra-io/github-actions/.github/workflows/pr-checks.yml@22c4fbd6055be483405e67dc25c82bd66e48d51e # main
     permissions:
       contents: read
 
@@ -695,7 +695,7 @@ jobs:
     runs-on: runs-on=${{ github.run_id }}-pr-gate/pool=small
     timeout-minutes: 5
     steps:
-      - uses: runs-on/action@v2.5.0
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - env:
           RESULTS: ${{ toJSON(needs.*.result) }}
         run: |
