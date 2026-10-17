@@ -50,10 +50,13 @@
 # domain; the cluster (fluxcd, component base/microfrontend/hot-test) knows the stands'
 # bucket (read), the release static (baseStaticDomain), the domain and the tenant, which
 # only it knows. The release bucket is the one value on both sides that moves, so after
-# the route is up the job compares https://<host>/v2_static/core/manifest.json (the
-# cluster's release bucket) with
-# <base-static-url>/v2_static/core/manifest.json (the builder's core manifest): a
-# difference is ❌ and fails the job. A wrong domain or stands' bucket shows as ⚠️.
+# the route is up the job compares, byte for byte, every release manifest the entry was
+# built from: v2_static/core/manifest.json and v2_static/<mcf>/mf-manifest.json of each
+# MCF in entry/mcf-manifests.json except this PR's, fetched through https://<host> (the
+# cluster's release bucket) and under base-static-url. The builder's own list
+# (<base-static-url>/entry/mcf-manifests.json) cannot be read through the stand: its /entry
+# is the PR folder. A difference or a non-200 from the stand is ❌ (the first differing
+# path is in the summary) and fails the job. A wrong domain or stands' bucket shows as ⚠️.
 #
 # Entry: the builder runs in --single-run --output-target fs with the released
 # manifests from base-static-url and this MCF's manifest as the override unchanged:
@@ -347,23 +350,41 @@ jobs:
         if: steps.route.outputs.up == 'true'
         env:
           URL: ${{ steps.names.outputs.url }}
+          MCF: ${{ steps.names.outputs.mcf }}
           BASE_STATIC_URL: ${{ inputs.base-static-url }}
         run: |
           # >>> release (scripts/test-hot-test-publish.sh runs this block)
-          path=v2_static/core/manifest.json
-          stand="${URL}/${path}"; base="${BASE_STATIC_URL%/}/${path}"
-          fetch() { # <url> <file>; prints the HTTP code
-            curl -sS --compressed --connect-timeout 5 --max-time 20 --retry 3 \
-              -H 'Cache-Control: no-cache' -o "$2" -w '%{http_code}' "$1" || true
-          }
-          code=$(fetch "$base" "$RUNNER_TEMP/core-base.json")
-          [ "$code" = 200 ] || { echo "::error::${base} -> ${code:-no response}"; exit 1; }
-          code=$(fetch "$stand" "$RUNNER_TEMP/core-stand.json")
-          same=false
-          if [ "$code" = 200 ] && cmp -s "$RUNNER_TEMP/core-base.json" "$RUNNER_TEMP/core-stand.json"; then same=true; fi
-          { echo "same=$same"; echo "stand=$stand"; echo "base=$base"; } >> "$GITHUB_OUTPUT"
-          if [ "$same" = true ]; then echo "${stand} matches ${base}"
-          else echo "::error::${stand} (${code:-no response}) differs from ${base}: the release bucket of base-static-url and the cluster's baseStaticDomain (fluxcd, component base/microfrontend/hot-test) differ"; exit 1; fi
+          dir=$(mktemp -d "$RUNNER_TEMP/release.XXXXXX")
+          base="${BASE_STATIC_URL%/}"
+          # The stand serves /entry from the PR folder, so the release list is checked by its members.
+          mapfile -t paths < <(echo v2_static/core/manifest.json
+            jq -r --arg m "$MCF" '.[].metaData.remoteEntry.name | split("/")
+              | select(.[0] == "v2_static" and .[1] != $m) | "v2_static/\(.[1])/mf-manifest.json"' \
+              "$RUNNER_TEMP/site/entry/mcf-manifests.json" | sort -u)
+          for p in "${paths[@]}"; do
+            printf 'url = "%s"\noutput = "%s"\n' "$base/$p" "$dir/base/$p" "$URL/$p" "$dir/stand/$p"
+          done > "$dir/curl.cfg"
+          curl -sS --compressed --parallel --parallel-max 16 --create-dirs --connect-timeout 5 \
+            --max-time 20 --retry 3 -H 'Cache-Control: no-cache' -w '%{http_code} %{url_effective}\n' \
+            -K "$dir/curl.cfg" > "$dir/codes" || true
+          code_of() { awk -v u="$1" '$2 == u { c = $1 } END { print c }' "$dir/codes"; }
+          status=same; path=""; code=""
+          for p in "${paths[@]}"; do
+            c=$(code_of "$base/$p")
+            [ "$c" = 200 ] || { echo "::error::${base}/${p} -> ${c:-no response}"; exit 1; }
+            code=$(code_of "$URL/$p")
+            if [ "$code" != 200 ]; then status=missing; path=$p; break; fi
+            if ! cmp -s "$dir/base/$p" "$dir/stand/$p"; then status=differs; path=$p; break; fi
+          done
+          {
+            echo "status=$status"; echo "path=$path"; echo "code=${code:-000}"
+            echo "stand=${URL}/${path}"; echo "base=${base}/${path}"
+          } >> "$GITHUB_OUTPUT"
+          case "$status" in
+            same) echo "${#paths[@]} release manifests are the same through ${URL} and ${base}" ;;
+            missing) echo "::error::${URL}/${path} -> ${code:-no response}: the stand does not serve the release static"; exit 1 ;;
+            differs) echo "::error::${URL}/${path} differs from ${base}/${path}: the release bucket of base-static-url and the cluster's baseStaticDomain (fluxcd, component base/microfrontend/hot-test) differ"; exit 1 ;;
+          esac
           # <<< release
 
       - name: summary
@@ -376,7 +397,9 @@ jobs:
           ROUTE_UP: ${{ steps.route.outputs.up }}
           WAITED: ${{ steps.route.outputs.waited }}
           RELEASE_OK: ${{ steps.release.outcome == 'success' }}
-          RELEASE_SAME: ${{ steps.release.outputs.same }}
+          RELEASE_STATUS: ${{ steps.release.outputs.status }}
+          RELEASE_PATH: ${{ steps.release.outputs.path }}
+          RELEASE_CODE: ${{ steps.release.outputs.code }}
           RELEASE_STAND: ${{ steps.release.outputs.stand }}
           RELEASE_BASE: ${{ steps.release.outputs.base }}
           FAILED_STATIC: ${{ steps.static.outcome == 'failure' || steps.unpack.outcome == 'failure' }}
@@ -396,10 +419,12 @@ jobs:
             body=":x: **Hot-test stand** for ${SHA} was not published: ${reason} ([run](${run}))."
           elif [ "$ROUTE_UP" != true ]; then
             body=":warning: **Hot-test stand** ${URL} — ${SHA}: the static is published, but the stand route did not come up in ${minutes} min ([run](${run})). Most likely \`${MCF}\` is not registered in fluxcd for hot-test stands — see https://github.com/maestra-io/fluxcd/blob/main/base/microfrontend/README.md. Flux creates the route within ~3 min after registration; re-run the job or push a commit to re-check."
-          elif [ "$RELEASE_SAME" = false ]; then
-            body=":x: **Hot-test stand** ${URL} — ${SHA}: релизный бакет в workflow (\`base-static-url\`) и во fluxcd (\`baseStaticDomain\` провайдера hot-test) разный: ${RELEASE_STAND} ≠ ${RELEASE_BASE} ([run](${run}))."
+          elif [ "$RELEASE_STATUS" = differs ]; then
+            body=":x: **Hot-test stand** ${URL} — ${SHA}: релизный бакет в workflow (\`base-static-url\`) и во fluxcd (\`baseStaticDomain\` провайдера hot-test) разный, первое расхождение \`${RELEASE_PATH}\`: ${RELEASE_STAND} ≠ ${RELEASE_BASE} ([run](${run}))."
+          elif [ "$RELEASE_STATUS" = missing ]; then
+            body=":x: **Hot-test stand** ${URL} — ${SHA}: стенд не отдал \`${RELEASE_PATH}\` (HTTP ${RELEASE_CODE}): ${RELEASE_STAND} ([run](${run}))."
           elif [ "$RELEASE_OK" != true ]; then
-            body=":x: **Hot-test stand** ${URL} — ${SHA}: the release bucket check could not read the core manifest of \`base-static-url\` ([run](${run}))."
+            body=":x: **Hot-test stand** ${URL} — ${SHA}: the release bucket check could not read the release manifests of \`base-static-url\` ([run](${run}))."
           else
             body=":white_check_mark: **Hot-test stand**: ${URL} — ${SHA} ([run](${run}))"$'\n\n'"\`${MCF}\` from this PR on top of the released admin of the test tenant; the stand is removed when the PR closes."
           fi
