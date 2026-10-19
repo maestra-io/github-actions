@@ -84,6 +84,11 @@
 #   release-version     Release number set by the caller instead of RELEASE_PREFIX.run_number,
 #                       X.Y.Z (e.g. a semantic-release version the caller has already
 #                       tagged and released; the `release` job then finds it and skips).
+#   release-tag-prefix  Prefix of the git tag / GitHub Release (default '': bare `1.1.N`),
+#                       for a second release line in a repo that already tags `1.1.N`
+#                       (e.g. `standard-blocks-v` next to mcf-build). Images and
+#                       <service>-manifests keep the bare release; the prefix also
+#                       gives the line its own concurrency group.
 # Secrets:
 #   private-packages-token  Optional override of the nora OIDC token.
 # Outputs:
@@ -156,6 +161,9 @@ on:
       release-version:
         type: string
         default: ""
+      release-tag-prefix:
+        type: string
+        default: ""
       test-shards:
         type: number
         default: 1
@@ -166,11 +174,13 @@ on:
       release:
         value: ${{ jobs.version.outputs.release }}
 
-# One release pipeline per repository at a time; pull requests get their own group
-# and cancel superseded runs. Callers must not reuse the `release-<repo>` group
-# name in their own workflow (same name in caller and callee deadlocks).
+# One release pipeline per repository (and release-tag-prefix) at a time: a second
+# release line would otherwise share mcf-build's `release-<repo>` group, where a newer
+# pending run cancels the older one. Pull requests get their own group and cancel
+# superseded runs. Callers must not reuse the `release-<repo>` group name in their own
+# workflow (same name in caller and callee deadlocks).
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('build-{0}-{1}', github.repository, github.ref) || format('release-{0}', github.repository) }}
+  group: ${{ github.event_name == 'pull_request' && format('build-{0}-{1}', github.repository, github.ref) || format('release-{0}{1}', github.repository, inputs.release-tag-prefix != '' && format(':{0}', inputs.release-tag-prefix) || '') }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -240,6 +250,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       release: ${{ steps.v.outputs.release }}
+      tag: ${{ steps.v.outputs.tag }}
       shards: ${{ steps.v.outputs.shards }}
       matrix: ${{ steps.v.outputs.matrix }}
       legs: ${{ steps.v.outputs.legs }}
@@ -255,6 +266,7 @@ jobs:
           PREFIX: ${{ vars.RELEASE_PREFIX }}
           RUN_NUMBER: ${{ github.run_number }}
           RELEASE_VERSION: ${{ inputs.release-version }}
+          TAG_PREFIX: ${{ inputs.release-tag-prefix }}
           TEST_SHARDS: ${{ inputs.test-shards }}
           IMAGE_TARGETS: ${{ inputs.image-targets }}
           BAKE: ${{ inputs.bake }}
@@ -278,6 +290,10 @@ jobs:
             esac
             release="${prefix}.${RUN_NUMBER}"
           fi
+          if [[ ! "$TAG_PREFIX" =~ ^[A-Za-z0-9._-]*$ ]]; then
+            echo "::error::release-tag-prefix '$TAG_PREFIX' is not [A-Za-z0-9._-]*"; exit 1
+          fi
+          tag="${TAG_PREFIX}${release}"
           # <<< release
           # >>> shards (scripts/test-service-build.sh runs this block)
           if ! [[ "$TEST_SHARDS" =~ ^[0-9]+$ ]] || [ "$TEST_SHARDS" -lt 1 ] || [ "$TEST_SHARDS" -gt 20 ]; then
@@ -308,6 +324,7 @@ jobs:
           # <<< image-targets
           {
             echo "release=$release"
+            echo "tag=$tag"
             echo "shards=$shards"
             echo "matrix=$matrix"
             echo "legs=$(jq -c 'map({image, target})' <<<"$matrix")"
@@ -690,7 +707,8 @@ jobs:
           teleportToken: ${{ needs.version.outputs.teleport-token }}
 
   # Git tag + GitHub Release BEFORE the bake: bake-oci-manifests checks out the
-  # release tag. Bare `1.1.N`, same shape as create-gitlab-release.
+  # release tag. Bare `1.1.N`, same shape as create-gitlab-release (or
+  # <release-tag-prefix>1.1.N).
   # Bake-only (no image-targets): `images` is skipped, so the gate is explicit.
   release:
     needs: [version, test, images]
@@ -705,14 +723,14 @@ jobs:
       - uses: runs-on/action@v2.5.0
       - env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE: ${{ needs.version.outputs.release }}
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
           # Idempotent for a re-run of failed jobs (same run_number, same release).
-          if gh release view "$RELEASE" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "release $RELEASE already exists"; exit 0
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $TAG already exists"; exit 0
           fi
-          gh release create "$RELEASE" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "$RELEASE" --generate-notes
+          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "$TAG" --generate-notes
 
   bake:
     needs: [version, release]
@@ -730,6 +748,7 @@ jobs:
           service: ${{ needs.version.outputs.service }}
           images: ${{ needs.version.outputs.images }}
           tag: ${{ needs.version.outputs.release }}
+          ref: ${{ needs.version.outputs.tag }}
           bake-path: ${{ inputs.bake-path }}
           teleport-token: ${{ needs.version.outputs.teleport-token }}
 
