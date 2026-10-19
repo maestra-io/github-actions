@@ -408,6 +408,11 @@ jobs:
       # undrain-only — and all three move a weighted Route53 record (withdraw or
       # restore). The plan job never does, which is why it is not forwarded there.
       aws_workload_identity: ${{ inputs.aws_workload_identity }}
+      # The host this leg drains and reboots must not carry this leg's Teleport
+      # traffic: where a proxy runs ON the farm (us-iota, hostNetwork), every dial
+      # that DNS lands on the target dies with its proxy mid-drain — the
+      # delegate's kubectl session included. No-op where no proxy is on the host.
+      teleport_avoid_host: ${{ matrix.host }}
       tbot_tunnels: |
         app=${{ inputs.alertmanager_app }} listen=9093
       extra_run_args: >-

@@ -236,6 +236,17 @@ on:
         required: false
         type: string
         default: "teleport.maestra.io:443"
+      teleport_avoid_host:
+        description: >-
+          A Teleport node this job must not route through. Before the play, the
+          runner pins the proxy FQDN in /etc/hosts to its A records MINUS this
+          host's own addresses, so every tsh/tbot dial lands on a proxy that is not
+          on it. A no-op when no proxy address belongs to the host. os-update sets
+          it to the target: on us-iota the proxies run hostNetwork ON the nodes it
+          drains and reboots. Empty = DNS as is.
+        required: false
+        type: string
+        default: ""
       python_version:
         required: false
         type: string
@@ -444,6 +455,54 @@ jobs:
           proxy: ${{ inputs.teleport_fqdn }}
           token: ${{ inputs.teleport_join_token }}
           certificate-ttl: ${{ inputs.certificate_ttl }}
+
+      # --- Keep the proxy on the target out of the path (os-update) ------
+      # tsh dials <fqdn>:3023 (separate listener mode), which DNS spreads over
+      # every proxy address. On us-iota those are the three k0s nodes' own IPs:
+      # the proxy is hostNetwork there, so a dial that lands on the target rides
+      # the target's proxy pod — evicted by our drain, gone at our reboot — and
+      # with it the delegate's kubectl session. Pinning the FQDN to the OTHER
+      # proxies' addresses takes the target out of every new dial (ssh, inventory
+      # tsh ls, tbot tunnels). Teleport's SSH resumption (tsh proxy ssh, 1-min
+      # window) remains the second layer for a connection that drops anyway.
+      # Fail-open on purpose: a target we cannot ask is one the play cannot
+      # reach either, and an unpinned run is exactly today's behaviour.
+      - name: Keep the Teleport proxy on the target out of the path
+        if: ${{ inputs.teleport_avoid_host != '' }}
+        env:
+          TELEPORT_IDENTITY_FILE: ${{ steps.teleport-auth.outputs.identity-file || steps.teleport-auth-retry.outputs.identity-file }}
+          TELEPORT_PROXY: ${{ inputs.teleport_fqdn }}
+          AVOID_HOST: ${{ inputs.teleport_avoid_host }}
+        run: |
+          # >>> avoid-target-proxy (ansible/tests/test-avoid-target-proxy.sh runs this block)
+          set +e -uo pipefail  # +e: the runner's bash -e would turn an empty grep into a red step
+          fqdn="${TELEPORT_PROXY%:*}"
+          proxy_ips=$(getent ahostsv4 "$fqdn" | awk '{print $1}' | sort -u)
+          target_ips=$(timeout 60 tsh ssh --login=teleport-production "$AVOID_HOST" 'hostname -I' 2>/dev/null \
+            | tr ' ' '\n' | grep -E '^[0-9]+(\.[0-9]+){3}$' | sort -u)
+          if [ -z "$proxy_ips" ] || [ -z "$target_ips" ]; then
+            echo "::warning::could not read the addresses of ${fqdn} or ${AVOID_HOST} — DNS left as is"
+            exit 0
+          fi
+          keep=$(comm -23 <(echo "$proxy_ips") <(echo "$target_ips"))
+          if [ "$keep" = "$proxy_ips" ]; then
+            echo "no ${fqdn} address is on ${AVOID_HOST} — nothing to pin"
+            exit 0
+          fi
+          if [ -z "$keep" ]; then
+            echo "::warning::every ${fqdn} address is on ${AVOID_HOST} — DNS left as is"
+            exit 0
+          fi
+          if ! awk -v h="$fqdn" '{print $1, h}' <<< "$keep" | sudo tee -a /etc/hosts >/dev/null; then
+            echo "::warning::could not write /etc/hosts — DNS left as is"
+            exit 0
+          fi
+          if [ "$(getent ahostsv4 "$fqdn" | awk '{print $1}' | sort -u)" != "$keep" ]; then
+            echo "::warning::/etc/hosts pin for ${fqdn} is not what the resolver returns — check nsswitch"
+            exit 0
+          fi
+          echo "${fqdn} pinned to ${keep//$'\n'/ } (dropped the proxy on ${AVOID_HOST})"
+          # <<< avoid-target-proxy
 
       # --- Mitogen (Linux only) ------------------------------------------
       - name: Configure Mitogen strategy plugin
