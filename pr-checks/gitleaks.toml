@@ -1,9 +1,8 @@
-# LEGACY gitleaks config read by the gitleaks step inside
-# .github/workflows/pr-checks.yml (and by callers that pin an older pr-checks.yml).
-# It keeps the full allowlist that step always had, so nothing changes for those
-# callers until they move to .github/workflows/gitleaks.yml, which uses gitleaks'
-# default rules plus the repo's own .gitleaks.toml. Do not add rules here; this
-# file goes away with that step.
+# LEGACY gitleaks config for callers that pin an older
+# .github/workflows/pr-checks.yml (eventrouter, kube-web-view): its inline gitleaks
+# step reads this path from main. The current pr-checks.yml has no gitleaks step.
+# It keeps the full allowlist that step always had; do not add rules here. It goes
+# away once those repos move to their own gitleaks.yml workflow.
 title = "Gitleaks Configuration"
 minVersion = "v8.25.0"
 

@@ -13,18 +13,23 @@
 # lists the findings (redacted), each one gets a review comment on the PR, and the
 # SARIF report is uploaded as a run artifact (the action's defaults).
 #
-# Usage (GITLEAKS_LICENSE is an org secret; gitleaks-action exits 1 on an org repo
-# without it):
+# Usage: every repo enables the scan with its own PR workflow; no shared workflow
+# of this repo (dotnet-service-build, service-build, mcf-build, the package
+# publishers, helm-chart, frontend-codegen, terraform-pr, ansible-pr, pr-checks)
+# runs it. GITLEAKS_LICENSE is an org secret (gitleaks-action exits 1 on an org repo
+# without it); `secrets: inherit` passes it:
 #
+# .github/workflows/gitleaks.yml in the repo:
+#   name: gitleaks
+#   on: pull_request
+#   permissions: { contents: read, pull-requests: write }
 #   jobs:
 #     gitleaks:
 #       uses: maestra-io/github-actions/.github/workflows/gitleaks.yml@main
-#       secrets: inherit   # or: secrets: { GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }} }
-#       permissions:
-#         contents: read
-#         pull-requests: write   # the PR's commit list, and the review comments
+#       secrets: inherit
 #
-# Permissions come from the calling job: this workflow declares none.
+# Permissions come from the calling workflow (this one declares none):
+# pull-requests: write for the PR's commit list and the review comments.
 #
 # Config: only the central gitleaks/gitleaks.toml of this repo (gitleaks' default
 # rules plus allowlists that apply to any repo), passed as GITLEAKS_CONFIG. A repo's

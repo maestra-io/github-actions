@@ -284,9 +284,10 @@ env:
 
 jobs:
   # Pull requests that change only the kustomization tree(s) skip version/test/images:
-  # nothing that is built or tested changed. checks still runs (gitleaks + the kustomize
-  # build of the changed overlays) and pr-gate stays green (skipped jobs pass). Any doubt
-  # (no merge commit, git failure, bake from the repo root) means code=true: everything runs.
+  # nothing that is built or tested changed. checks still runs (check-encoding + the
+  # kustomize build of the changed overlays) and pr-gate stays green (skipped jobs pass).
+  # Any doubt (no merge commit, git failure, bake from the repo root) means code=true:
+  # everything runs.
   changes:
     runs-on: runs-on=${{ github.run_id }}-changes/pool=small
     timeout-minutes: 5
@@ -1310,8 +1311,8 @@ jobs:
           bake-path: ${{ matrix.bake-path }}
           teleport-token: ${{ needs.version.outputs.teleport-token }}
 
-  # Pull requests only: the shared PR checks (gitleaks on the PR's commits,
-  # check-encoding, kustomize build of a changed overlays tree), then one verdict.
+  # Pull requests only: the shared PR checks (check-encoding, kustomize build of a
+  # changed overlays tree), then one verdict.
   checks:
     if: ${{ github.event_name == 'pull_request' }}
     uses: maestra-io/github-actions/.github/workflows/pr-checks.yml@main

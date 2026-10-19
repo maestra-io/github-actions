@@ -433,22 +433,27 @@ Tested by [`scripts/test-tbot-join.sh`](scripts/test-tbot-join.sh) (stub `tbot`,
 
 The reusable workflow [`gitleaks.yml`](.github/workflows/gitleaks.yml) runs the official
 [`gitleaks/gitleaks-action`](https://github.com/gitleaks/gitleaks-action) (v3) on a pull
-request. One job, `gitleaks` (check name `<caller job> / gitleaks`), skipped outside
-`pull_request`:
+request. One job, `gitleaks` (check name `gitleaks / gitleaks` with the caller below),
+skipped outside `pull_request`.
+
+A repo enables the scan with its own workflow, `.github/workflows/gitleaks.yml`; none
+of the shared workflows here (the service builds, `mcf-build.yml`, the package
+publishers, `helm-chart.yml`, `frontend-codegen.yml`, `terraform-pr.yml`,
+`ansible-pr.yml`, `pr-checks.yml`) runs it:
 
 ```yaml
+name: gitleaks
+on: pull_request
+permissions: { contents: read, pull-requests: write }
 jobs:
   gitleaks:
     uses: maestra-io/github-actions/.github/workflows/gitleaks.yml@main
-    secrets: inherit          # GITLEAKS_LICENSE, an org secret
-    permissions:
-      contents: read
-      pull-requests: write    # the PR's commit list, and the review comments
+    secrets: inherit   # GITLEAKS_LICENSE, an org secret
 ```
 
 - **Secret**: gitleaks-action exits 1 on an organization repo without `GITLEAKS_LICENSE`
   (`secrets: inherit`, or `secrets: { GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }} }`).
-- **Permissions** come from the calling job (the workflow declares none): `contents: read`
+- **Permissions** come from the calling workflow (this one declares none): `contents: read`
   and `pull-requests: write` (the PR's commit list on a private repo, and the review
   comments).
 - **What is scanned**: the PR's commits, `--no-merges --first-parent <first>^..<last>`,
@@ -467,9 +472,9 @@ own gitleaks config is not read; a project-specific allowlist is added here.
 A single accepted finding goes to `.gitleaksignore` at the repo root, one fingerprint
 `<commit>:<file>:<rule-id>:<line>` per line.
 
-`pr-checks.yml` still runs its own gitleaks step (input `gitleaks`, default `true`) with
-its legacy config `pr-checks/gitleaks.toml`, and the build and publish workflows below get
-the scan through it, until they call `gitleaks.yml` as their own `gitleaks` job.
+`pr-checks.yml` has no gitleaks step any more; its `gitleaks` input is deprecated and
+ignored (it stays declared so callers that still pass it do not break).
+`pr-checks/gitleaks.toml` stays only for the callers that pin an older `pr-checks.yml`.
 
 ## Test results ingest (flaky-test telemetry)
 
@@ -506,7 +511,8 @@ top of each file.
 | [`hot-test-publish.yml`](.github/workflows/hot-test-publish.yml) | hot-test stand of a pull request ([issues-maestra#1574](https://github.com/maestra-io/issues-maestra/issues/1574)): the PR's static artifact + an entry from `frontend-entry-static-builder --single-run` with the PR's manifest → R2 `admin-hot-test-static-omicron/hot-test-<repo>-pr-<N>/` (Teleport GitHub join from the PR → Vault omicron → 10-minute editor keys); the stand URL `https://hot-test-<repo>-pr-<N>.testing-env.omicron.maestra.io` is in the PR as a deployment of environment `hot-test` and in the job's step summary. Called by `mcf-build.yml` on pull_request (input `hot-test`); the routes come from the builder's chart per open PR. Inputs: `bucket` (stands' bucket, write), `base-static-url` (release static the entry is built from), `hot-test-domain`; the tenant and the cluster's copies of these addresses live only in fluxcd (component `base/microfrontend/hot-test`). After the route is up the job compares every release manifest the entry was built from (`v2_static/core/manifest.json` and `v2_static/<mcf>/mf-manifest.json` of each MCF in its `entry/mcf-manifests.json` but the PR's own) through the stand with the ones under `base-static-url`: another release bucket in the cluster's `baseStaticDomain` (first differing path in the summary) or a non-200 from the stand is ❌ and fails the job | frontend-ci-components mcf@3 hot-test environments |
 | [`frontend-codegen.yml`](.github/workflows/frontend-codegen.yml) | one job `codegen` for a frontend with its own pipeline (maestra-io/frontend): restores the `install` job's `node_modules` cache, GitHub OIDC → auth-jwt omega JWT (client `github-frontend-graphql-schema`, bound to this workflow at `@refs/heads/main`) → `npm run graphql-codegen`; artifact `codegen`. The same job as `codegen` in `mcf-build.yml` | frontend-ci-components graphql-codegen |
 | [`helm-chart.yml`](.github/workflows/helm-chart.yml) | PR: `check` (version bump, CHANGELOG, lint, helm-unittest); main: `release` → ECR `helm-charts/<name>` ([`push-helm-chart-to-aws-ecr`](push-helm-chart-to-aws-ecr/action.yml)) | system/components/helm-ci helm-merge-request + helm-release |
-| [`gitleaks.yml`](.github/workflows/gitleaks.yml) | PR only: one job `gitleaks`, [`gitleaks/gitleaks-action`](https://github.com/gitleaks/gitleaks-action) on the PR's commits with the central `gitleaks/gitleaks.toml`; needs the `GITLEAKS_LICENSE` org secret; a repo with its own workflows calls it directly (`pr-checks.yml` still runs its own gitleaks step) | — |
+| [`gitleaks.yml`](.github/workflows/gitleaks.yml) | PR only: one job `gitleaks`, [`gitleaks/gitleaks-action`](https://github.com/gitleaks/gitleaks-action) on the PR's commits with the central `gitleaks/gitleaks.toml`; needs the `GITLEAKS_LICENSE` org secret; each repo calls it from its own `.github/workflows/gitleaks.yml` (no shared workflow here runs it) | — |
+| [`pr-checks.yml`](.github/workflows/pr-checks.yml) | PR only: check-encoding of the changed files and `kustomize build` of a changed overlays tree; its `gitleaks` input is deprecated and ignored | — |
 
 Warehouse refresh: GitHub org webhook → Kargo cluster receiver, see fluxcd `iota/us-iota-lw-kube-infra/kargo/webhook-receivers.yaml`; Warehouses still poll every 5 min as fallback.
 
