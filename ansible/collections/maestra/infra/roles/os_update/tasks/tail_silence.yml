@@ -1,0 +1,31 @@
+---
+# Post-run grace: APPLY success path only, BEFORE unsilence.yml expires the
+# maintenance silences (posted first, so there is no unsilenced gap). The SAME
+# matcher sets go up again as short-lived silences, because the workloads a
+# reboot takes down are still coming back when the job ends, and alerts whose
+# `for:` outlasts the job fire right after it (us-omicron 19.10.2026:
+# KafkaClusterImbalanced 64 s after worker02's job, broker-1 rebalancing).
+#
+# createdBy is `os-update-tail`, deliberately OUTSIDE `^gha-os-update`: the
+# one-at-a-time guard, silence.yml's race re-check and undrain-only's adoption
+# all select on that regex, and a tail is not a drain — the host is back in
+# rotation with its marker cleared, so the next host must not wait for it.
+#
+# Timestamps exactly as silence.yml builds them (fresh epoch, utc=true) — see
+# the comment there for the controller-timezone trap.
+- name: Create the tail silences (same matcher sets, short endsAt)
+  ansible.builtin.uri:
+    url: "{{ os_update_am_url }}/api/v2/silences"
+    method: POST
+    body_format: json
+    body:
+      matchers: "{{ item }}"
+      startsAt: "{{ '%Y-%m-%dT%H:%M:%S.000Z' | strftime(now().timestamp(), utc=true) }}"
+      endsAt: "{{ '%Y-%m-%dT%H:%M:%S.000Z' | strftime(now().timestamp() + (os_update_tail_silence_minutes | int) * 60, utc=true) }}"
+      createdBy: "os-update-tail"
+      comment: "OS update tail issues-maestra#1104 contour={{ os_update_contour }} host={{ inventory_hostname }} run={{ os_update_run_url }} — workloads returning after the reboot"
+    status_code: 200
+  delegate_to: localhost
+  become: false
+  check_mode: false
+  loop: "{{ os_update_silence_sets }}"

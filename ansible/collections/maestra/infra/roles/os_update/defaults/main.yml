@@ -49,6 +49,20 @@ os_update_am_url: ""
 # the OsUpdateHostStrandedDrain alert, or the safety net silences itself.
 os_update_silence_minutes: 25
 
+# Post-run grace (tasks/tail_silence.yml): after a SUCCESSFUL apply the same
+# matcher sets are re-posted for this long as createdBy `os-update-tail`, then
+# the maintenance silences are expired. It covers alerts whose `for:` outlasts
+# the job while the workloads the reboot took down come back — measured on
+# us-omicron 19.10.2026: KafkaClusterImbalanced fired 64 s after the worker02
+# job ended (leadership rebalances for ~15 min after the broker restarts);
+# UnderReplicatedPartitionsK8S, KubePodNotReady and
+# KubeStatefulSetReplicasMismatch are all `for: 15m`.
+# Not bounded by OsUpdateHostStrandedDrain like the dead-man window above: the
+# tail goes up only once the host is undrained AND its marker cleared, and its
+# createdBy is outside the one-at-a-time guard's `^gha-os-update`. A failed apply,
+# binary-update and undrain-only post no tail. 0 turns it off.
+os_update_tail_silence_minutes: 15
+
 # Reboot behaviour. post_reboot_delay covers Teleport agent re-registration:
 # the host is SSH-reachable only once its teleport agent is back in the proxy's
 # inventory, and ansible reconnects through the tsh ProxyCommand.

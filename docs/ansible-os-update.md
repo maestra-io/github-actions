@@ -188,6 +188,7 @@ haproxy's `os-update-gate` against a concurrent `terraform apply` — **for free
 | verify fails | un-drains in `always`, then fails red | **stays drained**, fails red |
 | drain marker on failure | cleared (unless the undrain also failed) | **left in place** |
 | silences on failure | dropped | dropped |
+| silences on success | 15 min tail, then dropped | dropped |
 
 `apply` un-drains unconditionally because a patched host that failed verify has usually
 just booted a kernel that works, and holding a healthy box out of rotation costs
@@ -230,13 +231,43 @@ Opting in is having the file; opting out is not having it. The pet-VM consumers
 so their behaviour is byte-identical to before — and reverting a handoff is
 deleting one file.
 
+## Silences: maintenance, tail, none
+
+A host in a run is in exactly one of three silence states. Each state posts **every**
+`os_update_silence_sets` element, the kube consumer's namespace/pod workload sets
+(`silence-workload.yml` appends them in `vars.yml`) included.
+
+| state | when | `createdBy` | `endsAt` | gates the next host |
+|---|---|---|---|---|
+| **maintenance** | from just before the drain to the end of the job | `gha-os-update` | now + `os_update_silence_minutes` (25), the dead-man window | **yes**: it is the one-at-a-time interlock |
+| **tail** | after a **successful** `apply` (verify, undrain, marker clear and settle all passed) | `os-update-tail` | now + `os_update_tail_silence_minutes` (15) | no |
+| **none** | after a failed run, `binary-update`, `undrain-only`, or once the tail expires | — | — | — |
+
+The tail exists because the job ends before the workloads the reboot took down
+have caught up. Alerts whose `for:` outlasts the job used to fire right after the
+maintenance silence was expired: on us-omicron, 19.10.2026, `KafkaClusterImbalanced`
+fired 64 s after the worker02 job finished (broker-1 restarted with the node, and
+leadership rebalances for about 15 min). `UnderReplicatedPartitionsK8S`,
+`KubePodNotReady` and `KubeStatefulSetReplicasMismatch` (all `for: 15m`) have the same
+shape. The tail is posted **before** the maintenance silences are expired, so there is
+no unsilenced gap.
+
+* The tail is **not** an interlock. Its `createdBy` sits outside the `^gha-os-update`
+  regex used by `guards.yml`, by the race re-check in `silence.yml`, and by
+  `undrain-only`'s adoption of orphaned silences. The host is back in rotation with its
+  marker cleared, so the next host does not wait for its tail.
+* It is not bounded by `OsUpdateHostStrandedDrain` like the dead-man window is. It goes
+  up only after the marker has been cleared, so there is no stranded drain for it to hide.
+* A **failed** run posts no tail: the operator must see what is broken.
+  `os_update_tail_silence_minutes: 0` disables the tail.
+
 ## When a run dies mid-drain
 
 A cancelled runner never executes `always`. Three layers, of which only the first is a gate:
 
 1. **The Alertmanager silence is the interlock.** It lives off-box and carries a dead-man
-   `endsAt`. `guards.yml` refuses to start if another host in the contour holds an open
-   os-update silence. (The on-host metric is *not* usable as the interlock: it disappears
+   `endsAt`. `guards.yml` refuses to start if another host in the contour holds an open maintenance
+   (`gha-os-update`) silence — a tail does not count. (The on-host metric is *not* usable as the interlock: it disappears
    during the reboot, so `count(...) == 0` evaluates over an empty vector and fails **open**
    in exactly the window it exists for.)
 2. **The on-disk marker** `/var/lib/os-update/drained.json` — a re-run reads it, knows the
