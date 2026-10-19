@@ -30,6 +30,8 @@ on:
       - "tbot-join/**"
       - ".github/workflows/pr-checks.yml"
       - "pr-checks/**"
+      - ".github/workflows/gitleaks.yml"
+      - "gitleaks/**"
 
 permissions:
   contents: read
@@ -143,6 +145,18 @@ jobs:
       contents: read
     with:
       ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+  # The gitleaks workflow of the PR head on this repo's own pull requests. Skips
+  # itself outside pull_request. Needs the org secret GITLEAKS_LICENSE
+  # (gitleaks-action exits 1 without it on an org repo).
+  gitleaks:
+    uses: ./.github/workflows/gitleaks.yml
+    secrets: inherit
+    with:
+      ref: ${{ github.event.pull_request.head.sha || github.sha }}
+    permissions:
+      contents: read
+      pull-requests: write
 
   # End to end: the real reusable workflow on a net8.0 + net10.0 solution with no
   # global.json. Each test asserts it runs on its own target's runtime (no
