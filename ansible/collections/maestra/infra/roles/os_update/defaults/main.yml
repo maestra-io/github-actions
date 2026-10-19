@@ -49,7 +49,8 @@ os_update_am_url: ""
 # the OsUpdateHostStrandedDrain alert, or the safety net silences itself.
 os_update_silence_minutes: 25
 
-# Post-run grace (tasks/tail_silence.yml): after a SUCCESSFUL apply the same
+# Post-run grace (tasks/tail_silence.yml): after a SUCCESSFUL apply, and after
+# an undrain-only run (the workloads a dead run moved are landing back), the same
 # matcher sets are re-posted for this long as createdBy `os-update-tail`, then
 # the maintenance silences are expired. It covers alerts whose `for:` outlasts
 # the job while the workloads the reboot took down come back — measured on
@@ -59,8 +60,8 @@ os_update_silence_minutes: 25
 # KubeStatefulSetReplicasMismatch are all `for: 15m`.
 # Not bounded by OsUpdateHostStrandedDrain like the dead-man window above: the
 # tail goes up only once the host is undrained AND its marker cleared, and its
-# createdBy is outside the one-at-a-time guard's `^gha-os-update`. A failed apply,
-# binary-update and undrain-only post no tail. 0 turns it off.
+# createdBy is outside the one-at-a-time guard's `^gha-os-update`. A failed apply
+# and binary-update post no tail; undrain-only does (1.2.2). 0 turns it off.
 os_update_tail_silence_minutes: 15
 
 # Reboot behaviour. post_reboot_delay covers Teleport agent re-registration:
