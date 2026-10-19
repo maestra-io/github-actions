@@ -95,6 +95,8 @@ jobs:
 
       - name: hot-test-publish stand names, manifest override, route wait, release bucket check, summary (workflow copy)
         run: bash scripts/test-hot-test-publish.sh
+      - name: mcf-build static-prefix and manifest inputs (workflow copy)
+        run: bash scripts/test-mcf-build-static.sh
 
       - name: pr-checks check-encoding and kustomize entry points
         run: bash scripts/test-pr-checks.sh

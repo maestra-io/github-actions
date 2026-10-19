@@ -19,19 +19,20 @@ eq() { [ "$1" = "$2" ] || { printf 'FAIL %s\n  got:  %s\n  want: %s\n' "$3" "$1"
 names_prog=$(sed -n '/# >>> names/,/# <<< names/p' "$wf" | sed 's/^          //')
 [ -n "$names_prog" ] || { echo "names block not found in $wf"; exit 1; }
 # names <repo input> <pr input> <mcf input> [event pr] [static-prefix input] [manifest input]
-# prints "<host> <name> <mcf> <static prefix> <manifest> <own mcf or ->"
+# prints "<host> <name> <mcf> <static prefix> <manifest>"
 names() {
   REPO="$1" PR_NUMBER="$2" MCF="$3" EVENT_PR_NUMBER="${4:-}" STATIC_PREFIX="${5:-}" MANIFEST="${6:-}" \
     HOT_TEST_DOMAIN=testing-env.omicron.maestra.io GITHUB_REPOSITORY=maestra-io/frontend-homepage \
-    bash -c "set -eo pipefail; $names_prog"$'\n''echo "$host $name $mcf $static_prefix $manifest ${own_mcf:--}"'
+    bash -c "set -eo pipefail; $names_prog"$'\n''echo "$host $name $mcf $static_prefix $manifest"'
 }
 fails() { if names "$1" "$2" "$3" "${4:-}" "${5:-}" "${6:-}" >/dev/null 2>&1; then echo "FAIL $7: accepted"; exit 1; fi; }
 
-eq "$(names frontend-homepage 12 frontend_homepage)" "hot-test-frontend-homepage-pr-12.testing-env.omicron.maestra.io hot-test-frontend-homepage-pr-12 frontend_homepage v2_static/frontend_homepage mcf frontend_homepage" "explicit inputs"
-eq "$(names "" "" "" 7)" "hot-test-frontend-homepage-pr-7.testing-env.omicron.maestra.io hot-test-frontend-homepage-pr-7 frontend_homepage v2_static/frontend_homepage mcf frontend_homepage" "defaults: repository, event PR, repo with _"
-eq "$(names frontend-core-v2 3 "")" "hot-test-frontend-core-v2-pr-3.testing-env.omicron.maestra.io hot-test-frontend-core-v2-pr-3 frontend_core_v2 v2_static/frontend_core_v2 mcf frontend_core_v2" "mcf default from repo"
-eq "$(names frontend 4 "" "" public none)" "hot-test-frontend-pr-4.testing-env.omicron.maestra.io hot-test-frontend-pr-4 frontend public none -" "legacy monorepo: own files in public/, no manifest, no MCF to skip"
-eq "$(names frontend-core-v2 3 "" "" v2_static/core)" "hot-test-frontend-core-v2-pr-3.testing-env.omicron.maestra.io hot-test-frontend-core-v2-pr-3 frontend_core_v2 v2_static/core mcf frontend_core_v2" "static-prefix with a slash"
+eq "$(names frontend-homepage 12 frontend_homepage)" "hot-test-frontend-homepage-pr-12.testing-env.omicron.maestra.io hot-test-frontend-homepage-pr-12 frontend_homepage v2_static/frontend_homepage mcf" "explicit inputs"
+eq "$(names "" "" "" 7)" "hot-test-frontend-homepage-pr-7.testing-env.omicron.maestra.io hot-test-frontend-homepage-pr-7 frontend_homepage v2_static/frontend_homepage mcf" "defaults: repository, event PR, repo with _"
+eq "$(names frontend-core-v2 3 "")" "hot-test-frontend-core-v2-pr-3.testing-env.omicron.maestra.io hot-test-frontend-core-v2-pr-3 frontend_core_v2 v2_static/frontend_core_v2 mcf" "mcf default from repo"
+eq "$(names frontend 4 "" "" public none)" "hot-test-frontend-pr-4.testing-env.omicron.maestra.io hot-test-frontend-pr-4 frontend public none" "legacy monorepo: own files in public/, no manifest"
+eq "$(names frontend-core-v2 3 "" "" v2_static/core)" "hot-test-frontend-core-v2-pr-3.testing-env.omicron.maestra.io hot-test-frontend-core-v2-pr-3 frontend_core_v2 v2_static/core mcf" "static-prefix with a slash"
+eq "$(names frontend-core-v2 3 "" "" v2_static/core core)" "hot-test-frontend-core-v2-pr-3.testing-env.omicron.maestra.io hot-test-frontend-core-v2-pr-3 frontend_core_v2 v2_static/core core" "core: own files in v2_static/core, core manifest"
 fails "Frontend-Homepage" 1 "" "" "" "" "upper-case repo"
 fails "frontend.homepage" 1 "" "" "" "" "dot in repo"
 fails "a/b" 1 "" "" "" "" "slash in repo"
@@ -42,7 +43,7 @@ fails frontend-services 12 "" "" "" "" "repo containing -services"
 fails frontend 4 "" "" /public "" "static-prefix with a leading slash"
 fails frontend 4 "" "" public/ "" "static-prefix with a trailing slash"
 fails frontend 4 "" "" Public "" "upper-case static-prefix"
-fails frontend 4 "" "" public core "unknown manifest kind"
+fails frontend 4 "" "" public bogus "unknown manifest kind"
 echo "hot-test-publish names: ok"
 
 manifest_prog=$(sed -n '/# >>> manifest/,/# <<< manifest/p' "$wf" | sed 's/^          //')
@@ -59,7 +60,29 @@ rm "$overrides/mf-manifest.json"
 STATIC_PREFIX=public MANIFEST=none \
   site="$site" overrides="$overrides" bash -c "set -eo pipefail; $manifest_prog"
 [ -z "$(ls -A "$overrides")" ] || { echo "FAIL manifest: none wrote an override: $(ls "$overrides")"; exit 1; }
+mkdir -p "$site/v2_static/core"
+echo '{"main":[{"path":"v2_static/core/main-1.js","integrity":"sha384-x"}]}' > "$site/v2_static/core/manifest.json"
+echo '{"buildVersion":"1.1.1","buildTimestamp":1,"lastHotfix":null}' > "$site/v2_static/core/build-info.json"
+STATIC_PREFIX=v2_static/core MANIFEST=core \
+  site="$site" overrides="$overrides" bash -c "set -eo pipefail; $manifest_prog"
+cmp -s "$site/v2_static/core/manifest.json" "$overrides/../core-manifest.json" \
+  || { echo "FAIL core: override core-manifest.json differs from the PR manifest"; exit 1; }
+cmp -s "$site/v2_static/core/build-info.json" "$overrides/../core-build-info.json" \
+  || { echo "FAIL core: override core-build-info.json differs from the PR build-info"; exit 1; }
+[ -z "$(ls -A "$overrides")" ] || { echo "FAIL manifest: core wrote an MCF override: $(ls "$overrides")"; exit 1; }
 echo "hot-test-publish manifest: ok"
+
+core_entry_prog=$(sed -n '/# >>> core-entry/,/# <<< core-entry/p' "$wf" | sed 's/^            //')
+[ -n "$core_entry_prog" ] || { echo "core-entry block not found in $wf"; exit 1; }
+mkdir -p "$site/entry"
+echo '<script src="https://stand/v2_static/core/main-1.js" integrity="sha384-x"></script>' > "$site/entry/index.html"
+STATIC_PREFIX=v2_static/core site="$site" bash -c "set -eo pipefail; $core_entry_prog" >/dev/null \
+  || { echo "FAIL core-entry: index.html with the PR chunk rejected"; exit 1; }
+echo '<script src="https://stand/v2_static/core/main-0.js"></script>' > "$site/entry/index.html"
+if STATIC_PREFIX=v2_static/core site="$site" bash -c "set -eo pipefail; $core_entry_prog" >/dev/null 2>&1; then
+  echo "FAIL core-entry: index.html without the PR chunk accepted"; exit 1
+fi
+echo "hot-test-publish core entry: ok"
 
 route_prog=$(sed -n '/# >>> route/,/# <<< route/p' "$wf" | sed 's/^          //')
 [ -n "$route_prog" ] || { echo "route block not found in $wf"; exit 1; }
@@ -86,15 +109,15 @@ echo "hot-test-publish route: ok"
 
 release_prog=$(sed -n '/# >>> release/,/# <<< release/p' "$wf" | sed 's/^          //')
 [ -n "$release_prog" ] || { echo "release block not found in $wf"; exit 1; }
-# release <stand url> <base-static-url> [own mcf, default frontend_homepage]; prints the step outputs and "exit=<code>"
+# release <stand url> <base-static-url> [static prefix, default v2_static/frontend_homepage]; prints the step outputs and "exit=<code>"
 release() {
   : > "$root/release.out"; rc=0
-  URL="$1" MCF="${3-frontend_homepage}" BASE_STATIC_URL="$2" RUNNER_TEMP="$root" GITHUB_OUTPUT="$root/release.out" \
+  URL="$1" STATIC_PREFIX="${3:-v2_static/frontend_homepage}" BASE_STATIC_URL="$2" RUNNER_TEMP="$root" GITHUB_OUTPUT="$root/release.out" \
     bash -c "set -eo pipefail; $release_prog" > "$root/release.log" 2>&1 || rc=$?
   { tr '\n' ' ' < "$root/release.out"; echo "exit=$rc"; }
 }
 # The entry list holds this PR's MCF (released only on base and stand: skipped as the PR's
-# own, checked when the PR carries no manifest) and two others.
+# own under static-prefix, checked when the PR's files live elsewhere) and two others.
 mkdir -p "$root/site/entry"
 jq -n '[{id: "frontend_billing", metaData: {remoteEntry: {name: "v2_static/frontend_billing/js/b-1.js"}}},
   {id: "frontend_homepage", metaData: {remoteEntry: {name: "v2_static/frontend_homepage/js/remoteEntry.js"}}},
@@ -111,6 +134,11 @@ done
 for d in base stand; do put "$d/$staff_path" '{"id":"frontend_staff","v":1}'; put "$d/$homepage_path" '{"id":"frontend_homepage","v":1}'; done
 put "other/$staff_path" '{"id":"frontend_staff","v":2}'
 put "other/$homepage_path" '{"id":"frontend_homepage","v":1}'
+# A stand with another core and the released MCFs: the core PR's own, another PR's drift.
+put "coreother/$core_path" '{"main":[{"path":"v2_static/core/main-2.js"}]}'
+put "coreother/v2_static/frontend_billing/mf-manifest.json" '{"id":"frontend_billing","v":1}'
+put "coreother/$staff_path" '{"id":"frontend_staff","v":1}'
+put "coreother/$homepage_path" '{"id":"frontend_homepage","v":1}'
 port=$(free_port)
 python3 -m http.server "$port" --bind 127.0.0.1 --directory "$www" >/dev/null 2>&1 &
 server_pid=$!
@@ -121,8 +149,10 @@ eq "$(release "$srv/other" "$srv/base")" "status=differs path=$staff_path code=2
 grep -q '^::error::.*baseStaticDomain' "$root/release.log" || { echo "FAIL release mismatch emits no ::error::"; cat "$root/release.log"; exit 1; }
 eq "$(release "$srv/partial" "$srv/base")" "status=missing path=$staff_path code=404 stand=$srv/partial/$staff_path base=$srv/base/$staff_path exit=1" "stand without an MCF manifest"
 eq "$(release "$srv/stand" "$srv/missing")" "exit=1" "unreadable base-static-url"
-eq "$(release "$srv/stand" "$srv/base/" "")" "status=same path= code=200 stand=$srv/stand/ base=$srv/base/ exit=0" "no manifest: every MCF is released, same bucket"
-eq "$(release "$srv/partial" "$srv/base" "")" "status=missing path=$homepage_path code=404 stand=$srv/partial/$homepage_path base=$srv/base/$homepage_path exit=1" "no manifest: the MCF named after the repo is checked too"
+eq "$(release "$srv/stand" "$srv/base/" public)" "status=same path= code=200 stand=$srv/stand/ base=$srv/base/ exit=0" "own files in public/: every MCF is released, same bucket"
+eq "$(release "$srv/partial" "$srv/base" public)" "status=missing path=$homepage_path code=404 stand=$srv/partial/$homepage_path base=$srv/base/$homepage_path exit=1" "own files in public/: the MCF named after the repo is checked too"
+eq "$(release "$srv/coreother" "$srv/base" v2_static/core)" "status=same path= code=200 stand=$srv/coreother/ base=$srv/base/ exit=0" "core PR: the stand's own core is skipped, the MCFs match"
+eq "$(release "$srv/coreother" "$srv/base")" "status=differs path=$core_path code=200 stand=$srv/coreother/$core_path base=$srv/base/$core_path exit=1" "MCF PR: another core on the stand"
 kill "$server_pid"; wait "$server_pid" 2>/dev/null || true; server_pid=""
 echo "hot-test-publish release: ok"
 
