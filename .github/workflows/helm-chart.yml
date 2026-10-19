@@ -55,11 +55,11 @@ jobs:
     runs-on: runs-on=${{ github.run_id }}-check/pool=small
     timeout-minutes: 10
     steps:
-      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: runs-on/action@v2.5.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
-      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+      - uses: azure/setup-helm@v4.3.1
         with:
           version: ${{ inputs.helm-version }}
 
@@ -112,9 +112,9 @@ jobs:
       contents: read
       id-token: write # Teleport join -> AWS
     steps:
-      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+      - uses: runs-on/action@v2.5.0
+      - uses: actions/checkout@v7.0.1
+      - uses: azure/setup-helm@v4.3.1
         with:
           version: ${{ inputs.helm-version }}
       - uses: maestra-io/github-actions/push-helm-chart-to-aws-ecr@v1

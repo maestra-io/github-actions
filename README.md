@@ -27,17 +27,16 @@ touches `ci/`).
 
 ### How consumers should pin
 
-**Reusable workflows and composite actions** — pin the immutable sha and name the tag in a trailing
-comment. That is the format Renovate writes and reads, so it bumps the sha and the comment together
-and can never propose the two out of step:
+**Reusable workflows and composite actions** — reference a release tag, not a commit sha (this repo
+does the same for every action it uses). Renovate bumps the tag:
 
 ```yaml
-uses: maestra-io/github-actions/.github/workflows/terraform-run.yml@4400cd4787fea8b4353aad7d90621d573af8ddc9 # v1.1.7
+uses: maestra-io/github-actions/.github/workflows/terraform-run.yml@v1.1.7
 ```
 
 If you would rather not review a Renovate PR per patch, `@v1` is also valid — a moving alias that
-only goes forward inside major 1. You give up the audit trail of *which* revision ran, so prefer the
-sha form for anything that touches production.
+only goes forward inside major 1. You give up the record of *which* release ran, so prefer the full
+`vX.Y.Z` tag for anything that touches production.
 
 **The `maestra.infra` ansible collection** — `ansible-galaxy` takes any git ref in `version:`, so
 pin the tag rather than `main`:
@@ -55,8 +54,8 @@ pin the tag rather than `main`:
 ### Breaking changes
 
 A `!` or a `BREAKING CHANGE:` footer cuts `v2.0.0` and moves the alias `v2` — it does **not** move
-`v1`, so consumers on `@v1` stay where they are until they migrate. Consumers pinned to a sha are
-unaffected until their Renovate PR is reviewed. Mark a change breaking whenever an input is removed
+`v1`, so consumers on `@v1` stay where they are until they migrate. Consumers on a full `vX.Y.Z` tag
+are unaffected until their Renovate PR is reviewed. Mark a change breaking whenever an input is removed
 or renamed, a default changes meaning, or a required secret appears.
 
 ## Octopus Deploy Package and Release
