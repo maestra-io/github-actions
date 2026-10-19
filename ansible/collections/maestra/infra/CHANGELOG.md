@@ -7,6 +7,17 @@ finding, and because the `os_update` contract is shared across four repos:
 anything that changes a variable name or a hook expectation has to be findable
 from one place.
 
+## 1.2.1
+
+- `os_update` role: `apt.yml` sets `NEEDRESTART_SUSPEND=1`. needrestart is
+  installed on Ubuntu 24.04 hosts (all three us-iota nodes) and in mode `a`
+  restarted every service on an upgraded lib from inside dpkg (k0scontroller /
+  etcd on all three iota nodes, 07.10.2026, from an unrelated apt run). `stage`
+  runs apt on a host still in rotation, so that restart broke its "activate
+  nothing" contract outright. Trade-off: an `apply` whose upgrade needs no
+  reboot leaves services on the old libs until the next reboot.
+- No consumer change.
+
 ## 1.2.0
 
 - `os_update` role: **post-run tail silence** after a successful `apply`
