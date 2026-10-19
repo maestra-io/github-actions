@@ -100,13 +100,14 @@
 #   nuget-source-name   nuget.config source the packages token is set on (default private).
 #   packages-url        Package registry (default https://packages.maestra.io, nora).
 #   packages-audience   `aud` of the GitHub OIDC token nora accepts (default packages.maestra.io).
-#   sticky-buildkit     Build the images on runner t3a-2xl-sticky (maestra-io/.github-private)
-#                       with the BuildKit state on a persistent EBS disk (RunsOn sticky
-#                       disk, one snapshot per repo and branch) instead of the type=gha
+#   sticky-buildkit     Build the images on runner us-spot-2xl-sticky (maestra-io/.github-private,
+#                       RunsOn us-west-2 stack, next to the ECR they push to) with the
+#                       BuildKit state on a persistent EBS disk (RunsOn sticky disk, one
+#                       snapshot per repo and branch, per region) instead of the type=gha
 #                       layer cache: a NuGet restore layer survives between jobs without
 #                       an export/import. Default true since 13.10.2026 (api-mimic canary:
 #                       images legs 385-455 s -> 55-62 s warm, 271-317 s cold); false
-#                       falls back to pool=build with the type=gha layer cache.
+#                       falls back to pool=build (eu-central-1) with the type=gha layer cache.
 # Secrets:
 #   private-packages-token  Optional. Overrides the nora OIDC token passed as the
 #                       PRIVATE_PACKAGES_TOKEN build secret and used for restore
@@ -906,7 +907,11 @@ jobs:
     # other's runners, and the robbed leg waits out RunsOn's retry backoff
     # (up to 42 min on 12.10, issues-maestra#1556).
     # A pool ignores every other label, so the sticky disk needs its own runner spec.
-    runs-on: ${{ inputs.sticky-buildkit && format('runs-on={0}-images-{1}/runner=t3a-2xl-sticky', github.run_id, strategy.job-index) || format('runs-on={0}-images-{1}/pool=build', github.run_id, strategy.job-index) }}
+    # us-west-2 (env=us), the region of ECR_REGISTRY: from eu-central-1 every push
+    # was cross-region egress (Cost Explorer 12-18.10.2026: 975 GB EUC1-USW2-AWS-Out-Bytes,
+    # almost all from this job). Sticky disks are per region: the first us build of a
+    # repo/branch starts with a cold BuildKit cache.
+    runs-on: ${{ inputs.sticky-buildkit && format('runs-on={0}-images-{1}/runner=us-spot-2xl-sticky/env=us', github.run_id, strategy.job-index) || format('runs-on={0}-images-{1}/pool=build', github.run_id, strategy.job-index) }}
     timeout-minutes: 45
     permissions:
       contents: read
