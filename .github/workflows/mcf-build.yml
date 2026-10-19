@@ -55,9 +55,9 @@
 #   packages-url        Package registry (default https://packages.maestra.io, nora).
 #   packages-audience   `aud` of the GitHub OIDC token nora accepts.
 #   functional-workers  Playwright workers of `functional` (default 4, as frontend-playwright).
-#   functional-required A red `functional` fails the run (default false: advisory, the
-#                       summary still shows red). The default turns true once the MCFs are
-#                       green (issues-maestra#1573).
+#   functional-required A red `functional` fails the run and holds the image and release
+#                       (default false: advisory, the summary still shows red). The default
+#                       turns true once the MCFs are green (issues-maestra#1573).
 # Outputs:
 #   release             The release number 1.1.N.
 #
@@ -69,7 +69,7 @@
 #             nora setup as `install`, cached under that lockfile's hash. A `tests` npm
 #             workspace of the root (no tests/package-lock.json) comes from `install`.
 #   tests-checks  tests/package.json: check-types and check-scripts in tests/ (mcf@3
-#             unified-tests-types, unified-tests-lint). Fails the run.
+#             unified-tests-types, unified-tests-lint). Fails the run, holds the image.
 #   codegen   GitHub OIDC -> auth-jwt JWT (masked) -> `npm run graphql-codegen`; the
 #             generated code goes to the other jobs as an artifact.
 #   checks    check-types, check-scripts, check-styles, entries in parallel; on
@@ -78,7 +78,10 @@
 #   test      vitest with coverage, fails under min-lines-coverage.
 #   build     package.json version = release, LAST_HOTFIX from hotfix/* tags (the MF
 #             plugin bakes both into the bundle), `npm run build`.
-#   image     rclone + build/<static-prefix> without source maps -> ECR <image>:<release>.
+#   image     rclone + build/<static-prefix> without source maps -> ECR <image>:<release>,
+#             once checks, test, build, tests-checks (with tests/) and a required
+#             functional passed. A skipped tests-checks/functional skips nothing after it:
+#             image, release, sourcemaps and bake guard on results, not on success().
 #   release   git tag + GitHub Release <release>; a PR labelled `hotfix` also gets
 #             the marker tag hotfix/<release>.
 #   sourcemaps  the release's source maps -> Datadog US3 (service <mcf>, version <release>,
@@ -720,8 +723,8 @@ jobs:
           retention-days: 1
 
   image:
-    needs: [version, checks, test, build]
-    if: ${{ needs.version.outputs.publish == 'true' }}
+    needs: [version, checks, test, build, tests-checks, functional]
+    if: ${{ !cancelled() && needs.version.outputs.publish == 'true' && needs.checks.result == 'success' && needs.test.result == 'success' && needs.build.result == 'success' && (needs.version.outputs.tests != 'true' || needs.tests-checks.result == 'success') && (!inputs.functional-required || needs.version.outputs.functional != 'true' || needs.functional.result == 'success') }}
     runs-on: runs-on=${{ github.run_id }}-image/pool=small
     timeout-minutes: 15
     permissions:
@@ -756,6 +759,7 @@ jobs:
   # Git tag + GitHub Release BEFORE the bake: bake-oci-manifests checks out the release tag.
   release:
     needs: [version, image]
+    if: ${{ !cancelled() && needs.image.result == 'success' }}
     runs-on: runs-on=${{ github.run_id }}-release/pool=small
     timeout-minutes: 5
     permissions:
@@ -781,6 +785,7 @@ jobs:
 
   sourcemaps:
     needs: [version, release]
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
     runs-on: runs-on=${{ github.run_id }}-sourcemaps/pool=small
     timeout-minutes: 15
     continue-on-error: true
@@ -838,7 +843,7 @@ jobs:
 
   bake:
     needs: [version, release]
-    if: ${{ needs.version.outputs.bake == 'true' }}
+    if: ${{ !cancelled() && needs.release.result == 'success' && needs.version.outputs.bake == 'true' }}
     runs-on: runs-on=${{ github.run_id }}-bake/pool=small
     timeout-minutes: 15
     permissions:

@@ -533,7 +533,7 @@ changes in the MCF repo: the jobs switch on by files.
   `tests/node_modules` (the version-clashing packages stay there); `npm ci` in `tests/`
   would fail without a lockfile.
 - **`tests-checks`** (`tests/package.json`): `npm run check-types` and `check-scripts` in
-  `tests/`, each in its own log group, fails the run.
+  `tests/`, each in its own log group, fails the run and holds the `image` (no release).
 - **`functional`** (`tests/functional/playwright.config.ts`; on pull requests and pushes, not on
   `renovate/*` or `LocalizationPull`): the `static` artifact of `build` (source maps
   removed) is unpacked to an empty `site/` and served by `http-server@14.1.1` (installed
@@ -546,8 +546,9 @@ changes in the MCF repo: the jobs switch on by files.
   when the file exists, so on a runner image with Chrome the tests run in that Chrome.
 - **Advisory first.** The job has `continue-on-error: ${{ !inputs.functional-required }}`:
   a red run shows ❌ and "not blocking: functional-required is false" in its step
-  summary but does not fail the workflow. A repo opts in to blocking with
-  `functional-required: true`; the default turns `true` once the MCFs are green.
+  summary but does not fail the workflow or hold the release. A repo opts in to blocking with
+  `functional-required: true`: a red run then fails the workflow and the `image` (and so
+  `release`, `bake`) does not run. The default turns `true` once the MCFs are green.
 - **Results.** Step summary from the JUnit (tests, passed, failed = `failures` + `errors`,
   flaky, skipped, duration, every failed test by name). Artifacts:
   `functional-junit-<attempt>` (`tests/functional/test-results/results.xml`, 7 days, always)

@@ -3,8 +3,10 @@
 # Self-check for the tests/ jobs of mcf-build.yml: the tests/ detection (layout
 # lockfile / workspace / none, functional only with the Playwright config and
 # tests/package.json, not on excluded branches), the http-server wait (up / never
-# up) and the functional step summary from Playwright JUnit (errors count as
-# failed). Runs the inline blocks of the reusable workflow itself.
+# up), the functional step summary from Playwright JUnit (errors count as
+# failed) and the release gate (image waits for tests-checks and a required
+# functional; release, sourcemaps and bake follow image by result). Runs the inline
+# blocks of the reusable workflow itself.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 wf="$here/../.github/workflows/mcf-build.yml"
@@ -58,6 +60,16 @@ aliases=$(grep -c 'path: \*root-node-modules$' "$wf")
 eq "$aliases" "$keys" "root cache steps with the shared path list (one save + all restores but the anchor)"
 if grep -nE '^ +path: node_modules$' "$wf"; then echo "FAIL a root cache step lists node_modules alone"; exit 1; fi
 echo "functional cache paths: ok"
+
+# job <name> <key>: the value of a top-level key (needs, if) of a job in the workflow
+job() { awk -v j="  $1:" -v k="    $2: " '$0 == j { on = 1; next } on && /^  [a-z]/ { exit }
+  on && index($0, k) == 1 { print substr($0, length(k) + 1); exit }' "$wf"; }
+eq "$(job image needs)" "[version, checks, test, build, tests-checks, functional]" "image needs"
+eq "$(job image if)" "\${{ !cancelled() && needs.version.outputs.publish == 'true' && needs.checks.result == 'success' && needs.test.result == 'success' && needs.build.result == 'success' && (needs.version.outputs.tests != 'true' || needs.tests-checks.result == 'success') && (!inputs.functional-required || needs.version.outputs.functional != 'true' || needs.functional.result == 'success') }}" "image waits for tests-checks and a required functional"
+eq "$(job release if)" "\${{ !cancelled() && needs.image.result == 'success' }}" "release follows image, not success() of skipped jobs"
+eq "$(job sourcemaps if)" "\${{ !cancelled() && needs.release.result == 'success' }}" "sourcemaps follows release"
+eq "$(job bake if)" "\${{ !cancelled() && needs.release.result == 'success' && needs.version.outputs.bake == 'true' }}" "bake follows release"
+echo "functional release gate: ok"
 
 wait_prog=$(block functional-wait)
 # wait_for <url> <timeout>; prints "exit=<code>"
