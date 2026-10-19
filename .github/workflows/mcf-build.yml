@@ -36,6 +36,12 @@
 #   hot-test            On pull_request, publish the hot-test stand of the PR (default true):
 #                       hot-test-publish.yml, https://hot-test-<repo>-pr-<N>.testing-env.omicron.maestra.io.
 #                       Not for renovate/* and LocalizationPull branches or PRs from forks.
+#   static-prefix       Folder of the built static under build/, no leading or trailing
+#                       slash (default v2_static/<mcf>, <mcf> = the package name without its
+#                       scope, - -> _). The admin shell frontend-core-v2 builds v2_static/core.
+#   manifest            mcf (default): <static-prefix>/mf-manifest.json is the module
+#                       federation manifest. core: <static-prefix>/manifest.json and
+#                       build-info.json (frontend-core-v2). Both go on to hot-test-publish.yml.
 #   image               ECR repository of the static image. Default: repository name.
 #   service             Service name for bake (<service>-manifests). Default: repository name.
 #   auth-jwt-url        auth-jwt the schema token comes from (default the omega one).
@@ -57,7 +63,7 @@
 #   test      vitest with coverage, fails under min-lines-coverage.
 #   build     package.json version = release, LAST_HOTFIX from hotfix/* tags (the MF
 #             plugin bakes both into the bundle), `npm run build`.
-#   image     rclone + build/v2_static/<mcf> without source maps -> ECR <image>:<release>.
+#   image     rclone + build/<static-prefix> without source maps -> ECR <image>:<release>.
 #   release   git tag + GitHub Release <release>; a PR labelled `hotfix` also gets
 #             the marker tag hotfix/<release>.
 #   sourcemaps  the release's source maps -> Datadog US3 (service <mcf>, version <release>,
@@ -96,6 +102,12 @@ on:
       hot-test:
         type: boolean
         default: true
+      static-prefix:
+        type: string
+        default: ""
+      manifest:
+        type: string
+        default: mcf
       image:
         type: string
         default: ""
@@ -200,6 +212,9 @@ jobs:
       image: ${{ steps.v.outputs.image }}
       service: ${{ steps.v.outputs.service }}
       mcf: ${{ steps.v.outputs.mcf }}
+      static-prefix: ${{ steps.v.outputs.static-prefix }}
+      manifest: ${{ steps.v.outputs.manifest }}
+      manifest-files: ${{ steps.v.outputs.manifest-files }}
       bake: ${{ steps.v.outputs.bake }}
       last-hotfix: ${{ steps.hotfix.outputs.last-hotfix }}
       is-hotfix: ${{ steps.hotfix.outputs.is-hotfix }}
@@ -219,6 +234,8 @@ jobs:
           REPO_NAME: ${{ github.event.repository.name }}
           IMAGE: ${{ inputs.image }}
           SERVICE: ${{ inputs.service }}
+          STATIC_PREFIX: ${{ inputs.static-prefix }}
+          MANIFEST: ${{ inputs.manifest }}
           PUSH: ${{ inputs.push && github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
           PUSH_REQUESTED: ${{ inputs.push && github.event_name != 'pull_request' }}
           HOT_TEST: ${{ inputs.hot-test && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && !startsWith(github.head_ref, 'renovate/') && github.head_ref != 'LocalizationPull' }}
@@ -234,6 +251,17 @@ jobs:
           # build/v2_static/<mcf>: the package name without its scope, - -> _ (webpack-configs moduleFederation).
           mcf=$(jq -r '.name // empty' package.json | sed -E 's#^@[^/]+/##; s#-#_#g')
           [ -n "$mcf" ] || { echo "::error::package.json has no name"; exit 1; }
+          # >>> static (scripts/test-mcf-build-static.sh runs this block)
+          static_prefix="${STATIC_PREFIX:-v2_static/$mcf}"
+          manifest="${MANIFEST:-mcf}"
+          # The same path hot-test-publish.yml and the ResourceSet template accept, without the slashes.
+          [[ "$static_prefix" =~ ^[a-z0-9_-]+(/[a-z0-9_-]+)*$ ]] || { echo "::error::static-prefix '$static_prefix' is not [a-z0-9_-]+(/[a-z0-9_-]+)* (no leading or trailing slash)"; exit 1; }
+          case "$manifest" in
+            mcf) manifest_files=mf-manifest.json ;;
+            core) manifest_files="manifest.json build-info.json" ;;
+            *) echo "::error::manifest '$manifest' is not mcf or core"; exit 1 ;;
+          esac
+          # <<< static
           {
             echo "release=${prefix}.${RUN_NUMBER}"
             echo "publish=$PUSH"
@@ -241,9 +269,12 @@ jobs:
             echo "image=${IMAGE:-$REPO_NAME}"
             echo "service=${SERVICE:-$REPO_NAME}"
             echo "mcf=$mcf"
+            echo "static-prefix=$static_prefix"
+            echo "manifest=$manifest"
+            echo "manifest-files=$manifest_files"
             if [ -d kustomization ]; then echo "bake=true"; else echo "bake=false"; fi
           } >> "$GITHUB_OUTPUT"
-          echo "release ${prefix}.${RUN_NUMBER}, mcf $mcf, image ${IMAGE:-$REPO_NAME}, publish=$PUSH, hot-test=$HOT_TEST, kustomization/ $([ -d kustomization ] && echo present || echo absent)"
+          echo "release ${prefix}.${RUN_NUMBER}, mcf $mcf, static $static_prefix ($manifest), image ${IMAGE:-$REPO_NAME}, publish=$PUSH, hot-test=$HOT_TEST, kustomization/ $([ -d kustomization ] && echo present || echo absent)"
 
       # mcf@3 build/create-hotfix-marker: the MF plugin reads LAST_HOTFIX, the newest
       # hotfix/X.Y.Z tag, this release included when its PR carries the `hotfix` label.
@@ -519,16 +550,19 @@ jobs:
           PUBLISH: ${{ needs.version.outputs.publish }}
           RELEASE: ${{ needs.version.outputs.release }}
           LAST_HOTFIX: ${{ needs.version.outputs.last-hotfix }}
-          MCF: ${{ needs.version.outputs.mcf }}
+          STATIC_PREFIX: ${{ needs.version.outputs.static-prefix }}
+          MANIFEST_FILES: ${{ needs.version.outputs.manifest-files }}
         run: |
           [ "$PUBLISH" != true ] || npm pkg set version="$RELEASE"
           echo "version $(jq -r .version package.json), LAST_HOTFIX=${LAST_HOTFIX:-<none>}"
           npm run build
-          out="build/v2_static/$MCF"
-          [ -f "$out/mf-manifest.json" ] || { echo "::error::$out/mf-manifest.json was not built"; exit 1; }
-          [ "$PUBLISH" != true ] || tar -czf "$RUNNER_TEMP/sourcemaps.tgz" -C build v2_static
+          out="build/$STATIC_PREFIX"; top="${STATIC_PREFIX%%/*}"
+          for f in $MANIFEST_FILES; do
+            [ -f "$out/$f" ] || { echo "::error::$out/$f was not built"; exit 1; }
+          done
+          [ "$PUBLISH" != true ] || tar -czf "$RUNNER_TEMP/sourcemaps.tgz" -C build "$top"
           find build -name '*.map' -type f -delete
-          tar -czf "$RUNNER_TEMP/static.tgz" -C build v2_static
+          tar -czf "$RUNNER_TEMP/static.tgz" -C build "$top"
           du -sh "$out"
       - if: ${{ needs.version.outputs.publish == 'true' || needs.version.outputs.hot-test == 'true' }}
         uses: actions/upload-artifact@v7.0.1
@@ -690,6 +724,8 @@ jobs:
       repo: ${{ github.event.repository.name }}
       pr-number: ${{ github.event.pull_request.number }}
       mcf: ${{ needs.version.outputs.mcf }}
+      static-prefix: ${{ needs.version.outputs.static-prefix }}
+      manifest: ${{ needs.version.outputs.manifest }}
       static-artifact: static
 
   # The kustomize build of a changed kustomization/ tree on every pull request (a PR that
