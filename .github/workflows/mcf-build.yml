@@ -30,6 +30,9 @@
 #   min-lines-coverage  Lines coverage floor of `test` (default 40, as mcf@3).
 #   test-timeout-minutes  Job timeout of `test` (default 30). A large vitest suite (frontend-email-editor:
 #                       ~21 min on GitLab, over 30 on the build pool) raises it.
+#   test-runner         RunsOn label of `test` after the run id (default `pool=build`, t3a.2xlarge).
+#                       A large suite takes a 16 vCPU spot runner: `runner=fast-spot-test`
+#                       (maestra-io/.github-private runs-on.yml; same env, so the caches restore).
 #   push                Push the image and run release/bake (default true).
 #                       Only from the default branch, never on pull_request.
 #                       false = build-only dry run.
@@ -96,6 +99,9 @@ on:
       test-timeout-minutes:
         type: number
         default: 30
+      test-runner:
+        type: string
+        default: pool=build
       push:
         type: boolean
         default: true
@@ -482,7 +488,7 @@ jobs:
 
   test:
     needs: codegen
-    runs-on: runs-on=${{ github.run_id }}-test/pool=build
+    runs-on: runs-on=${{ github.run_id }}-test/${{ inputs.test-runner }}
     timeout-minutes: ${{ inputs.test-timeout-minutes }}
     steps:
       - uses: runs-on/action@v2.5.0
