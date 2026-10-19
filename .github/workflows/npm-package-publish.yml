@@ -63,6 +63,9 @@
 # https://packages.maestra.io/npm/x/-/x-1.tgz became /npm/npm/x/-/x-1.tgz, a 404
 # for every package resolved from a packument rather than the lockfile (an `npx`
 # tool, a semantic-release plugin installed on the fly).
+#
+# The PR secret scan is not part of this workflow: each repo runs it in its own
+# workflow that calls this repo's reusable secret-scan workflow (see the README).
 
 name: npm-package-publish
 
@@ -289,15 +292,3 @@ jobs:
           # which still names the GitLab project in ported repos: it would push the
           # version commit and tag there (and fail auth). Release where we build.
           npm run "$RELEASE_SCRIPT" -- --repository-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
-
-  # Secret scan of the PR's own commits on every pull request (the GitLab
-  # gitleaks-validate MR job), as dotnet-service-build/service-build run it.
-  # gitleaks only: check-encoding and the kustomize build stay with the service builds.
-  pr-checks:
-    if: ${{ github.event_name == 'pull_request' }}
-    uses: maestra-io/github-actions/.github/workflows/pr-checks.yml@main
-    permissions:
-      contents: read
-    with:
-      check-encoding: false
-      kustomize: false

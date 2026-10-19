@@ -129,9 +129,9 @@ env:
 
 jobs:
   # Pull requests that change only the kustomization tree(s) skip version/test/images:
-  # nothing that is built or tested changed. checks still runs (gitleaks + the kustomize
-  # build of the changed overlays) and pr-gate stays green (skipped jobs pass). Any doubt
-  # (no merge commit, git failure, bake from the repo root) means code=true: everything runs.
+  # nothing that is built or tested changed. pr-checks still runs (the kustomize build of
+  # the changed overlays). Any doubt (no merge commit, git failure, bake from the repo
+  # root) means code=true: everything runs.
   changes:
     runs-on: runs-on=${{ github.run_id }}-changes/pool=small
     timeout-minutes: 5
@@ -687,11 +687,9 @@ jobs:
       mcf: ${{ needs.version.outputs.mcf }}
       static-artifact: static
 
-  # Secret scan of the PR's own commits on every pull request (the GitLab
-  # gitleaks-validate MR job), as dotnet-service-build/service-build run it.
-  # gitleaks plus the kustomize build of a changed kustomization/ tree (a PR that changes only
-  # kustomization/ skips the build/test jobs, so this is its validation); check-encoding stays
-  # with the service builds.
+  # The kustomize build of a changed kustomization/ tree on every pull request (a PR that
+  # changes only kustomization/ skips the build/test jobs, so this is its validation);
+  # check-encoding stays with the service builds.
   pr-checks:
     if: ${{ github.event_name == 'pull_request' }}
     uses: maestra-io/github-actions/.github/workflows/pr-checks.yml@main

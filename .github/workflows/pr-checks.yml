@@ -1,22 +1,28 @@
-# Reusable pull-request checks: the GitLab merge-request checks every service had
-# (system/components gitleaks-validate and check-encoding, plus a kustomize build of
-# the overlays), ported to GitHub. dotnet-service-build.yml and service-build.yml call
-# it on pull_request, so every service that releases through them gets it. The library,
-# frontend and infra workflows (nuget/npm/python-package-publish, mcf-build, helm-chart,
-# frontend-codegen, terraform-pr, ansible-pr) call it with gitleaks only, so every PR
-# of their callers is secret-scanned too. A repo with its own workflows calls it
-# directly:
+# Reusable pull-request checks: the merge-request checks every service had
+# (check-encoding, plus a kustomize build of the overlays), ported to GitHub.
+# dotnet-service-build.yml and service-build.yml call it on pull_request, so every
+# service that releases through them gets it; mcf-build.yml calls it for the
+# kustomize build only. A repo with its own workflows calls it directly:
 #
 #   jobs:
 #     checks:
 #       uses: maestra-io/github-actions/.github/workflows/pr-checks.yml@main
 #       permissions: { contents: read }
 #
+# The secret scan is not here and not in any shared workflow: it is each repo's own
+# workflow calling gitleaks.yml (gitleaks/gitleaks-action):
+#
+# .github/workflows/gitleaks.yml in the repo:
+#   name: gitleaks
+#   on: pull_request
+#   permissions: { contents: read, pull-requests: write }
+#   jobs:
+#     gitleaks:
+#       uses: maestra-io/github-actions/.github/workflows/gitleaks.yml@main
+#       secrets: inherit
+#
 # Everything is scoped to what the PR changes, so a file nobody touched never blocks a
 # merge:
-#   gitleaks        the PR's own commits (base...head, merge commits carry no patch),
-#                   central config pr-checks/gitleaks.toml + the repo's .gitleaksignore
-#                   (GitLab: `gitleaks git --log-opts=$DIFF_BASE_SHA..HEAD`).
 #   check-encoding  the changed files with these extensions must be UTF-8.
 #   kustomize       `kustomize build` of every overlay under kustomize-path when a file
 #                   under it changed (Flux builds the same trees from <service>-manifests;
@@ -24,22 +30,26 @@
 #                   the cluster).
 #
 # Inputs:
-#   gitleaks             default true.
 #   check-encoding       default true.
 #   encoding-extensions  default txt,xml,json,config,cs,csproj,sln (the component's).
 #   kustomize            default true.
 #   kustomize-path       default kustomization.
-#   ref                  ref of maestra-io/github-actions the scripts and the gitleaks
-#                        config are read from (default main; set it when testing a branch).
+#   ref                  ref of maestra-io/github-actions the scripts are read from
+#                        (default main; set it when testing a branch).
+#   gitleaks             DEPRECATED, ignored: the scan is the repo's own gitleaks.yml
+#                        workflow; removed once no caller passes it (a reusable
+#                        workflow rejects an undeclared input, so it stays declared).
 #
 # Only on pull_request (the job is skipped otherwise). Needs contents: read only: the
-# PR commits come from the compare API, the changed files from the test merge commit.
+# changed files come from the test merge commit.
 
 name: pr-checks
 
 on:
   workflow_call:
     inputs:
+      # DEPRECATED, ignored: the scan is the repo's own gitleaks.yml workflow;
+      # removed once no caller passes it.
       gitleaks:
         type: boolean
         default: true
@@ -63,8 +73,6 @@ permissions:
   contents: read
 
 env:
-  GITLEAKS_VERSION: 8.30.1
-  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
   KUSTOMIZE_VERSION: v5.8.3
   KUSTOMIZE_SHA256: cb9e31198d3f63b44848bd0afc4c8efc56e6cfef9c93a4a39a211940e6decd61
 
@@ -107,39 +115,6 @@ jobs:
           set -euo pipefail
           if [ ! -s "$RUNNER_TEMP/changed" ]; then echo "no changed files"; exit 0; fi
           xargs -0 python3 -I .pr-checks/pr-checks/check-encoding.py "$EXTENSIONS" < "$RUNNER_TEMP/changed"
-
-      - name: gitleaks (PR commits)
-        if: ${{ !cancelled() && inputs.gitleaks }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -euo pipefail
-          curl -fsSL -o "$RUNNER_TEMP/gitleaks.tar.gz" \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum -c -
-          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
-          # base...head as GitHub lists the PR's commits; merge commits carry no patch
-          # of their own in `git log -p` (GitLab's base..HEAD scan skipped them too).
-          gh api --paginate "repos/${GITHUB_REPOSITORY}/compare/${BASE_SHA}...${HEAD_SHA}" \
-            --jq '.commits[] | "\(.sha) \(.parents | length)"' > "$RUNNER_TEMP/all-commits"
-          total=$(grep -c . "$RUNNER_TEMP/all-commits" || true)
-          awk '$2 == 1 {print $1}' "$RUNNER_TEMP/all-commits" > "$RUNNER_TEMP/commits"
-          n=$(grep -c . "$RUNNER_TEMP/commits" || true)
-          if [ "$n" -eq 0 ]; then echo "no non-merge commits in the PR"; exit 0; fi
-          # A PR commit is only reachable from the head through PR commits, so depth
-          # total+1 fetches every one of them with its parent: each is scanned as its
-          # own diff, never as a whole tree.
-          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
-          git -c "http.extraheader=AUTHORIZATION: basic $auth" \
-            fetch -q --no-tags --depth=$((total + 1)) origin "$HEAD_SHA"
-          echo "scanning $n commits"
-          "$RUNNER_TEMP/gitleaks" git --config .pr-checks/pr-checks/gitleaks.toml --no-banner --no-color --verbose --redact \
-            --log-opts="--no-walk $(paste -sd' ' "$RUNNER_TEMP/commits")" . 2>&1 | tee "$RUNNER_TEMP/gitleaks.log"
-          # gitleaks exits 0 when its git log fails, having scanned nothing.
-          grep -q " $n commits scanned" "$RUNNER_TEMP/gitleaks.log" \
-            || { echo "::error::gitleaks did not scan the $n PR commits"; exit 1; }
 
       - name: kustomize build (changed overlays tree)
         if: ${{ !cancelled() && inputs.kustomize }}

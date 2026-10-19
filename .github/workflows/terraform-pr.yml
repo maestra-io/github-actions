@@ -26,6 +26,9 @@
 # (plan-<region>-<env>-<site>[<suffix>].txt — prefix/extension stripping, so
 # any suffix is tolerated). Change detection: !('No changes.' ||
 # 'Your infrastructure matches the configuration.').
+#
+# The PR secret scan is not part of this workflow: each repo runs it in its own
+# workflow that calls this repo's reusable secret-scan workflow (see the README).
 name: Terraform PR (reusable)
 
 on:
@@ -299,15 +302,3 @@ jobs:
                 body: bodyText,
               });
             }
-
-  # Secret scan of the PR's own commits on every pull request (the GitLab
-  # gitleaks-validate MR job), as dotnet-service-build/service-build run it.
-  # gitleaks only: check-encoding and the kustomize build stay with the service builds.
-  pr-checks:
-    if: ${{ github.event_name == 'pull_request' }}
-    uses: maestra-io/github-actions/.github/workflows/pr-checks.yml@main
-    permissions:
-      contents: read
-    with:
-      check-encoding: false
-      kustomize: false
