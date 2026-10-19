@@ -24,6 +24,8 @@ on:
       - "ansible/.ansible-lint"
       - "ansible/.yamllint"
       - "ansible/requirements-lint.txt"
+      - "ansible/tests/test-os-update-tail-silence.sh"
+      - "ansible/tests/os-update-tail/**"
       - ".github/workflows/collection-lint.yml"
   push:
     branches: [main]
@@ -32,6 +34,8 @@ on:
       - "ansible/.ansible-lint"
       - "ansible/.yamllint"
       - "ansible/requirements-lint.txt"
+      - "ansible/tests/test-os-update-tail-silence.sh"
+      - "ansible/tests/os-update-tail/**"
       - ".github/workflows/collection-lint.yml"
 
 permissions:
@@ -77,3 +81,8 @@ jobs:
       - name: ansible-lint
         working-directory: ansible
         run: ansible-lint -c .ansible-lint collections/maestra/infra
+
+      # Here rather than in selftest: it runs the role's real task files, so it
+      # needs the `ansible` this job already installs.
+      - name: os_update tail silence (real tasks against a fake Alertmanager)
+        run: bash ansible/tests/test-os-update-tail-silence.sh

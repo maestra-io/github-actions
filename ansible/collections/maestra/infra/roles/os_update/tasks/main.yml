@@ -5,7 +5,8 @@
 # Order is load-bearing:
 #   vars -> guards -> marker(read) -> plan -> PREFLIGHT -> [silence -> drain ->
 #   boot_safety -> holds -> apt -> reboot -> kernel_gc -> VERIFY]
-#   always: holds(restore) -> UNDRAIN -> marker(clear) -> SETTLE -> unsilence
+#   always: holds(restore) -> UNDRAIN -> marker(clear) -> SETTLE ->
+#           [tail silence, success only] -> unsilence
 #
 # `binary-update` is the one mode that does NOT end in that `always`. It lives at
 # the bottom of this file, and its undrain sits in the success block on purpose —
@@ -358,6 +359,23 @@
               WARNING: settle failed on {{ inventory_hostname }} — the host is back in
               rotation but not proven to be serving. Continuing so the silences are
               dropped (the alerts must be free to fire on it) and the job fails.
+
+    # Success only, and BEFORE the unsilence so there is no gap: the workloads the
+    # reboot took down are still coming back, and alerts with a long `for:` fire
+    # right after the job (see tail_silence.yml). A failed run gets NO tail — the
+    # operator must see what is broken.
+    - name: Post-run grace — tail silences while the workloads return
+      when:
+        - not (os_update_failed | default(false))
+        - not (os_update_undrain_failed | default(false))
+        - (os_update_tail_silence_minutes | int) > 0
+      block:
+        - name: Tail silences
+          ansible.builtin.include_tasks: tail_silence.yml
+      rescue:
+        - name: Could not post the tail silences — late workload alerts may fire
+          ansible.builtin.debug:
+            msg: "WARNING: could not post the {{ os_update_tail_silence_minutes }} min tail silences; alerts with a long for: may fire while workloads return."
 
     # Always dropped, even on a failed undrain: the silences are time-boxed anyway,
     # and a stranded host is precisely the case where we want the alerts to fire.

@@ -7,6 +7,21 @@ finding, and because the `os_update` contract is shared across four repos:
 anything that changes a variable name or a hook expectation has to be findable
 from one place.
 
+## 1.2.0
+
+- `os_update` role: **post-run tail silence** after a successful `apply`
+  ([issues-maestra#1104](https://github.com/maestra-io/issues-maestra/issues/1104)).
+  Once verify → undrain → marker clear → settle have all passed, the same
+  `os_update_silence_sets` are re-posted with `createdBy: os-update-tail` and
+  `endsAt = now + os_update_tail_silence_minutes` (default 15; `0` disables it),
+  and only then are the maintenance silences expired. The tail covers alerts
+  whose `for:` outlasts the job while pinned workloads come back
+  (KafkaClusterImbalanced fired 64 s after a us-omicron worker job, 19.10.2026).
+  A failed `apply`, `binary-update` and `undrain-only` post no tail.
+- The tail's `createdBy` is outside `^gha-os-update`, so it never trips the
+  contour-wide one-at-a-time guard: the next host starts while the tail is up.
+- No consumer change: new role default, no new hook, no new variable to set.
+
 ## 1.1.0
 
 - `os_update` role: new `os_update_mode: binary-update`
