@@ -28,9 +28,15 @@ echo "$apply_always" | grep -B12 "tail_silence.yml" | grep -q "not (os_update_fa
   && echo "$apply_always" | grep -B12 "tail_silence.yml" | grep -q "not (os_update_undrain_failed" \
   && ok "the tail is gated on a successful run" \
   || bad "the tail is not gated on os_update_failed / os_update_undrain_failed"
-[ "$(echo "$code" | grep -c "tail_silence.yml")" -eq 1 ] \
-  && ok "no other mode (binary-update, undrain-only) posts a tail" \
-  || bad "tail_silence.yml is included more than once"
+[ "$(echo "$code" | grep -c "tail_silence.yml")" -eq 2 ] \
+  && ok "exactly two tails: APPLY's always and the undrain-only hatch (binary-update posts none)" \
+  || bad "tail_silence.yml included $(echo "$code" | grep -c "tail_silence.yml") times, want 2 (APPLY always + UNDRAIN-ONLY)"
+hatch=$(echo "$code" | awk '/^- name: UNDRAIN-ONLY/{f=1} /end_host/{if(f){print; f=0}} f')
+h_tail=$(echo "$hatch" | grep -n "tail_silence.yml" | head -1 | cut -d: -f1)
+h_unsil=$(echo "$hatch" | grep -n "unsilence.yml" | head -1 | cut -d: -f1)
+[ -n "$h_tail" ] && [ -n "$h_unsil" ] && [ "$h_tail" -lt "$h_unsil" ] \
+  && ok "the undrain-only hatch posts the tail before its unsilence" \
+  || bad "the undrain-only hatch does not post the tail before its unsilence"
 
 echo "== fake Alertmanager"
 tmp=$(mktemp -d); trap 'kill "$am_pid" 2>/dev/null; rm -rf "$tmp"' EXIT
