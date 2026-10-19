@@ -21,13 +21,32 @@
 #       with:
 #         static-artifact: static
 #
+#   The legacy admin monorepo (maestra-io/frontend, its own pr.yml) publishes its dist as
+#   public/ and has no module federation manifest:
+#
+#       with:
+#         static-artifact: static   # static.tgz with public/scripts/directcrm.js ...
+#         static-prefix: public
+#         manifest: none
+#
 # Inputs:
 #   repo             Repository name, the <repo> of the host (default: this repository).
 #   pr-number        Pull request number (default: the pull_request event's).
 #   static-artifact  Artifact with static.tgz, the bucket layout of the PR's own
-#                    files: v2_static/<mcf>/... with mf-manifest.json (default static,
-#                    the mcf-build.yml artifact). Source maps must not be in it.
+#                    files: <static-prefix>/... (default static, the mcf-build.yml
+#                    artifact: v2_static/<mcf>/... with mf-manifest.json). Source maps
+#                    must not be in it.
 #   mcf              Folder under v2_static (default: repo with - replaced by _).
+#   static-prefix    Folder of the PR's own files in the artifact and the PR folder, no
+#                    leading or trailing slash (default v2_static/<mcf>). The stand's route
+#                    sends /<static-prefix>/ to the PR folder: the staticPrefix of the
+#                    repo's ResourceSetInputProvider (fluxcd base/microfrontend/hot-test)
+#                    must be the same path. The legacy admin monorepo frontend uses public.
+#   manifest         mcf (default): <static-prefix>/mf-manifest.json is the PR's module
+#                    federation manifest, the entry is built with it as the override.
+#                    none: no manifest, the entry is the released shell as is (the
+#                    legacy monorepo: its pages are served by the backend and load
+#                    /public/... from the stand's host, see X-Testing-Frontend below).
 #   hot-test-domain  Domain of the stands (default testing-env.omicron.maestra.io).
 #   bucket           R2 bucket of the stands (default admin-hot-test-static-omicron).
 #   base-static-url  Released static the entry is built from: its entry/mcf-manifests.json,
@@ -40,7 +59,8 @@
 #                    pulled with the runner's instance role, no Teleport).
 #
 # Bucket layout written under hot-test-<repo>-pr-<N>/ (the routes of step 4 read it):
-#   v2_static/<mcf>/...          the artifact as is
+#   <static-prefix>/...          the artifact as is (v2_static/<mcf>/ for an MCF, public/
+#                                for the legacy monorepo)
 #   entry/index.html             builder output; mcf-manifests.{js,json}, entry-info.json
 #   hot-test.json                repo, pr, sha, ref, run, updated_at
 # Everything is Cache-Control: no-cache and the sync deletes what the PR no longer
@@ -52,7 +72,8 @@
 # only it knows. The release bucket is the one value on both sides that moves, so after
 # the route is up the job compares, byte for byte, every release manifest the entry was
 # built from: v2_static/core/manifest.json and v2_static/<mcf>/mf-manifest.json of each
-# MCF in entry/mcf-manifests.json except this PR's, fetched through https://<host> (the
+# MCF in entry/mcf-manifests.json except this PR's (manifest: mcf; with manifest: none
+# every MCF is released), fetched through https://<host> (the
 # cluster's release bucket) and under base-static-url. The builder's own list
 # (<base-static-url>/entry/mcf-manifests.json) cannot be read through the stand: its /entry
 # is the PR folder. A difference or a non-200 from the stand is ❌ (the first differing
@@ -64,7 +85,10 @@
 # CDN_URL=https://<host> so every other MCF loads through the stand's host too
 # (the stand's route sends /v2_static to the release bucket);
 # VERSION_CHECKER_ENABLED=false, no DataDog RUM and no transaction manager: a PR
-# stand reports nothing.
+# stand reports nothing. With manifest: none the entry is built without an override:
+# the SPA routes of the stand still need an index.html, and the PR's own files reach
+# the page from the backend's HTML: the stand's API route carries X-Testing-Frontend,
+# on which the admin backend links /public/... relative to the request host.
 #
 # Permissions: none are declared here on purpose; the job runs with what the calling
 # job grants: contents: read and id-token: write (Teleport join). The PR shows the stand
@@ -89,6 +113,12 @@ on:
       mcf:
         type: string
         default: ""
+      static-prefix:
+        type: string
+        default: ""
+      manifest:
+        type: string
+        default: mcf
       hot-test-domain:
         type: string
         default: testing-env.omicron.maestra.io
@@ -134,6 +164,8 @@ jobs:
           PR_NUMBER: ${{ inputs.pr-number }}
           EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
           MCF: ${{ inputs.mcf }}
+          STATIC_PREFIX: ${{ inputs.static-prefix }}
+          MANIFEST: ${{ inputs.manifest }}
           HOT_TEST_DOMAIN: ${{ inputs.hot-test-domain }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
@@ -141,24 +173,33 @@ jobs:
           repo="${REPO:-${GITHUB_REPOSITORY##*/}}"
           pr="${PR_NUMBER:-$EVENT_PR_NUMBER}"
           mcf="${MCF:-${repo//-/_}}"
+          static_prefix="${STATIC_PREFIX:-v2_static/$mcf}"
+          manifest="${MANIFEST:-mcf}"
           [[ "$repo" =~ ^[a-z0-9-]+$ ]] || { echo "::error::repo '$repo' is not [a-z0-9-]+"; exit 1; }
           [[ "$pr" =~ ^[0-9]+$ ]] || { echo "::error::pr-number '$pr' is not a number"; exit 1; }
           [[ "$mcf" =~ ^[a-z0-9_]+$ ]] || { echo "::error::mcf '$mcf' is not [a-z0-9_]+"; exit 1; }
+          # The same path the ResourceSet template accepts as staticPrefix, without the slashes.
+          [[ "$static_prefix" =~ ^[a-z0-9_-]+(/[a-z0-9_-]+)*$ ]] || { echo "::error::static-prefix '$static_prefix' is not [a-z0-9_-]+(/[a-z0-9_-]+)* (no leading or trailing slash)"; exit 1; }
+          case "$manifest" in mcf|none) ;; *) echo "::error::manifest '$manifest' is not mcf or none"; exit 1 ;; esac
           # haproxy-cdp sends every host containing -services to the kube-services backend.
           [[ "$repo" != *-services* ]] || { echo "::error::repo '$repo' contains -services: haproxy-cdp would never route its hot-test host"; exit 1; }
           name="hot-test-${repo}-pr-${pr}"
           host="${name}.${HOT_TEST_DOMAIN}"
+          own_mcf=""; [ "$manifest" != mcf ] || own_mcf="$mcf"
           # <<< names
           {
             echo "repo=$repo"
             echo "pr=$pr"
             echo "mcf=$mcf"
+            echo "static-prefix=$static_prefix"
+            echo "manifest=$manifest"
+            echo "own-mcf=$own_mcf"
             echo "name=$name"
             echo "host=$host"
             echo "url=https://$host"
             echo "sha=${HEAD_SHA:0:7}"
           } >> "$GITHUB_OUTPUT"
-          echo "stand https://$host, bucket folder $name/, mcf $mcf"
+          echo "stand https://$host, bucket folder $name/, own files $static_prefix/, manifest $manifest"
 
       - id: static
         uses: actions/download-artifact@v8.0.1
@@ -168,29 +209,34 @@ jobs:
       - id: unpack
         name: unpack static
         env:
-          MCF: ${{ steps.names.outputs.mcf }}
+          STATIC_PREFIX: ${{ steps.names.outputs.static-prefix }}
+          MANIFEST: ${{ steps.names.outputs.manifest }}
         run: |
           site="$RUNNER_TEMP/site"; mkdir -p "$site"
           tar -xzf "$RUNNER_TEMP/artifact/static.tgz" -C "$site"
-          manifest="$site/v2_static/$MCF/mf-manifest.json"
-          [ -f "$manifest" ] || { echo "::error::v2_static/$MCF/mf-manifest.json is not in the static artifact"; exit 1; }
+          [ -d "$site/$STATIC_PREFIX" ] || { echo "::error::$STATIC_PREFIX/ is not in the static artifact"; exit 1; }
+          if [ "$MANIFEST" = mcf ] && [ ! -f "$site/$STATIC_PREFIX/mf-manifest.json" ]; then
+            echo "::error::$STATIC_PREFIX/mf-manifest.json is not in the static artifact"; exit 1
+          fi
           if find "$site" -name '*.map' -type f | grep -q .; then
             echo "::error::the static artifact contains source maps; drop them before publishing"; exit 1
           fi
-          du -sh "$site/v2_static/$MCF"
+          du -sh "$site/$STATIC_PREFIX"
 
       - id: entry
         name: build entry (${{ inputs.builder-image }})
         env:
           IMAGE: ${{ inputs.builder-image }}
           MCF: ${{ steps.names.outputs.mcf }}
+          STATIC_PREFIX: ${{ steps.names.outputs.static-prefix }}
+          MANIFEST: ${{ steps.names.outputs.manifest }}
           HOT_TEST_URL: ${{ steps.names.outputs.url }}
           BASE_STATIC_URL: ${{ inputs.base-static-url }}
         run: |
           site="$RUNNER_TEMP/site"
           overrides="$RUNNER_TEMP/overrides/manifests"; mkdir -p "$overrides" "$site/entry"
           # >>> manifest (scripts/test-hot-test-publish.sh runs this block)
-          cp "$site/v2_static/$MCF/mf-manifest.json" "$overrides/mf-manifest.json"
+          [ "$MANIFEST" != mcf ] || cp "$site/$STATIC_PREFIX/mf-manifest.json" "$overrides/mf-manifest.json"
           # <<< manifest
           registry="${IMAGE%%/*}"
           if [[ "$registry" == *.dkr.ecr.* ]]; then
@@ -214,11 +260,13 @@ jobs:
           for f in index.html mcf-manifests.json mcf-manifests.js; do
             [ -s "$site/entry/$f" ] || { echo "::error::the builder wrote no entry/$f"; exit 1; }
           done
-          remote_entry=$(jq -r '.metaData.remoteEntry.name' "$site/v2_static/$MCF/mf-manifest.json")
-          jq -e --arg m "$MCF" --arg r "$remote_entry" \
-            'any(.[]; .id == $m and .metaData.remoteEntry.name == $r)' \
-            "$site/entry/mcf-manifests.json" >/dev/null \
-            || { echo "::error::entry/mcf-manifests.json does not carry the PR manifest of $MCF (remoteEntry $remote_entry)"; exit 1; }
+          if [ "$MANIFEST" = mcf ]; then
+            remote_entry=$(jq -r '.metaData.remoteEntry.name' "$site/$STATIC_PREFIX/mf-manifest.json")
+            jq -e --arg m "$MCF" --arg r "$remote_entry" \
+              'any(.[]; .id == $m and .metaData.remoteEntry.name == $r)' \
+              "$site/entry/mcf-manifests.json" >/dev/null \
+              || { echo "::error::entry/mcf-manifests.json does not carry the PR manifest of $MCF (remoteEntry $remote_entry)"; exit 1; }
+          fi
           grep -qF "$HOT_TEST_URL/" "$site/entry/index.html" \
             || { echo "::error::entry/index.html does not use $HOT_TEST_URL/ as the static source (CDN_URL)"; exit 1; }
           grep -qF 'mindbox-version-checker-enabled" content="false"' "$site/entry/index.html" \
@@ -348,13 +396,14 @@ jobs:
         if: steps.route.outputs.up == 'true'
         env:
           URL: ${{ steps.names.outputs.url }}
-          MCF: ${{ steps.names.outputs.mcf }}
+          MCF: ${{ steps.names.outputs.own-mcf }}
           BASE_STATIC_URL: ${{ inputs.base-static-url }}
         run: |
           # >>> release (scripts/test-hot-test-publish.sh runs this block)
           dir=$(mktemp -d "$RUNNER_TEMP/release.XXXXXX")
           base="${BASE_STATIC_URL%/}"
-          # The stand serves /entry from the PR folder, so the release list is checked by its members.
+          # The stand serves /entry from the PR folder, so the release list is checked by its
+          # members; MCF is the PR's own one to skip, empty when the PR carries no manifest.
           mapfile -t paths < <(echo v2_static/core/manifest.json
             jq -r --arg m "$MCF" '.[].metaData.remoteEntry.name | split("/")
               | select(.[0] == "v2_static" and .[1] != $m) | "v2_static/\(.[1])/mf-manifest.json"' \
@@ -390,7 +439,8 @@ jobs:
         env:
           URL: ${{ steps.names.outputs.url }}
           SHA: ${{ steps.names.outputs.sha }}
-          MCF: ${{ steps.names.outputs.mcf }}
+          REPO: ${{ steps.names.outputs.repo }}
+          STATIC_PREFIX: ${{ steps.names.outputs.static-prefix }}
           OK: ${{ steps.upload.outcome == 'success' }}
           ROUTE_UP: ${{ steps.route.outputs.up }}
           WAITED: ${{ steps.route.outputs.waited }}
@@ -416,7 +466,7 @@ jobs:
           if [ "$OK" != true ]; then
             body=":x: **Hot-test stand** for ${SHA} was not published: ${reason} ([run](${run}))."
           elif [ "$ROUTE_UP" != true ]; then
-            body=":warning: **Hot-test stand** ${URL} — ${SHA}: the static is published, but the stand route did not come up in ${minutes} min ([run](${run})). Most likely \`${MCF}\` is not registered in fluxcd for hot-test stands — see https://github.com/maestra-io/fluxcd/blob/main/base/microfrontend/README.md. Flux creates the route within ~3 min after registration; re-run the job or push a commit to re-check."
+            body=":warning: **Hot-test stand** ${URL} — ${SHA}: the static is published, but the stand route did not come up in ${minutes} min ([run](${run})). Most likely \`${REPO}\` is not registered in fluxcd for hot-test stands — see https://github.com/maestra-io/fluxcd/blob/main/base/microfrontend/README.md. Flux creates the route within ~3 min after registration; re-run the job or push a commit to re-check."
           elif [ "$RELEASE_STATUS" = differs ]; then
             body=":x: **Hot-test stand** ${URL} — ${SHA}: релизный бакет в workflow (\`base-static-url\`) и во fluxcd (\`baseStaticDomain\` провайдера hot-test) разный, первое расхождение \`${RELEASE_PATH}\`: ${RELEASE_STAND} ≠ ${RELEASE_BASE} ([run](${run}))."
           elif [ "$RELEASE_STATUS" = missing ]; then
@@ -424,7 +474,7 @@ jobs:
           elif [ "$RELEASE_OK" != true ]; then
             body=":x: **Hot-test stand** ${URL} — ${SHA}: the release bucket check could not read the release manifests of \`base-static-url\` ([run](${run}))."
           else
-            body=":white_check_mark: **Hot-test stand**: ${URL} — ${SHA} ([run](${run}))"$'\n\n'"\`${MCF}\` from this PR on top of the released admin of the test tenant; the stand is removed when the PR closes."
+            body=":white_check_mark: **Hot-test stand**: ${URL} — ${SHA} ([run](${run}))"$'\n\n'"\`/${STATIC_PREFIX}/\` of \`${REPO}\` from this PR on top of the released admin of the test tenant; the stand is removed when the PR closes."
           fi
           printf '### hot-test stand\n%s\n' "$body" >> "$GITHUB_STEP_SUMMARY"
           # <<< summary
