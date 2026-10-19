@@ -1,0 +1,89 @@
+# Reusable secret scan of a pull request's commits with the official
+# gitleaks/gitleaks-action. One job, `gitleaks` (the check is `<caller job> / gitleaks`),
+# skipped outside pull_request.
+#
+# What is scanned: gitleaks-action lists the PR's commits through the API and runs
+# `gitleaks detect --log-opts="--no-merges --first-parent <first>^..<last>"`, so only
+# what the PR adds is scanned, never the whole tree. The checkout is full depth
+# (fetch-depth: 0) because that range reaches back to the parent of the PR's first
+# commit. The action reads only the first page of that list (30 commits), so a PR
+# with more than 30 commits fails before the scan instead of passing on a partial one
+# (squash or split it). Merge commits and side branches merged into the PR are not
+# scanned (`--first-parent --no-merges` is fixed in the action). Red on a finding; the job summary
+# lists the findings (redacted), each one gets a review comment on the PR, and the
+# SARIF report is uploaded as a run artifact (the action's defaults).
+#
+# Usage (GITLEAKS_LICENSE is an org secret; gitleaks-action exits 1 on an org repo
+# without it):
+#
+#   jobs:
+#     gitleaks:
+#       uses: maestra-io/github-actions/.github/workflows/gitleaks.yml@main
+#       secrets: inherit   # or: secrets: { GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }} }
+#       permissions:
+#         contents: read
+#         pull-requests: write   # the PR's commit list, and the review comments
+#
+# Permissions come from the calling job: this workflow declares none.
+#
+# Config: only the central gitleaks/gitleaks.toml of this repo (gitleaks' default
+# rules plus allowlists that apply to any repo), passed as GITLEAKS_CONFIG. A repo's
+# own gitleaks config is not read: a project-specific allowlist is added centrally.
+#
+# A single accepted finding goes to `.gitleaksignore` at the repo root, one
+# fingerprint `<commit>:<file>:<rule-id>:<line>` per line (the job log prints it; the
+# summary lists its parts).
+#
+# gitleaks-action installs the newest gitleaks release (GITLEAKS_VERSION latest).
+#
+# Inputs:
+#   ref   ref of maestra-io/github-actions the central config is read from (default
+#         main; set it when testing a branch of this repo).
+
+name: gitleaks
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        default: main
+    secrets:
+      GITLEAKS_LICENSE:
+        required: true
+
+jobs:
+  gitleaks:
+    name: gitleaks
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: runs-on=${{ github.run_id }}-gitleaks/pool=small
+    timeout-minutes: 10
+    steps:
+      - uses: runs-on/action@v2.5.0
+      # gitleaks-action scans the first 30 commits of a PR and no more (one page of
+      # the commits API): a longer PR must not pass on a partial scan.
+      - if: ${{ github.event.pull_request.commits > 30 }}
+        run: |
+          echo "::error::this PR has ${{ github.event.pull_request.commits }} commits; gitleaks-action scans only the first 30. Squash or split it."
+          exit 1
+      # Full history: the scanned range starts at the parent of the PR's first commit.
+      # No token left in git config.
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # The central config from `ref`, not from the workflow's own ref: a reusable
+      # workflow cannot reach files of its repo by path.
+      - uses: actions/checkout@v7.0.1
+        with:
+          repository: maestra-io/github-actions
+          ref: ${{ inputs.ref }}
+          path: .github-actions
+          sparse-checkout: gitleaks
+          persist-credentials: false
+      - uses: gitleaks/gitleaks-action@v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+          GITLEAKS_VERSION: latest
+          GITLEAKS_CONFIG: .github-actions/gitleaks/gitleaks.toml

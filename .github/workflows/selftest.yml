@@ -30,6 +30,8 @@ on:
       - "tbot-join/**"
       - ".github/workflows/pr-checks.yml"
       - "pr-checks/**"
+      - ".github/workflows/gitleaks.yml"
+      - "gitleaks/**"
 
 permissions:
   contents: read
@@ -38,8 +40,8 @@ jobs:
   shell:
     runs-on: runs-on=${{ github.run_id }}-shell/runner=t3a-small
     steps:
-      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: runs-on/action@v2.5.0
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
@@ -101,7 +103,7 @@ jobs:
 
       # warn-as-error must keep tests running on the Microsoft.Testing.Platform
       # runner too (a bare /warnaserror ran zero tests there, exit 5).
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      - uses: actions/setup-dotnet@v6.0.0
         with:
           dotnet-version: 10.0.x
       - name: dotnet-service-build warn-as-error on MTP and VSTest runners (workflow copy)
@@ -143,6 +145,18 @@ jobs:
       contents: read
     with:
       ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+  # The gitleaks workflow of the PR head on this repo's own pull requests. Skips
+  # itself outside pull_request. Needs the org secret GITLEAKS_LICENSE
+  # (gitleaks-action exits 1 without it on an org repo).
+  gitleaks:
+    uses: ./.github/workflows/gitleaks.yml
+    secrets: inherit
+    with:
+      ref: ${{ github.event.pull_request.head.sha || github.sha }}
+    permissions:
+      contents: read
+      pull-requests: write
 
   # End to end: the real reusable workflow on a net8.0 + net10.0 solution with no
   # global.json. Each test asserts it runs on its own target's runtime (no

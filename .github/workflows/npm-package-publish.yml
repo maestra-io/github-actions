@@ -123,12 +123,12 @@ jobs:
       pull-requests: write
       id-token: write      # nora OIDC token
     steps:
-      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: runs-on/action@v2.5.0
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0 # semantic-release walks the history to the last tag
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: ${{ inputs.node-version }}
           node-version-file: ${{ inputs.node-version == '' && inputs.node-version-file || '' }}
@@ -155,7 +155,7 @@ jobs:
 
       - name: mint packages token
         id: token
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        uses: actions/github-script@v9.0.0
         env:
           AUDIENCE: ${{ inputs.packages-audience }}
         with:
@@ -223,7 +223,7 @@ jobs:
 
       - name: upload coverage
         if: ${{ always() && inputs.report-coverage && github.event_name == 'pull_request' && steps.checks.conclusion != 'skipped' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: coverage
           path: coverage/
@@ -235,7 +235,7 @@ jobs:
       - name: coverage comment
         if: ${{ always() && inputs.report-coverage && github.event_name == 'pull_request' && steps.checks.conclusion != 'skipped' }}
         continue-on-error: true
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        uses: actions/github-script@v9.0.0
         with:
           script: |
             const fs = require('fs');
@@ -265,7 +265,7 @@ jobs:
       - name: mint release token
         id: release-token
         if: ${{ inputs.release && github.event_name != 'pull_request' }}
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        uses: actions/github-script@v9.0.0
         env:
           AUDIENCE: ${{ inputs.packages-audience }}
         with:

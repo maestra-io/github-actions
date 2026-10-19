@@ -80,11 +80,11 @@ jobs:
       - uses: runs-on/action@v2.5.0
       # The test merge commit and its first parent, the base branch tip (HEAD^1). No
       # token left in git config: the steps below read the PR's own files.
-      - uses: actions/checkout@v6.1.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 2
           persist-credentials: false
-      - uses: actions/checkout@v6.1.0
+      - uses: actions/checkout@v7.0.1
         with:
           repository: maestra-io/github-actions
           ref: ${{ inputs.ref }}

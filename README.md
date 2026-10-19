@@ -27,17 +27,16 @@ touches `ci/`).
 
 ### How consumers should pin
 
-**Reusable workflows and composite actions** — pin the immutable sha and name the tag in a trailing
-comment. That is the format Renovate writes and reads, so it bumps the sha and the comment together
-and can never propose the two out of step:
+**Reusable workflows and composite actions** — reference a release tag, not a commit sha (this repo
+does the same for every action it uses). Renovate bumps the tag:
 
 ```yaml
-uses: maestra-io/github-actions/.github/workflows/terraform-run.yml@4400cd4787fea8b4353aad7d90621d573af8ddc9 # v1.1.7
+uses: maestra-io/github-actions/.github/workflows/terraform-run.yml@v1.1.7
 ```
 
 If you would rather not review a Renovate PR per patch, `@v1` is also valid — a moving alias that
-only goes forward inside major 1. You give up the audit trail of *which* revision ran, so prefer the
-sha form for anything that touches production.
+only goes forward inside major 1. You give up the record of *which* release ran, so prefer the full
+`vX.Y.Z` tag for anything that touches production.
 
 **The `maestra.infra` ansible collection** — `ansible-galaxy` takes any git ref in `version:`, so
 pin the tag rather than `main`:
@@ -55,8 +54,8 @@ pin the tag rather than `main`:
 ### Breaking changes
 
 A `!` or a `BREAKING CHANGE:` footer cuts `v2.0.0` and moves the alias `v2` — it does **not** move
-`v1`, so consumers on `@v1` stay where they are until they migrate. Consumers pinned to a sha are
-unaffected until their Renovate PR is reviewed. Mark a change breaking whenever an input is removed
+`v1`, so consumers on `@v1` stay where they are until they migrate. Consumers on a full `vX.Y.Z` tag
+are unaffected until their Renovate PR is reviewed. Mark a change breaking whenever an input is removed
 or renamed, a default changes meaning, or a required secret appears.
 
 ## Octopus Deploy Package and Release
@@ -430,6 +429,48 @@ Vault app join for PR hot-test stands) and `maestra-io/dockerfiles` `.github/wor
 
 Tested by [`scripts/test-tbot-join.sh`](scripts/test-tbot-join.sh) (stub `tbot`, run by `selftest`).
 
+## Gitleaks on pull requests (`gitleaks.yml`)
+
+The reusable workflow [`gitleaks.yml`](.github/workflows/gitleaks.yml) runs the official
+[`gitleaks/gitleaks-action`](https://github.com/gitleaks/gitleaks-action) (v3) on a pull
+request. One job, `gitleaks` (check name `<caller job> / gitleaks`), skipped outside
+`pull_request`:
+
+```yaml
+jobs:
+  gitleaks:
+    uses: maestra-io/github-actions/.github/workflows/gitleaks.yml@main
+    secrets: inherit          # GITLEAKS_LICENSE, an org secret
+    permissions:
+      contents: read
+      pull-requests: write    # the PR's commit list, and the review comments
+```
+
+- **Secret**: gitleaks-action exits 1 on an organization repo without `GITLEAKS_LICENSE`
+  (`secrets: inherit`, or `secrets: { GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }} }`).
+- **Permissions** come from the calling job (the workflow declares none): `contents: read`
+  and `pull-requests: write` (the PR's commit list on a private repo, and the review
+  comments).
+- **What is scanned**: the PR's commits, `--no-merges --first-parent <first>^..<last>`,
+  on a full-depth checkout; never the whole tree. **Limit**: the action reads only the
+  first 30 commits of the PR, so a longer PR is scanned up to its 30th commit.
+- **Findings**: red job, listed (redacted) in the job summary and a review comment on
+  the PR per finding, and the SARIF report as a run artifact (the action's defaults).
+
+The action installs the newest gitleaks release (`GITLEAKS_VERSION: latest`). One input,
+`ref`: the ref of this repo the central config is read from (default `main`).
+
+**Config**: only the central [`gitleaks/gitleaks.toml`](gitleaks/gitleaks.toml) (gitleaks'
+default rules plus allowlists that apply to any repo), passed as `GITLEAKS_CONFIG`. A repo's
+own gitleaks config is not read; a project-specific allowlist is added here.
+
+A single accepted finding goes to `.gitleaksignore` at the repo root, one fingerprint
+`<commit>:<file>:<rule-id>:<line>` per line.
+
+`pr-checks.yml` still runs its own gitleaks step (input `gitleaks`, default `true`) with
+its legacy config `pr-checks/gitleaks.toml`, and the build and publish workflows below get
+the scan through it, until they call `gitleaks.yml` as their own `gitleaks` job.
+
 ## Test results ingest (flaky-test telemetry)
 
 `test-results-ingest` turns the TRX / JUnit files of a job into one JSON row per
@@ -465,6 +506,7 @@ top of each file.
 | [`hot-test-publish.yml`](.github/workflows/hot-test-publish.yml) | hot-test stand of a pull request ([issues-maestra#1574](https://github.com/maestra-io/issues-maestra/issues/1574)): the PR's static artifact + an entry from `frontend-entry-static-builder --single-run` with the PR's manifest → R2 `admin-hot-test-static-omicron/hot-test-<repo>-pr-<N>/` (Teleport GitHub join from the PR → Vault omicron → 10-minute editor keys); the stand URL `https://hot-test-<repo>-pr-<N>.testing-env.omicron.maestra.io` is in the PR as a deployment of environment `hot-test` and in the job's step summary. Called by `mcf-build.yml` on pull_request (input `hot-test`); the routes come from the builder's chart per open PR. Inputs: `bucket` (stands' bucket, write), `base-static-url` (release static the entry is built from), `hot-test-domain`; the tenant and the cluster's copies of these addresses live only in fluxcd (component `base/microfrontend/hot-test`). After the route is up the job compares every release manifest the entry was built from (`v2_static/core/manifest.json` and `v2_static/<mcf>/mf-manifest.json` of each MCF in its `entry/mcf-manifests.json` but the PR's own) through the stand with the ones under `base-static-url`: another release bucket in the cluster's `baseStaticDomain` (first differing path in the summary) or a non-200 from the stand is ❌ and fails the job | frontend-ci-components mcf@3 hot-test environments |
 | [`frontend-codegen.yml`](.github/workflows/frontend-codegen.yml) | one job `codegen` for a frontend with its own pipeline (maestra-io/frontend): restores the `install` job's `node_modules` cache, GitHub OIDC → auth-jwt omega JWT (client `github-frontend-graphql-schema`, bound to this workflow at `@refs/heads/main`) → `npm run graphql-codegen`; artifact `codegen`. The same job as `codegen` in `mcf-build.yml` | frontend-ci-components graphql-codegen |
 | [`helm-chart.yml`](.github/workflows/helm-chart.yml) | PR: `check` (version bump, CHANGELOG, lint, helm-unittest); main: `release` → ECR `helm-charts/<name>` ([`push-helm-chart-to-aws-ecr`](push-helm-chart-to-aws-ecr/action.yml)) | system/components/helm-ci helm-merge-request + helm-release |
+| [`gitleaks.yml`](.github/workflows/gitleaks.yml) | PR only: one job `gitleaks`, [`gitleaks/gitleaks-action`](https://github.com/gitleaks/gitleaks-action) on the PR's commits with the central `gitleaks/gitleaks.toml`; needs the `GITLEAKS_LICENSE` org secret; a repo with its own workflows calls it directly (`pr-checks.yml` still runs its own gitleaks step) | — |
 
 Warehouse refresh: GitHub org webhook → Kargo cluster receiver, see fluxcd `iota/us-iota-lw-kube-infra/kargo/webhook-receivers.yaml`; Warehouses still poll every 5 min as fallback.
 

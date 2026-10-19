@@ -43,7 +43,7 @@ jobs:
     runs-on: runs-on=${{ github.run_id }}-lint/runner=t3a-small
     timeout-minutes: 10
     steps:
-      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: runs-on/action@v2.5.0
       # Pinned to full-length commit SHAs, like every other external `uses:` in this
       # repo since the Renovate landing. A tag is mutable — re-pointing it runs new
       # code here with this job's token. The trailing `# vX.Y.Z` is the form
@@ -54,11 +54,11 @@ jobs:
       #
       # persist-credentials: false — nothing here pushes, so the token has no job
       # to do past the clone, and the steps after it execute code from the PR branch.
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - uses: actions/setup-python@v6.3.0
         with:
           python-version: "3.14"
 
