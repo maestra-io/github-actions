@@ -133,21 +133,26 @@ jobs:
   # build of the changed overlays) and pr-gate stays green (skipped jobs pass). Any doubt
   # (no merge commit, git failure, bake from the repo root) means code=true: everything runs.
   changes:
-    if: ${{ github.event_name == 'pull_request' }}
     runs-on: runs-on=${{ github.run_id }}-changes/pool=small
     timeout-minutes: 5
     permissions:
       contents: read
     outputs:
-      code: ${{ steps.c.outputs.code }}
+      # A push (release) or workflow_dispatch builds everything: code=true without a diff. The job
+      # must still RUN on those events - a skipped `changes` makes every dependent job that has
+      # no `!cancelled()` guard (test, images, release, bake) skip too, which shipped empty green
+      # releases on 2026-10-19.
+      code: ${{ github.event_name == 'pull_request' && steps.c.outputs.code || 'true' }}
     steps:
       - uses: runs-on/action@v2.5.0
       # The test merge commit and its first parent, the base branch tip (HEAD^1).
       - uses: actions/checkout@v6.1.0
+        if: ${{ github.event_name == 'pull_request' }}
         with:
           fetch-depth: 2
           persist-credentials: false
       - id: c
+        if: ${{ github.event_name == 'pull_request' }}
         env:
           BAKE_PATH: kustomization
           BAKES: ""
