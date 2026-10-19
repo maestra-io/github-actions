@@ -20,6 +20,14 @@ inputs:
       tag-push/workflow_dispatch behavior.
     required: false
     default: ''
+  ref:
+    description: >-
+      Git ref checked out and baked. Default '' = the resolved tag. Set it when
+      the git tag differs from the artifact tag, e.g. service-build's
+      release-tag-prefix: tag `standard-blocks-v1.1.5` bakes
+      `<service>-manifests:1.1.5`.
+    required: false
+    default: ''
   images:
     description: >-
       Comma-separated list of image basenames to verify exist in ECR before
@@ -138,7 +146,7 @@ runs:
 
     - uses: actions/checkout@v7.0.1
       with:
-        ref: ${{ steps.ver.outputs.version }}
+        ref: ${{ inputs.ref || steps.ver.outputs.version }}
         fetch-depth: 1
 
     # ── Teleport workload-identity → AWS STS → ECR ────────────────────────
