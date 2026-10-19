@@ -41,6 +41,23 @@
     - name: Prove it is actually serving again
       ansible.builtin.include_tasks: "{{ os_update_hooks_dir }}/settle.yml"
 
+    # Same grace the success path gets, for the same reason: the hatch is used
+    # after a run was cancelled or died mid-drain, so the workloads the drain
+    # moved are returning RIGHT NOW and every alert whose `for:` elapsed under
+    # the maintenance silence fires the second that silence is dropped
+    # (19.10.2026 19:52 UTC, us-iota node 02: TooManyLogs x7 across three
+    # contours, AlertingRulesError, ReconcileErrors, ApdexLow — all noise from
+    # the pods landing back). Posted BEFORE the drop so there is no gap.
+    - name: Post-hatch grace — tail silences while the workloads return
+      when: (os_update_tail_silence_minutes | int) > 0
+      block:
+        - name: Tail silences
+          ansible.builtin.include_tasks: tail_silence.yml
+      rescue:
+        - name: Could not post the tail silences — late workload alerts may fire
+          ansible.builtin.debug:
+            msg: "WARNING: could not post the {{ os_update_tail_silence_minutes }} min tail silences; alerts with a long for: may fire while workloads return."
+
     - name: Drop any silence this host still owns
       ansible.builtin.include_tasks: unsilence.yml
 

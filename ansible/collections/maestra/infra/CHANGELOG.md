@@ -7,6 +7,17 @@ finding, and because the `os_update` contract is shared across four repos:
 anything that changes a variable name or a hook expectation has to be findable
 from one place.
 
+## 1.2.2
+
+- `os_update` role: `mode=undrain-only` posts the same post-run tail silences
+  the success path does, before dropping the maintenance silences. The hatch
+  runs after a cancelled or dead run, i.e. while the workloads the drain moved
+  are landing back, and every alert whose `for:` elapsed under the maintenance
+  silence fired the second it was dropped (us-iota node 02, 19.10.2026 19:52
+  UTC: TooManyLogs x7 across three contours, AlertingRulesError,
+  ReconcileErrors, ApdexLow — all noise from pods returning).
+- No consumer change.
+
 ## 1.2.1
 
 - `os_update` role: `apt.yml` sets `NEEDRESTART_SUSPEND=1`. needrestart is
