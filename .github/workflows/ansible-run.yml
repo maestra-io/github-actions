@@ -203,6 +203,11 @@ on:
         required: false
         type: string
         default: "runs-on=${{ github.run_id }}/runner=t3a-small"
+      vault_export_token:
+        description: "Also export the Vault token of the primary fetch as VAULT_TOKEN (and vault_addr as VAULT_ADDR) to the Execute step, for plays that write to Vault themselves (active-directory-maestra kerberos auth config, issues-maestra#1432). The token lives as long as the role's token_ttl; size that in vault-server values."
+        required: false
+        type: boolean
+        default: false
       extra_env:
         description: "Extra KEY=VALUE lines injected into the Execute step env (may reference secrets already exported to \\$GITHUB_ENV)."
         required: false
@@ -635,7 +640,14 @@ jobs:
           role: ${{ inputs.vault_role }}
           jwtGithubAudience: https://github.com/maestra-io
           exportEnv: true
+          exportToken: ${{ inputs.vault_export_token }}
           secrets: ${{ inputs.vault_secrets }}
+
+      - name: Export the Vault address for the play
+        if: ${{ inputs.vault_export_token && inputs.vault_mode != 'none' && inputs.vault_secrets != '' }}
+        env:
+          VAULT_ADDR_INPUT: ${{ inputs.vault_addr }}
+        run: printf 'VAULT_ADDR=%s\n' "$VAULT_ADDR_INPUT" >> "$GITHUB_ENV"
 
       # --- Vault: second source (optional, additive) ---------------------
       # Gated ONLY on vault2_secrets being non-empty -- deliberately not on
