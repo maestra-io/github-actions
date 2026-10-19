@@ -261,6 +261,19 @@ no unsilenced gap.
 * A **failed** run posts no tail: the operator must see what is broken.
   `os_update_tail_silence_minutes: 0` disables the tail.
 
+## When the Teleport proxy runs on the farm itself
+
+The apply leg reaches the target AND its kubectl delegate over Teleport SSH. `tsh` dials
+`teleport.maestra.io:3023` (separate listener mode), and DNS spreads that over every proxy
+address. On us-iota those addresses are the k0s nodes themselves (proxy `hostNetwork`, one per
+node), so a dial that lands on the target rides a proxy our own drain evicts and our reboot
+kills. The apply job therefore passes `teleport_avoid_host: <target>` to `ansible-run.yml`,
+which pins the FQDN in the runner's `/etc/hosts` to the proxy addresses that are NOT the
+target's (`hostname -I` on the target, read before anything is drained). Where no proxy
+address belongs to the target — every other farm — the step changes nothing. A connection
+that drops anyway is covered by Teleport SSH resumption (`tsh proxy ssh`, 1-minute window)
+and `[ssh_connection] retries`. Nothing to pass at dispatch time.
+
 ## When a run dies mid-drain
 
 A cancelled runner never executes `always`. Three layers, of which only the first is a gate:
