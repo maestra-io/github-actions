@@ -6,7 +6,7 @@
 #   vars -> guards -> marker(read) -> plan -> PREFLIGHT -> [silence -> drain ->
 #   boot_safety -> holds -> apt -> reboot -> kernel_gc -> VERIFY]
 #   always: holds(restore) -> UNDRAIN -> marker(clear) -> SETTLE ->
-#           [tail silence, success only] -> unsilence
+#           [tail silence, successful apply or undrain-only] -> unsilence
 #
 # `binary-update` is the one mode that does NOT end in that `always`. It lives at
 # the bottom of this file, and its undrain sits in the success block on purpose —
