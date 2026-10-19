@@ -45,10 +45,19 @@
 #                    must not be in it.
 #   mcf              Folder under v2_static (default: repo with - replaced by _).
 #   static-prefix    Folder of the PR's own files in the artifact and the PR folder, no
-#                    leading or trailing slash (default v2_static/<mcf>). The stand's route
-#                    sends /<static-prefix>/ to the PR folder: the staticPrefix of the
-#                    repo's ResourceSetInputProvider (fluxcd base/microfrontend/hot-test)
-#                    must be the same path. The legacy admin monorepo frontend uses public.
+#                    leading or trailing slash. The stand's routes (the ResourceSet template
+#                    of the frontend-entry-static-builder chart) send /<static-prefix>/ and
+#                    /entry to the PR folder (priority 400), the API and legacy paths to the
+#                    tenant with X-Testing-Frontend (300), the rest of /v2_static to the
+#                    release bucket (100) and everything else to entry/index.html of the
+#                    PR folder (10). Default v2_static/<mcf>: the module federation folder
+#                    (the repo name with - as _), the same rule as the template's default
+#                    staticPrefix, so an MCF registers without it. A repo whose files live
+#                    elsewhere sets staticPrefix in its registration (fluxcd
+#                    base/microfrontend/hot-test): the legacy admin monorepo frontend
+#                    /public/, the admin shell frontend-core-v2 /v2_static/core/; it passes
+#                    the same path here, else the stand does not serve the PR's files and
+#                    the summary is ⚠️ or ❌.
 #   manifest         mcf (default): <static-prefix>/mf-manifest.json is the PR's module
 #                    federation manifest, the entry is built with it as the override.
 #                    core: <static-prefix>/manifest.json and build-info.json are the admin
