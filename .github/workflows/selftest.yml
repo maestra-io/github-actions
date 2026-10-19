@@ -96,6 +96,8 @@ jobs:
 
       - name: pr-checks check-encoding and kustomize entry points
         run: bash scripts/test-pr-checks.sh
+      - name: pr-changes (kustomization-only PRs skip build and test)
+        run: bash scripts/test-pr-changes.sh
 
       # warn-as-error must keep tests running on the Microsoft.Testing.Platform
       # runner too (a bare /warnaserror ran zero tests there, exit 5).
