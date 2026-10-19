@@ -137,6 +137,7 @@ echo "hot-test-publish summary: ok"
 if grep -rnE 'backend-host|BACKEND_HOST' "$here/.." --exclude-dir=.git --exclude="$(basename "$0")"; then
   echo "FAIL the removed input backend-host is still referenced"; exit 1
 fi
-# shellcheck disable=SC2016
-grep -qF -- '-e "LEGACY_SERVICE_HOST=$HOT_TEST_URL"' "$wf" || { echo "FAIL LEGACY_SERVICE_HOST is not the stand URL"; exit 1; }
+if grep -rnE 'LEGACY_SERVICE_HOS[T]' "$here/.." --exclude-dir=.git; then
+  echo "FAIL the builder's legacy service host variable is still referenced"; exit 1
+fi
 echo "hot-test-publish inputs: ok"

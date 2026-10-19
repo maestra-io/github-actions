@@ -103,7 +103,7 @@ on:
         default: github-actions-hot-test-static-publish
       builder-image:
         type: string
-        default: 515260921971.dkr.ecr.us-west-2.amazonaws.com/frontend-entry-static-builder:1.1.6
+        default: 515260921971.dkr.ecr.us-west-2.amazonaws.com/frontend-entry-static-builder:1.1.13
     outputs:
       url:
         value: ${{ jobs.publish.outputs.url }}
@@ -201,14 +201,12 @@ jobs:
           bucket_name=$(sed -E 's#^https?://##; s#[./].*$##' <<< "$base")
           # The S3 variables are required by the builder but single-run only reads
           # over HTTP from S3_BUCKET_PUBLIC_URL.
-          # LEGACY_SERVICE_HOST: required by the builder, never used; the tenant is fluxcd's.
           docker run --rm --user "$(id -u):$(id -g)" \
             -v "$RUNNER_TEMP/overrides:/app/overrides:ro" \
             -v "$site/entry:/app/result" \
             -e "S3_BUCKET_NAME=$bucket_name" \
             -e "S3_ENDPOINT=$base" \
             -e "S3_BUCKET_PUBLIC_URL=$base" \
-            -e "LEGACY_SERVICE_HOST=$HOT_TEST_URL" \
             -e "CDN_URL=$HOT_TEST_URL" \
             -e VERSION_CHECKER_ENABLED=false \
             -e CONTOUR=foreign \
