@@ -28,6 +28,8 @@
 #   node-version        Exact Node.js version (default 24.19.0, as mcf@3).
 #   test-max-workers    Vitest workers (default 6, as mcf@3).
 #   min-lines-coverage  Lines coverage floor of `test` (default 40, as mcf@3).
+#   test-timeout-minutes  Job timeout of `test` (default 30). A large vitest suite (frontend-email-editor:
+#                       ~21 min on GitLab, over 30 on the build pool) raises it.
 #   push                Push the image and run release/bake (default true).
 #                       Only from the default branch, never on pull_request.
 #                       false = build-only dry run.
@@ -85,6 +87,9 @@ on:
       min-lines-coverage:
         type: string
         default: "40"
+      test-timeout-minutes:
+        type: number
+        default: 30
       push:
         type: boolean
         default: true
@@ -447,7 +452,7 @@ jobs:
   test:
     needs: codegen
     runs-on: runs-on=${{ github.run_id }}-test/pool=build
-    timeout-minutes: 30
+    timeout-minutes: ${{ inputs.test-timeout-minutes }}
     steps:
       - uses: runs-on/action@v2.5.0
       - uses: actions/checkout@v7.0.1
