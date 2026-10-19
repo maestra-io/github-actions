@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 #
-# Self-check for hot-test-publish.yml: the stand names (host, bucket folder, mcf
-# defaults, the inputs the ResourceSet template also rejects), the manifest
-# override (the PR manifest byte for byte), the route wait (200 is
+# Self-check for hot-test-publish.yml: the stand names (host, bucket folder, mcf and
+# static-prefix defaults, the inputs the ResourceSet template also rejects), the manifest
+# override (the PR manifest byte for byte; none with manifest: none), the route wait (200 is
 # up, anything else until the timeout is not), the release bucket check (every
 # release manifest of the entry but the PR's own is the same through the stand and
-# under base-static-url, else the step fails) and the summary it leads to. Runs the
-# inline blocks of the reusable workflow itself.
+# under base-static-url, else the step fails; with manifest: none the PR's own MCF is
+# a released one too) and the summary it leads to. Runs the inline blocks of the
+# reusable workflow itself.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 wf="$here/../.github/workflows/hot-test-publish.yml"
@@ -17,24 +18,31 @@ eq() { [ "$1" = "$2" ] || { printf 'FAIL %s\n  got:  %s\n  want: %s\n' "$3" "$1"
 
 names_prog=$(sed -n '/# >>> names/,/# <<< names/p' "$wf" | sed 's/^          //')
 [ -n "$names_prog" ] || { echo "names block not found in $wf"; exit 1; }
-# names <repo input> <pr input> <mcf input> [event pr]
+# names <repo input> <pr input> <mcf input> [event pr] [static-prefix input] [manifest input]
+# prints "<host> <name> <mcf> <static prefix> <manifest> <own mcf or ->"
 names() {
-  REPO="$1" PR_NUMBER="$2" MCF="$3" EVENT_PR_NUMBER="${4:-}" HOT_TEST_DOMAIN=testing-env.omicron.maestra.io \
-    GITHUB_REPOSITORY=maestra-io/frontend-homepage \
-    bash -c "set -eo pipefail; $names_prog"$'\n''echo "$host $name $mcf"'
+  REPO="$1" PR_NUMBER="$2" MCF="$3" EVENT_PR_NUMBER="${4:-}" STATIC_PREFIX="${5:-}" MANIFEST="${6:-}" \
+    HOT_TEST_DOMAIN=testing-env.omicron.maestra.io GITHUB_REPOSITORY=maestra-io/frontend-homepage \
+    bash -c "set -eo pipefail; $names_prog"$'\n''echo "$host $name $mcf $static_prefix $manifest ${own_mcf:--}"'
 }
-fails() { if names "$1" "$2" "$3" "${4:-}" >/dev/null 2>&1; then echo "FAIL $5: accepted"; exit 1; fi; }
+fails() { if names "$1" "$2" "$3" "${4:-}" "${5:-}" "${6:-}" >/dev/null 2>&1; then echo "FAIL $7: accepted"; exit 1; fi; }
 
-eq "$(names frontend-homepage 12 frontend_homepage)" "hot-test-frontend-homepage-pr-12.testing-env.omicron.maestra.io hot-test-frontend-homepage-pr-12 frontend_homepage" "explicit inputs"
-eq "$(names "" "" "" 7)" "hot-test-frontend-homepage-pr-7.testing-env.omicron.maestra.io hot-test-frontend-homepage-pr-7 frontend_homepage" "defaults: repository, event PR, repo with _"
-eq "$(names frontend-core-v2 3 "")" "hot-test-frontend-core-v2-pr-3.testing-env.omicron.maestra.io hot-test-frontend-core-v2-pr-3 frontend_core_v2" "mcf default from repo"
-fails "Frontend-Homepage" 1 "" "" "upper-case repo"
-fails "frontend.homepage" 1 "" "" "dot in repo"
-fails "a/b" 1 "" "" "slash in repo"
-fails frontend-homepage "" "" "" "no PR number"
-fails frontend-homepage 12x "" "" "PR number with letters"
-fails frontend-homepage 12 "x-y" "" "mcf with -"
-fails frontend-services 12 "" "" "repo containing -services"
+eq "$(names frontend-homepage 12 frontend_homepage)" "hot-test-frontend-homepage-pr-12.testing-env.omicron.maestra.io hot-test-frontend-homepage-pr-12 frontend_homepage v2_static/frontend_homepage mcf frontend_homepage" "explicit inputs"
+eq "$(names "" "" "" 7)" "hot-test-frontend-homepage-pr-7.testing-env.omicron.maestra.io hot-test-frontend-homepage-pr-7 frontend_homepage v2_static/frontend_homepage mcf frontend_homepage" "defaults: repository, event PR, repo with _"
+eq "$(names frontend-core-v2 3 "")" "hot-test-frontend-core-v2-pr-3.testing-env.omicron.maestra.io hot-test-frontend-core-v2-pr-3 frontend_core_v2 v2_static/frontend_core_v2 mcf frontend_core_v2" "mcf default from repo"
+eq "$(names frontend 4 "" "" public none)" "hot-test-frontend-pr-4.testing-env.omicron.maestra.io hot-test-frontend-pr-4 frontend public none -" "legacy monorepo: own files in public/, no manifest, no MCF to skip"
+eq "$(names frontend-core-v2 3 "" "" v2_static/core)" "hot-test-frontend-core-v2-pr-3.testing-env.omicron.maestra.io hot-test-frontend-core-v2-pr-3 frontend_core_v2 v2_static/core mcf frontend_core_v2" "static-prefix with a slash"
+fails "Frontend-Homepage" 1 "" "" "" "" "upper-case repo"
+fails "frontend.homepage" 1 "" "" "" "" "dot in repo"
+fails "a/b" 1 "" "" "" "" "slash in repo"
+fails frontend-homepage "" "" "" "" "" "no PR number"
+fails frontend-homepage 12x "" "" "" "" "PR number with letters"
+fails frontend-homepage 12 "x-y" "" "" "" "mcf with -"
+fails frontend-services 12 "" "" "" "" "repo containing -services"
+fails frontend 4 "" "" /public "" "static-prefix with a leading slash"
+fails frontend 4 "" "" public/ "" "static-prefix with a trailing slash"
+fails frontend 4 "" "" Public "" "upper-case static-prefix"
+fails frontend 4 "" "" public core "unknown manifest kind"
 echo "hot-test-publish names: ok"
 
 manifest_prog=$(sed -n '/# >>> manifest/,/# <<< manifest/p' "$wf" | sed 's/^          //')
@@ -43,10 +51,14 @@ site="$root/site"; overrides="$root/overrides/manifests"; mkdir -p "$site/v2_sta
 cat > "$site/v2_static/frontend_homepage/mf-manifest.json" <<'JSON'
 {"id":"frontend_homepage","name":"frontend_homepage","metaData":{"name":"frontend_homepage","publicPath":null,"getPublicPath":"function() { return window.externalPublicPath || \"/\" }","remoteEntry":{"name":"v2_static/frontend_homepage/js/remoteEntry.js","path":"","type":"global"}},"shared":[],"remotes":[],"exposes":[]}
 JSON
-HOT_TEST_URL=https://hot-test-frontend-homepage-pr-12.testing-env.omicron.maestra.io MCF=frontend_homepage \
+STATIC_PREFIX=v2_static/frontend_homepage MANIFEST=mcf \
   site="$site" overrides="$overrides" bash -c "set -eo pipefail; $manifest_prog"
 cmp -s "$site/v2_static/frontend_homepage/mf-manifest.json" "$overrides/mf-manifest.json" \
   || { echo "FAIL override manifest differs from the PR manifest"; exit 1; }
+rm "$overrides/mf-manifest.json"
+STATIC_PREFIX=public MANIFEST=none \
+  site="$site" overrides="$overrides" bash -c "set -eo pipefail; $manifest_prog"
+[ -z "$(ls -A "$overrides")" ] || { echo "FAIL manifest: none wrote an override: $(ls "$overrides")"; exit 1; }
 echo "hot-test-publish manifest: ok"
 
 route_prog=$(sed -n '/# >>> route/,/# <<< route/p' "$wf" | sed 's/^          //')
@@ -74,14 +86,15 @@ echo "hot-test-publish route: ok"
 
 release_prog=$(sed -n '/# >>> release/,/# <<< release/p' "$wf" | sed 's/^          //')
 [ -n "$release_prog" ] || { echo "release block not found in $wf"; exit 1; }
-# release <stand url> <base-static-url>; prints the step outputs and "exit=<code>"
+# release <stand url> <base-static-url> [own mcf, default frontend_homepage]; prints the step outputs and "exit=<code>"
 release() {
   : > "$root/release.out"; rc=0
-  URL="$1" MCF=frontend_homepage BASE_STATIC_URL="$2" RUNNER_TEMP="$root" GITHUB_OUTPUT="$root/release.out" \
+  URL="$1" MCF="${3-frontend_homepage}" BASE_STATIC_URL="$2" RUNNER_TEMP="$root" GITHUB_OUTPUT="$root/release.out" \
     bash -c "set -eo pipefail; $release_prog" > "$root/release.log" 2>&1 || rc=$?
   { tr '\n' ' ' < "$root/release.out"; echo "exit=$rc"; }
 }
-# The entry list holds this PR's MCF (no release manifest anywhere: it must be skipped) and two others.
+# The entry list holds this PR's MCF (released only on base and stand: skipped as the PR's
+# own, checked when the PR carries no manifest) and two others.
 mkdir -p "$root/site/entry"
 jq -n '[{id: "frontend_billing", metaData: {remoteEntry: {name: "v2_static/frontend_billing/js/b-1.js"}}},
   {id: "frontend_homepage", metaData: {remoteEntry: {name: "v2_static/frontend_homepage/js/remoteEntry.js"}}},
@@ -90,12 +103,14 @@ jq -n '[{id: "frontend_billing", metaData: {remoteEntry: {name: "v2_static/front
 put() { mkdir -p "$(dirname "$www/$1")"; echo "$2" > "$www/$1"; } # <path under www> <content>
 core_path=v2_static/core/manifest.json
 staff_path=v2_static/frontend_staff/mf-manifest.json
+homepage_path=v2_static/frontend_homepage/mf-manifest.json
 for d in base stand other partial; do
   put "$d/$core_path" '{"main":[{"path":"v2_static/core/main-1.js"}]}'
   put "$d/v2_static/frontend_billing/mf-manifest.json" '{"id":"frontend_billing","v":1}'
 done
-for d in base stand; do put "$d/$staff_path" '{"id":"frontend_staff","v":1}'; done
+for d in base stand; do put "$d/$staff_path" '{"id":"frontend_staff","v":1}'; put "$d/$homepage_path" '{"id":"frontend_homepage","v":1}'; done
 put "other/$staff_path" '{"id":"frontend_staff","v":2}'
+put "other/$homepage_path" '{"id":"frontend_homepage","v":1}'
 port=$(free_port)
 python3 -m http.server "$port" --bind 127.0.0.1 --directory "$www" >/dev/null 2>&1 &
 server_pid=$!
@@ -106,15 +121,17 @@ eq "$(release "$srv/other" "$srv/base")" "status=differs path=$staff_path code=2
 grep -q '^::error::.*baseStaticDomain' "$root/release.log" || { echo "FAIL release mismatch emits no ::error::"; cat "$root/release.log"; exit 1; }
 eq "$(release "$srv/partial" "$srv/base")" "status=missing path=$staff_path code=404 stand=$srv/partial/$staff_path base=$srv/base/$staff_path exit=1" "stand without an MCF manifest"
 eq "$(release "$srv/stand" "$srv/missing")" "exit=1" "unreadable base-static-url"
+eq "$(release "$srv/stand" "$srv/base/" "")" "status=same path= code=200 stand=$srv/stand/ base=$srv/base/ exit=0" "no manifest: every MCF is released, same bucket"
+eq "$(release "$srv/partial" "$srv/base" "")" "status=missing path=$homepage_path code=404 stand=$srv/partial/$homepage_path base=$srv/base/$homepage_path exit=1" "no manifest: the MCF named after the repo is checked too"
 kill "$server_pid"; wait "$server_pid" 2>/dev/null || true; server_pid=""
 echo "hot-test-publish release: ok"
 
 summary_prog=$(sed -n '/# >>> summary/,/# <<< summary/p' "$wf" | sed 's/^          //')
 [ -n "$summary_prog" ] || { echo "summary block not found in $wf"; exit 1; }
-# summary <route up> <release ok> <release status> [code]; prints the summary body
+# summary <route up> <release ok> <release status> [code] [static prefix]; prints the summary body
 summary() {
   : > "$root/summary.md"
-  URL=https://stand SHA=abc1234 MCF=frontend_homepage OK=true WAITED=30 ROUTE_UP="$1" \
+  URL=https://stand SHA=abc1234 REPO=frontend-homepage STATIC_PREFIX="${5:-v2_static/frontend_homepage}" OK=true WAITED=30 ROUTE_UP="$1" \
     RELEASE_OK="$2" RELEASE_STATUS="$3" RELEASE_CODE="${4:-200}" RELEASE_PATH="$staff_path" \
     RELEASE_STAND="https://stand/$staff_path" RELEASE_BASE="https://base/$staff_path" \
     FAILED_STATIC=false FAILED_ENTRY=false FAILED_TELEPORT=false FAILED_UPLOAD=false \
@@ -122,8 +139,12 @@ summary() {
     GITHUB_STEP_SUMMARY="$root/summary.md" bash -c "set -eo pipefail; $summary_prog"
   sed -n 2p "$root/summary.md"
 }
-case "$(summary true true same)" in ":white_check_mark: "*) ;; *) echo "FAIL summary: same release bucket is not ✅"; exit 1;; esac
-case "$(summary false false "")" in ":warning: "*) ;; *) echo "FAIL summary: route timeout is not ⚠️"; exit 1;; esac
+body=$(summary true true same)
+case "$body" in ":white_check_mark: "*) ;; *) echo "FAIL summary: same release bucket is not ✅"; exit 1;; esac
+body=$(summary true true same 200 public; sed -n 4p "$root/summary.md")
+case "$body" in *'`/public/` of `frontend-homepage` from this PR'*) ;; *) printf 'FAIL summary: own files and repo are not named\n  got: %s\n' "$body"; exit 1;; esac
+body=$(summary false false "")
+case "$body" in ":warning: "*'`frontend-homepage` is not registered in fluxcd'*) ;; *) printf 'FAIL summary: route timeout is not ⚠️ naming the repo\n  got: %s\n' "$body"; exit 1;; esac
 body=$(summary true false differs)
 case "$body" in ":x: "*"(\`baseStaticDomain\` провайдера hot-test) разный, первое расхождение \`$staff_path\`: https://stand/$staff_path ≠ https://base/$staff_path"*) ;;
   *) printf 'FAIL summary: another release bucket\n  got: %s\n' "$body"; exit 1;; esac
