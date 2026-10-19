@@ -5,7 +5,9 @@
 #
 #   version ─► install ─► codegen ─► checks, test, build ─► image ─► release ─► bake
 #                                                      │                     └─► sourcemaps
-#                                                      └─► hot-test (pull_request)
+#                                                      ├─► hot-test (pull_request)
+#                                                      └─► functional (tests/functional/)
+#   version ─► tests-install ─► tests-checks (tests/package.json)
 #
 # Warehouse refresh: no job here. The GitHub org webhook (workflow_run completed)
 # refreshes every Kargo Warehouse labelled maestra.io/source-repo=<lower-case repo name>
@@ -52,12 +54,22 @@
 #   teleport-token      Join token of the image-push bot (default the org-wide one).
 #   packages-url        Package registry (default https://packages.maestra.io, nora).
 #   packages-audience   `aud` of the GitHub OIDC token nora accepts.
+#   functional-workers  Playwright workers of `functional` (default 4, as frontend-playwright).
+#   functional-required A red `functional` fails the run (default false: advisory, the
+#                       summary still shows red). The default turns true once the MCFs are
+#                       green (issues-maestra#1573).
 # Outputs:
 #   release             The release number 1.1.N.
 #
 # Jobs:
-#   install   node_modules is cached under the lockfile hash and `npm ci` runs only
-#             on a miss; every other job restores it and never reaches nora.
+#   install   node_modules (and tests/node_modules of a `tests` npm workspace) is cached
+#             under the lockfile hash and `npm ci` runs only on a miss; every other job
+#             restores it and never reaches nora.
+#   tests-install  tests/ with its own tests/package-lock.json: `npm ci` there, the same
+#             nora setup as `install`, cached under that lockfile's hash. A `tests` npm
+#             workspace of the root (no tests/package-lock.json) comes from `install`.
+#   tests-checks  tests/package.json: check-types and check-scripts in tests/ (mcf@3
+#             unified-tests-types, unified-tests-lint). Fails the run.
 #   codegen   GitHub OIDC -> auth-jwt JWT (masked) -> `npm run graphql-codegen`; the
 #             generated code goes to the other jobs as an artifact.
 #   checks    check-types, check-scripts, check-styles, entries in parallel; on
@@ -76,9 +88,15 @@
 #   hot-test  pull_request only, right after `build`: the PR's static files and an
 #             entry built on them go to the hot-test bucket, the PR gets the hot-test
 #             deployment (hot-test-publish.yml; mcf@3 hot-test environments, issues-maestra#1574).
+#   functional  tests/functional/playwright.config.ts, not on renovate/* and LocalizationPull
+#             branches: the `static` artifact served by http-server on :8080, Chromium of
+#             the tests' Playwright, `npm run functional:ci` in tests/ (mcf@3
+#             functional-tests/run). JUnit -> step summary, artifact, test-results-ingest;
+#             test-results/ (traces) as an artifact on failure. Advisory unless
+#             functional-required.
 #
-# Not ported from mcf@3: cyrillic (translation-checker, issues-maestra#1581), e2e,
-# functional tests and the -e2e/-with-deps images (issues-maestra#1573),
+# Not ported from mcf@3: cyrillic (translation-checker, issues-maestra#1581), e2e
+# and the -e2e/-with-deps images (issues-maestra#1573),
 # multi-contour schema loading, and the RU contour jobs (Octopus, phrase, metrics,
 # pipelines release submit, Mindbox Datadog source maps).
 
@@ -135,6 +153,12 @@ on:
       packages-audience:
         type: string
         default: packages.maestra.io
+      functional-workers:
+        type: string
+        default: "4"
+      functional-required:
+        type: boolean
+        default: false
     outputs:
       release:
         value: ${{ jobs.version.outputs.release }}
@@ -224,6 +248,9 @@ jobs:
       bake: ${{ steps.v.outputs.bake }}
       last-hotfix: ${{ steps.hotfix.outputs.last-hotfix }}
       is-hotfix: ${{ steps.hotfix.outputs.is-hotfix }}
+      tests: ${{ steps.tests.outputs.tests }}
+      tests-layout: ${{ steps.tests.outputs.tests-layout }}
+      functional: ${{ steps.tests.outputs.functional }}
     steps:
       - uses: runs-on/action@v2.5.0
       - uses: actions/checkout@v7.0.1
@@ -232,6 +259,9 @@ jobs:
           sparse-checkout: |
             package.json
             kustomization/
+            tests/package.json
+            tests/package-lock.json
+            tests/functional/playwright.config.ts
           sparse-checkout-cone-mode: false
       - id: v
         env:
@@ -282,6 +312,29 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "release ${prefix}.${RUN_NUMBER}, mcf $mcf, static $static_prefix ($manifest), image ${IMAGE:-$REPO_NAME}, publish=$PUSH, hot-test=$HOT_TEST, kustomization/ $([ -d kustomization ] && echo present || echo absent)"
 
+      - id: tests
+        env:
+          FUNCTIONAL_EVENT: ${{ !startsWith(github.head_ref, 'renovate/') && github.head_ref != 'LocalizationPull' }}
+        run: |
+          # >>> tests-detect (scripts/test-functional.sh runs this block)
+          tests=false; layout=none; functional=false
+          if [ -f tests/package.json ]; then
+            tests=true
+            if [ -f tests/package-lock.json ]; then layout=lockfile; else layout=workspace; fi
+          fi
+          if [ -f tests/functional/playwright.config.ts ]; then
+            if [ "$tests" != true ]; then
+              echo "::warning::tests/functional/playwright.config.ts without tests/package.json: no functional tests"
+            elif [ "$FUNCTIONAL_EVENT" = true ]; then
+              functional=true
+            else
+              echo "no functional tests on $GITHUB_HEAD_REF"
+            fi
+          fi
+          { echo "tests=$tests"; echo "tests-layout=$layout"; echo "functional=$functional"; } >> "$GITHUB_OUTPUT"
+          echo "tests/: $layout, functional=$functional"
+          # <<< tests-detect
+
       # mcf@3 build/create-hotfix-marker: the MF plugin reads LAST_HOTFIX, the newest
       # hotfix/X.Y.Z tag, this release included when its PR carries the `hotfix` label.
       - id: hotfix
@@ -317,14 +370,19 @@ jobs:
       - id: cache
         uses: actions/cache/restore@v6.1.0
         with:
-          path: node_modules
+          # Missing paths are skipped; the cache version hashes this list: every restore repeats it.
+          path: &root-node-modules |
+            node_modules
+            tests/node_modules
           key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
           lookup-only: true
-      - if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+      - &setup-node-on-miss
+        if: ${{ steps.cache.outputs.cache-hit != 'true' }}
         uses: actions/setup-node@v7.0.0
         with:
           node-version: ${{ inputs.node-version }}
-      - if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+      - &write-npmrc
+        if: ${{ steps.cache.outputs.cache-hit != 'true' }}
         name: write .npmrc
         env:
           URL: ${{ inputs.packages-url }}
@@ -340,7 +398,8 @@ jobs:
             echo "replace-registry-host=npmjs"
           } > "$RUNNER_TEMP/npmrc"
           mv "$RUNNER_TEMP/npmrc" .npmrc
-      - if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+      - &mint-token
+        if: ${{ steps.cache.outputs.cache-hit != 'true' }}
         name: mint packages token
         id: token
         uses: actions/github-script@v9.0.0
@@ -351,7 +410,8 @@ jobs:
             const t = await core.getIDToken(process.env.AUDIENCE);
             core.setSecret(t);
             core.setOutput('token', t);
-      - if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+      - &npm-ci
+        if: ${{ steps.cache.outputs.cache-hit != 'true' }}
         name: npm ci
         env:
           NPM_TOKEN: ${{ steps.token.outputs.token }}
@@ -374,8 +434,40 @@ jobs:
       - if: ${{ steps.cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6.1.0
         with:
-          path: node_modules
+          path: *root-node-modules
           # The lockfile is rewritten to nora by now: its hash is not the key the other jobs look up.
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+  tests-install:
+    needs: version
+    if: ${{ needs.version.outputs.tests-layout == 'lockfile' }}
+    runs-on: runs-on=${{ github.run_id }}-tests-install/pool=small
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write # nora OIDC token
+    defaults:
+      run:
+        working-directory: tests
+    steps:
+      - uses: runs-on/action@v2.5.0
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - id: cache
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: tests/node_modules
+          key: mcf-tests-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('tests/package-lock.json') }}
+          lookup-only: true
+      - *setup-node-on-miss
+      - *write-npmrc
+      - *mint-token
+      - *npm-ci
+      - if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: tests/node_modules
           key: ${{ steps.cache.outputs.cache-primary-key }}
 
   codegen:
@@ -395,7 +487,7 @@ jobs:
           node-version: ${{ inputs.node-version }}
       - uses: actions/cache/restore@v6.1.0
         with:
-          path: node_modules
+          path: *root-node-modules
           key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
           fail-on-cache-miss: true
       - name: graphql-codegen
@@ -442,7 +534,7 @@ jobs:
           node-version: ${{ inputs.node-version }}
       - uses: actions/cache/restore@v6.1.0
         with:
-          path: node_modules
+          path: *root-node-modules
           key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
           fail-on-cache-miss: true
       - uses: actions/download-artifact@v8.0.1
@@ -500,7 +592,7 @@ jobs:
           node-version: ${{ inputs.node-version }}
       - uses: actions/cache/restore@v6.1.0
         with:
-          path: node_modules
+          path: *root-node-modules
           key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
           fail-on-cache-miss: true
       - uses: actions/download-artifact@v8.0.1
@@ -529,6 +621,50 @@ jobs:
             echo "::error::lines coverage ${lines}% is below ${MIN_LINES_COVERAGE}%"; exit 1
           fi
 
+  tests-checks:
+    needs: [version, install, tests-install]
+    if: ${{ !cancelled() && needs.version.outputs.tests == 'true' && needs.install.result == 'success' && (needs.tests-install.result == 'success' || needs.tests-install.result == 'skipped') }}
+    runs-on: runs-on=${{ github.run_id }}-tests-checks/pool=small
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: runs-on/action@v2.5.0
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: ${{ inputs.node-version }}
+      - uses: actions/cache/restore@v6.1.0
+        with:
+          path: *root-node-modules
+          key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
+          fail-on-cache-miss: true
+      - if: ${{ needs.version.outputs.tests-layout == 'lockfile' }}
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: tests/node_modules
+          key: mcf-tests-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('tests/package-lock.json') }}
+          fail-on-cache-miss: true
+      - name: tests/ checks
+        working-directory: tests
+        run: |
+          printf '### tests/ checks\n\n| check | result |\n|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
+          failed=""
+          for s in check-types check-scripts; do
+            if ! jq -e --arg s "$s" '.scripts[$s]' package.json > /dev/null; then
+              echo "| \`$s\` | no script |" >> "$GITHUB_STEP_SUMMARY"; continue
+            fi
+            rc=0
+            echo "::group::npm run $s"
+            npm run "$s" --if-present || rc=$?
+            echo "::endgroup::"
+            if [ "$rc" = 0 ]; then r=passed; else r="failed (exit $rc)"; failed="$failed $s"; fi
+            echo "| \`$s\` | $r |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          [ -z "$failed" ] || { echo "::error::tests/ checks failed:$failed"; exit 1; }
+
   build:
     needs: [version, codegen]
     runs-on: runs-on=${{ github.run_id }}-build/pool=build
@@ -543,7 +679,7 @@ jobs:
           node-version: ${{ inputs.node-version }}
       - uses: actions/cache/restore@v6.1.0
         with:
-          path: node_modules
+          path: *root-node-modules
           key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
           fail-on-cache-miss: true
       - uses: actions/download-artifact@v8.0.1
@@ -570,7 +706,7 @@ jobs:
           find build -name '*.map' -type f -delete
           tar -czf "$RUNNER_TEMP/static.tgz" -C build "$top"
           du -sh "$out"
-      - if: ${{ needs.version.outputs.publish == 'true' || needs.version.outputs.hot-test == 'true' }}
+      - if: ${{ needs.version.outputs.publish == 'true' || needs.version.outputs.hot-test == 'true' || needs.version.outputs.functional == 'true' }}
         uses: actions/upload-artifact@v7.0.1
         with:
           name: static
@@ -733,6 +869,196 @@ jobs:
       static-prefix: ${{ needs.version.outputs.static-prefix }}
       manifest: ${{ needs.version.outputs.manifest }}
       static-artifact: static
+
+  functional:
+    needs: [version, install, tests-install, build]
+    if: ${{ !cancelled() && needs.version.outputs.functional == 'true' && needs.build.result == 'success' && (needs.tests-install.result == 'success' || needs.tests-install.result == 'skipped') }}
+    runs-on: runs-on=${{ github.run_id }}-functional/pool=build
+    timeout-minutes: 30
+    continue-on-error: ${{ !inputs.functional-required }}
+    permissions:
+      contents: read
+      id-token: write # nora OIDC token, test-results-ingest
+    steps:
+      - uses: runs-on/action@v2.5.0
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: ${{ inputs.node-version }}
+      - uses: actions/cache/restore@v6.1.0
+        with:
+          path: *root-node-modules
+          key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
+          fail-on-cache-miss: true
+      - if: ${{ needs.version.outputs.tests-layout == 'lockfile' }}
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: tests/node_modules
+          key: mcf-tests-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('tests/package-lock.json') }}
+          fail-on-cache-miss: true
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: static
+          path: ${{ runner.temp }}
+      - name: unpack static
+        env:
+          STATIC_PREFIX: ${{ needs.version.outputs.static-prefix }}
+        run: |
+          site="$RUNNER_TEMP/site"; mkdir -p "$site"
+          tar -xzf "$RUNNER_TEMP/static.tgz" -C "$site"
+          [ -f "$site/$STATIC_PREFIX/index.html" ] \
+            || { echo "::error::build/$STATIC_PREFIX/index.html was not built: the functional tests open it"; exit 1; }
+      - id: playwright
+        working-directory: tests
+        run: |
+          v=$(npx --no playwright --version | awk '{print $NF}')
+          [ -n "$v" ] || { echo "::error::no Playwright in tests/"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Playwright $v"
+      - id: browsers
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: mcf-playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright.outputs.version }}
+      - name: install chromium
+        working-directory: tests
+        run: npx --no playwright install --with-deps chromium
+      - if: ${{ steps.browsers.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.browsers.outputs.cache-primary-key }}
+      - name: mint packages token
+        id: token
+        uses: actions/github-script@v9.0.0
+        env:
+          AUDIENCE: ${{ inputs.packages-audience }}
+        with:
+          script: |
+            const t = await core.getIDToken(process.env.AUDIENCE);
+            core.setSecret(t);
+            core.setOutput('token', t);
+      # The tests hardcode :8080 (frontend-webhooks Common.ts), whatever BASE_URL says.
+      - name: start http-server
+        env:
+          NPM_TOKEN: ${{ steps.token.outputs.token }}
+          URL: ${{ inputs.packages-url }}
+        run: |
+          registry="${URL%/}/npm/"
+          {
+            echo "registry=${registry}"
+            echo "//${registry#https://}:_authToken=\${NPM_TOKEN}"
+          } > "$RUNNER_TEMP/npmrc"
+          srv="$RUNNER_TEMP/http-server"; mkdir -p "$srv"; cd "$srv"
+          NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/npmrc" npm install --prefix "$srv" --no-save --no-audit --no-fund http-server@14.1.1
+          nohup "$srv/node_modules/.bin/http-server" "$RUNNER_TEMP/site" -p 8080 -c-1 --cors \
+            > "$RUNNER_TEMP/http-server.log" 2>&1 &
+      - name: wait for http-server
+        env:
+          BASE_URL: http://localhost:8080
+          SERVER_WAIT_TIMEOUT: "30"
+          SERVER_LOG: ${{ runner.temp }}/http-server.log
+        run: |
+          # >>> functional-wait (scripts/test-functional.sh runs this block)
+          up=false
+          for _ in $(seq 1 "$SERVER_WAIT_TIMEOUT"); do
+            if curl -fs -o /dev/null --max-time 2 "$BASE_URL/"; then up=true; break; fi
+            sleep 1
+          done
+          if [ "$up" != true ]; then
+            echo "::error::http-server did not answer $BASE_URL/ in ${SERVER_WAIT_TIMEOUT}s"
+            cat "$SERVER_LOG" 2>/dev/null || true
+            exit 1
+          fi
+          echo "http-server answers $BASE_URL/"
+          # <<< functional-wait
+      - id: run
+        name: npm run functional:ci
+        working-directory: tests
+        env:
+          BASE_URL: http://localhost:8080
+          RETRIES: "2"
+          WORKERS: ${{ inputs.functional-workers }}
+        run: |
+          set -o pipefail
+          npm run functional:ci 2>&1 | tee "$RUNNER_TEMP/functional.log"
+      - name: summary
+        if: ${{ always() }}
+        env:
+          JUNIT: tests/functional/test-results/results.xml
+          LOG: ${{ runner.temp }}/functional.log
+          OUTCOME: ${{ steps.run.outcome }}
+          REQUIRED: ${{ inputs.functional-required }}
+        run: |
+          # >>> functional-summary (scripts/test-functional.sh runs this block)
+          python3 -I - "$JUNIT" "$LOG" "$OUTCOME" "$REQUIRED" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import os, re, sys
+          import xml.etree.ElementTree as ET
+
+          junit, log, outcome, required = sys.argv[1:5]
+          out = ["### functional tests", ""]
+          if os.path.isfile(junit) and os.path.getsize(junit) > 0:
+              root = ET.parse(junit).getroot()
+              total = failed = skipped = flaky = 0
+              names, seconds = [], 0.0
+              for case in root.iter("testcase"):
+                  total += 1
+                  seconds += float(case.get("time") or 0)
+                  tags = {child.tag for child in case}
+                  if tags & {"failure", "error"}:
+                      failed += 1
+                      names.append(f"{case.get('classname', '')} › {case.get('name', '')}")
+                  elif "skipped" in tags:
+                      skipped += 1
+                  elif any(t.startswith("flaky") for t in tags):
+                      flaky += 1
+              if os.path.isfile(log):
+                  m = re.search(r"^\s*(\d+) flaky\s*$", open(log, errors="replace").read(), re.M)
+                  if m:
+                      flaky = max(flaky, int(m.group(1)))
+              if root.get("time"):
+                  seconds = float(root.get("time"))
+              if failed:
+                  out.append(f":x: {failed} of {total} failed")
+              elif outcome != "success":
+                  out.append(f":x: `functional:ci` failed ({outcome}) with no failed test in the report")
+              else:
+                  out.append(f":white_check_mark: {total - skipped} of {total} passed")
+              out += ["", "| tests | passed | failed | flaky | skipped | duration |", "|---|---|---|---|---|---|",
+                      f"| {total} | {total - failed - skipped} | {failed} | {flaky} | {skipped} | {seconds:.1f} s |"]
+              if names:
+                  out += ["", "Failed:"] + [f"- `{n}`" for n in names]
+          elif outcome in ("", "skipped"):
+              out.append(":x: the tests did not run: an earlier step failed")
+          else:
+              out.append(f":x: no JUnit report at `{junit}` (`functional:ci` {outcome})")
+          if required != "true":
+              out += ["", "not blocking: functional-required is false"]
+          print("\n".join(out))
+          PY
+          # <<< functional-summary
+      - if: ${{ failure() }}
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: functional-test-results-${{ github.run_attempt }}
+          path: tests/functional/test-results
+          retention-days: 3
+          if-no-files-found: ignore
+      - if: ${{ always() }}
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: functional-junit-${{ github.run_attempt }}
+          path: tests/functional/test-results/results.xml
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: ingest test results
+        if: ${{ always() }}
+        continue-on-error: true
+        uses: maestra-io/github-actions/test-results-ingest@v1
+        with:
+          path: tests/functional/test-results/results.xml
 
   # The kustomize build of a changed kustomization/ tree on every pull request (a PR that
   # changes only kustomization/ skips the build/test jobs, so this is its validation);

@@ -483,10 +483,12 @@ test result (repo, workflow, job, run id and attempt, sha, branch, test id,
 outcome, duration, failure hash) and pushes them to the ci-telemetry
 VictoriaLogs on us-iota-lw-kube-infra
 ([issues-maestra#1592](https://github.com/maestra-io/issues-maestra/issues/1592)).
-`dotnet-service-build.yml` and `nuget-package-publish.yml` call it after every
-test run; the bearer comes from Vault role `ci-test-results-ingest`, bound to
-those workflow files, so the job needs `id-token: write` and nothing else. Call
-it with `continue-on-error: true`: telemetry never fails a build. Query:
+`dotnet-service-build.yml`, `nuget-package-publish.yml` and the `functional` job of
+`mcf-build.yml` call it after every test run; the bearer comes from Vault role
+`ci-test-results-ingest`, bound to the workflow files in its `job_workflow_ref`
+(fluxcd `vault-server/central-auth.yaml`; a workflow missing there gets no rows),
+so the job needs `id-token: write` and nothing else. Call it with
+`continue-on-error: true`: telemetry never fails a build. Query:
 datasource `victorialogs-ci-telemetry`, LogsQL
 `_time:14d | stats by (repo, sha, test_id) count_uniq(outcome) n | filter n:>1`.
 
@@ -507,7 +509,7 @@ top of each file.
 | [`nuget-package-publish.yml`](.github/workflows/nuget-package-publish.yml) | restore, build, test, pack, `dotnet nuget push` | dotnet-nuget-cicd-components |
 | [`npm-package-publish.yml`](.github/workflows/npm-package-publish.yml) | `npm ci`, lib@3 checks (`checks` input: graphql-codegen, check-types, check-scripts, check-styles, test; `--if-present`, all reported), optional PR coverage comment (`report-coverage`), `npm run release` (semantic-release); RunsOn `pool` input `small` (default) or `build` | frontend-ci-components `templates/lib` |
 | [`python-package-publish.yml`](.github/workflows/python-package-publish.yml) | poetry/uv build, test, `twine upload` | — |
-| [`mcf-build.yml`](.github/workflows/mcf-build.yml) | micro-frontends: `install` (node_modules cached by lockfile hash, `npm ci` only on a miss) → `codegen` (GitHub OIDC → auth-jwt omega JWT) → `checks`, `test`, `build` → `image` (rclone + `<static-prefix>`, default `v2_static/<mcf>`; `static-prefix: v2_static/core` and `manifest: core` for the admin shell frontend-core-v2) → `release` → `bake`, `sourcemaps` (Datadog US3, key from the central Vault); the bucket upload runs at promotion from the MCF's own `kustomization/` | frontend-ci-components `templates/mcf` (mcf@3) |
+| [`mcf-build.yml`](.github/workflows/mcf-build.yml) | micro-frontends: `install` (node_modules cached by lockfile hash, `npm ci` only on a miss) → `codegen` (GitHub OIDC → auth-jwt omega JWT) → `checks`, `test`, `build` → `image` (rclone + `<static-prefix>`, default `v2_static/<mcf>`; `static-prefix: v2_static/core` and `manifest: core` for the admin shell frontend-core-v2) → `release` → `bake`, `sourcemaps` (Datadog US3, key from the central Vault); the bucket upload runs at promotion from the MCF's own `kustomization/`. With `tests/`: `tests-install`, `tests-checks` and, after `build`, `functional` (Playwright against the built static, [below](#mcf-build-tests-and-functional-tests)) | frontend-ci-components `templates/mcf` (mcf@3) |
 | [`hot-test-publish.yml`](.github/workflows/hot-test-publish.yml) | hot-test stand of a pull request ([issues-maestra#1574](https://github.com/maestra-io/issues-maestra/issues/1574)): the PR's static artifact + an entry from `frontend-entry-static-builder --single-run` with the PR's manifest → R2 `admin-hot-test-static-omicron/hot-test-<repo>-pr-<N>/` (Teleport GitHub join from the PR → Vault omicron → 10-minute editor keys); the stand URL `https://hot-test-<repo>-pr-<N>.testing-env.omicron.maestra.io` is in the PR as a deployment of environment `hot-test` and in the job's step summary. Called by `mcf-build.yml` on pull_request (input `hot-test`) and by the legacy admin monorepo's own `pr.yml` (`static-prefix: public`, `manifest: none`: its dist goes to `public/` of the PR folder, the entry is the released shell, and the backend links `/public/...` from the stand's host on `X-Testing-Frontend`); the routes come from the builder's chart per open PR. Inputs: `bucket` (stands' bucket, write), `base-static-url` (release static the entry is built from), `hot-test-domain`, `static-prefix` (the PR's own folder, default `v2_static/<mcf>`, the module federation folder; a repo whose files live elsewhere — `frontend` `public`, `frontend-core-v2` `v2_static/core` — sets the same path as `staticPrefix` in its fluxcd registration, which the stand's route sends to the PR folder), `manifest` (`mcf`, `core` for frontend-core-v2: its `manifest.json` and `build-info.json` become the builder's core overrides, or `none`); the tenant and the cluster's copies of these addresses live only in fluxcd (component `base/microfrontend/hot-test`). After the route is up the job compares every release manifest the entry was built from (`v2_static/core/manifest.json` and `v2_static/<mcf>/mf-manifest.json` of each MCF in its `entry/mcf-manifests.json` but those under `static-prefix`) through the stand with the ones under `base-static-url`: another release bucket in the cluster's `baseStaticDomain` (first differing path in the summary) or a non-200 from the stand is ❌ and fails the job | frontend-ci-components mcf@3 hot-test environments |
 | [`frontend-codegen.yml`](.github/workflows/frontend-codegen.yml) | one job `codegen` for a frontend with its own pipeline (maestra-io/frontend): restores the `install` job's `node_modules` cache, GitHub OIDC → auth-jwt omega JWT (client `github-frontend-graphql-schema`, bound to this workflow at `@refs/heads/main`) → `npm run graphql-codegen`; artifact `codegen`. The same job as `codegen` in `mcf-build.yml` | frontend-ci-components graphql-codegen |
 | [`helm-chart.yml`](.github/workflows/helm-chart.yml) | PR: `check` (version bump, CHANGELOG, lint, helm-unittest); main: `release` → ECR `helm-charts/<name>` ([`push-helm-chart-to-aws-ecr`](push-helm-chart-to-aws-ecr/action.yml)) | system/components/helm-ci helm-merge-request + helm-release |
@@ -515,6 +517,46 @@ top of each file.
 | [`pr-checks.yml`](.github/workflows/pr-checks.yml) | PR only: check-encoding of the changed files and `kustomize build` of a changed overlays tree; its `gitleaks` input is deprecated and ignored | — |
 
 Warehouse refresh: GitHub org webhook → Kargo cluster receiver, see fluxcd `iota/us-iota-lw-kube-infra/kargo/webhook-receivers.yaml`; Warehouses still poll every 5 min as fallback.
+
+### mcf-build: tests/ and functional tests
+
+The port of mcf@3 `unified-tests-types`, `unified-tests-lint` and `functional-tests/run`
+([issues-maestra#1573](https://github.com/maestra-io/issues-maestra/issues/1573)). Nothing
+changes in the MCF repo: the jobs switch on by files.
+
+- **Two layouts of `tests/`.** `tests/package-lock.json` present: `tests/` is its own npm
+  project, `tests-install` runs `npm ci` there (nora `.npmrc`, OIDC token and lockfile
+  rewrite as `install`) and caches `tests/node_modules` under
+  `mcf-tests-node-modules-<os>-<arch>-<node>-<hash of tests/package-lock.json>`. No
+  `tests/package-lock.json`: `tests` is an npm workspace of the root (`"workspaces": ["tests"]`),
+  the root `npm ci` installs it, and the root cache holds `node_modules` and
+  `tests/node_modules` (the version-clashing packages stay there); `npm ci` in `tests/`
+  would fail without a lockfile.
+- **`tests-checks`** (`tests/package.json`): `npm run check-types` and `check-scripts` in
+  `tests/`, each in its own log group, fails the run.
+- **`functional`** (`tests/functional/playwright.config.ts`; on pull requests and pushes, not on
+  `renovate/*` or `LocalizationPull`): the `static` artifact of `build` (source maps
+  removed) is unpacked to an empty `site/` and served by `http-server@14.1.1` (installed
+  from nora) on `http://localhost:8080`, the port the tests expect; then
+  `BASE_URL=http://localhost:8080 RETRIES=2 WORKERS=<functional-workers> npm run functional:ci`
+  in `tests/`. The backend is mocked by the tests: no secrets, no stand.
+- **Browser.** `npx playwright install --with-deps chromium` from `tests/`, so it is the
+  Chromium of the Playwright the tests resolve; `~/.cache/ms-playwright` is cached by that
+  version. frontend-playwright prefers `/usr/bin/google-chrome` with `--no-sandbox`
+  when the file exists, so on a runner image with Chrome the tests run in that Chrome.
+- **Advisory first.** The job has `continue-on-error: ${{ !inputs.functional-required }}`:
+  a red run shows ❌ and "not blocking: functional-required is false" in its step
+  summary but does not fail the workflow. A repo opts in to blocking with
+  `functional-required: true`; the default turns `true` once the MCFs are green.
+- **Results.** Step summary from the JUnit (tests, passed, failed = `failures` + `errors`,
+  flaky, skipped, duration, every failed test by name). Artifacts:
+  `functional-junit-<attempt>` (`tests/functional/test-results/results.xml`, 7 days, always)
+  and, on failure, `functional-test-results-<attempt>` (`tests/functional/test-results`
+  with traces and screenshots, 3 days; traces are on for every test, 19–86 MB). The
+  JUnit also goes to [test-results-ingest](#test-results-ingest-flaky-test-telemetry).
+
+`scripts/test-functional.sh` (selftest) runs the detection, the server wait and the
+summary blocks of the workflow.
 
 [`scripts/dockerfile-from-fix.sh`](scripts/dockerfile-from-fix.sh) drops the
 `cr.yandex/crp2cvbrp76d7dmfegco/` mirror prefix from `FROM` lines (idempotent);

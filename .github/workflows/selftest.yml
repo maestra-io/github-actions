@@ -99,6 +99,9 @@ jobs:
       - name: mcf-build static-prefix and manifest inputs (workflow copy)
         run: bash scripts/test-mcf-build-static.sh
 
+      - name: mcf-build tests/ detection, http-server wait, functional summary (workflow copy)
+        run: bash scripts/test-functional.sh
+
       - name: pr-checks check-encoding and kustomize entry points
         run: bash scripts/test-pr-checks.sh
       - name: pr-changes (kustomization-only PRs skip build and test)
