@@ -8,6 +8,15 @@
 #     package:
 #       uses: maestra-io/github-actions/.github/workflows/npm-package-publish.yml@main
 #       permissions: { contents: write, id-token: write, issues: write, pull-requests: write }
+#       secrets: inherit
+#
+# Release token: semantic-release pushes its version commit (@semantic-release/git)
+# to the default branch, which a gitleaks ruleset closes to direct pushes. The push
+# goes as the GitHub App maestra-frontend-release (a bypass actor of that ruleset):
+# org variable FRONTEND_RELEASE_APP_ID + org secret FRONTEND_RELEASE_APP_PRIVATE_KEY,
+# which reaches this workflow only through the caller's `secrets: inherit`, and only
+# in repos selected on the secret. Without the secret the release falls back to
+# github.token and fails on a ruleset-protected branch.
 #
 # Version source: semantic-release, exactly as on GitLab: the job runs the
 # package's own `npm run release`, which reads the commits since the last vX.Y.Z
@@ -108,6 +117,9 @@ on:
       pool:
         type: string
         default: small
+    secrets:
+      FRONTEND_RELEASE_APP_PRIVATE_KEY:
+        required: false
 
 concurrency:
   group: ${{ github.event_name == 'pull_request' && format('npm-{0}-{1}', github.repository, github.ref) || format('npm-{0}', github.repository) }}
@@ -125,6 +137,9 @@ jobs:
       issues: write        # @semantic-release/github success/fail comments
       pull-requests: write
       id-token: write      # nora OIDC token
+    env:
+      # A step `if` cannot read `secrets`.
+      HAS_RELEASE_APP_KEY: ${{ secrets.FRONTEND_RELEASE_APP_PRIVATE_KEY != '' }}
     steps:
       - uses: runs-on/action@v2.5.0
       - uses: actions/checkout@v7.0.1
@@ -277,11 +292,26 @@ jobs:
             core.setSecret(t);
             core.setOutput('token', t);
 
+      # The version commit must pass the default branch's ruleset (see "Release token").
+      - name: mint release app token
+        id: app
+        if: ${{ inputs.release && github.event_name != 'pull_request' && env.HAS_RELEASE_APP_KEY == 'true' }}
+        uses: actions/create-github-app-token@v3.2.0
+        with:
+          app-id: ${{ vars.FRONTEND_RELEASE_APP_ID }}
+          private-key: ${{ secrets.FRONTEND_RELEASE_APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          # Not the installation's whole set: what the job's github.token has for
+          # semantic-release (push + tag; @semantic-release/github release comments).
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+
       - name: release (semantic-release)
         if: ${{ inputs.release && github.event_name != 'pull_request' }}
         env:
           NPM_TOKEN: ${{ steps.release-token.outputs.token }}
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ steps.app.outputs.token || github.token }}
           HUSKY: "0"
           LEFTHOOK: "0"
           BUILD_SCRIPT: ${{ inputs.build-script }}
