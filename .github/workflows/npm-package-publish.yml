@@ -301,6 +301,11 @@ jobs:
           app-id: ${{ vars.FRONTEND_RELEASE_APP_ID }}
           private-key: ${{ secrets.FRONTEND_RELEASE_APP_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
+          # Not the installation's whole set: what the job's github.token has for
+          # semantic-release (push + tag; @semantic-release/github release comments).
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
 
       - name: release (semantic-release)
         if: ${{ inputs.release && github.event_name != 'pull_request' }}
