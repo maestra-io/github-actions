@@ -918,7 +918,7 @@ jobs:
       - id: playwright
         working-directory: tests
         run: |
-          v=$(npx --no playwright --version | awk '{print $NF}')
+          v=$(node -p "require('@playwright/test/package.json').version" || true)
           [ -n "$v" ] || { echo "::error::no Playwright in tests/"; exit 1; }
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "Playwright $v"
