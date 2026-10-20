@@ -101,6 +101,8 @@ jobs:
 
       - name: mcf-build tests/ detection, http-server wait, functional summary (workflow copy)
         run: bash scripts/test-functional.sh
+      - name: mcf-build e2e detection, e2e-stand and e2e wiring, credentials, e2e summary (workflow copy)
+        run: bash scripts/test-e2e.sh
 
       - name: pr-checks check-encoding and kustomize entry points
         run: bash scripts/test-pr-checks.sh
