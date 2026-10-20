@@ -59,6 +59,9 @@ keys=$(grep -c 'key: mcf-node-modules-' "$wf")
 aliases=$(grep -c 'path: \*root-node-modules$' "$wf")
 eq "$aliases" "$keys" "root cache steps with the shared path list (one save + all restores but the anchor)"
 if grep -nE '^ +path: node_modules$' "$wf"; then echo "FAIL a root cache step lists node_modules alone"; exit 1; fi
+if grep -nF 'npx --no playwright --version' "$wf"; then echo "FAIL npx eats --version: the browser key gets npm's version"; exit 1; fi
+grep -qF "v=\$(node -p \"require('@playwright/test/package.json').version\" || true)" "$wf" \
+  || { echo "FAIL the browser cache key does not read @playwright/test/package.json"; exit 1; }
 echo "functional cache paths: ok"
 
 # job <name> <key>: the value of a top-level key (needs, if) of a job in the workflow
