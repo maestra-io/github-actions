@@ -483,8 +483,10 @@ test result (repo, workflow, job, run id and attempt, sha, branch, test id,
 outcome, duration, failure hash) and pushes them to the ci-telemetry
 VictoriaLogs on us-iota-lw-kube-infra
 ([issues-maestra#1592](https://github.com/maestra-io/issues-maestra/issues/1592)).
-`dotnet-service-build.yml`, `nuget-package-publish.yml` and the `functional` job of
-`mcf-build.yml` call it after every test run; the bearer comes from Vault role
+`dotnet-service-build.yml`, `nuget-package-publish.yml` and the `test` and `functional`
+jobs of `mcf-build.yml` call it after every test run (`test` sends the JUnit the shared
+vitest preset writes to `reports/` in CI; a repo on an older preset or with its own
+`reporters` sends nothing); the bearer comes from Vault role
 `ci-test-results-ingest`, bound to the workflow files in its `job_workflow_ref`
 (fluxcd `vault-server/central-auth.yaml`; a workflow missing there gets no rows),
 so the job needs `id-token: write` and nothing else. Call it with

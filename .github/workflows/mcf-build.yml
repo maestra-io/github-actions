@@ -75,7 +75,9 @@
 #   checks    check-types, check-scripts, check-styles, entries in parallel; on
 #             pull_request also check-unused-code and the localization keys report,
 #             which never fail the job (mcf@3 allow_failure).
-#   test      vitest with coverage, fails under min-lines-coverage.
+#   test      vitest with coverage, fails under min-lines-coverage. JUnit comes from the
+#             shared vitest preset (reports/ in CI) -> artifact, test-results-ingest; a
+#             repo on an older preset or with its own `reporters` sends nothing.
 #   build     package.json version = release, LAST_HOTFIX from hotfix/* tags (the MF
 #             plugin bakes both into the bundle), `npm run build`.
 #   image     rclone + build/<static-prefix> without source maps -> ECR <image>:<release>,
@@ -585,6 +587,9 @@ jobs:
     needs: codegen
     runs-on: runs-on=${{ github.run_id }}-test/${{ inputs.test-runner }}
     timeout-minutes: ${{ inputs.test-timeout-minutes }}
+    permissions:
+      contents: read
+      id-token: write # test-results-ingest
     steps:
       - uses: runs-on/action@v2.5.0
       - uses: actions/checkout@v7.0.1
@@ -623,6 +628,19 @@ jobs:
           if awk "BEGIN { exit !($lines < $MIN_LINES_COVERAGE) }"; then
             echo "::error::lines coverage ${lines}% is below ${MIN_LINES_COVERAGE}%"; exit 1
           fi
+      - if: ${{ always() }}
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: test-results-vitest-${{ github.run_attempt }}
+          path: reports/
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: ingest test results
+        if: ${{ always() }}
+        continue-on-error: true
+        uses: maestra-io/github-actions/test-results-ingest@v1
+        with:
+          path: reports
 
   tests-checks:
     needs: [version, install, tests-install]
