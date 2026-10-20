@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Self-check for hot-test-publish.yml: the stand names (host, bucket folder, mcf and
-# static-prefix defaults, the inputs the ResourceSet template also rejects), the manifest
+# Self-check for hot-test-publish.yml: the stand names (host, bucket folder, mcf, static-prefix
+# and stand-prefix defaults, the inputs the ResourceSet template also rejects), the manifest
 # override (the PR manifest byte for byte; none with manifest: none), the route wait (200 is
 # up, anything else until the timeout is not), the release bucket check (every
 # release manifest of the entry but the PR's own is the same through the stand and
@@ -44,6 +44,21 @@ fails frontend 4 "" "" /public "" "static-prefix with a leading slash"
 fails frontend 4 "" "" public/ "" "static-prefix with a trailing slash"
 fails frontend 4 "" "" Public "" "upper-case static-prefix"
 fails frontend 4 "" "" public bogus "unknown manifest kind"
+# prefixed <stand-prefix input> <repo> <pr>; prints "<url> <name>"
+prefixed() {
+  REPO="$2" PR_NUMBER="$3" STAND_PREFIX="$1" HOT_TEST_DOMAIN=testing-env.omicron.maestra.io \
+    bash -c "set -eo pipefail; $names_prog"$'\n''echo "https://$host $name"'
+}
+eq "$(prefixed "" frontend-homepage 12)" "https://hot-test-frontend-homepage-pr-12.testing-env.omicron.maestra.io hot-test-frontend-homepage-pr-12" "default stand-prefix is the old name"
+eq "$(prefixed hot-test frontend-homepage 12)" "https://hot-test-frontend-homepage-pr-12.testing-env.omicron.maestra.io hot-test-frontend-homepage-pr-12" "explicit hot-test prefix"
+eq "$(prefixed e2e frontend-homepage 12)" "https://e2e-frontend-homepage-pr-12.testing-env.omicron.maestra.io e2e-frontend-homepage-pr-12" "e2e stand"
+for bad in E2E e2e- -e2e e_2e e2e/x "e2e x"; do
+  if prefixed "$bad" frontend-homepage 12 >/dev/null 2>&1; then echo "FAIL stand-prefix '$bad': accepted"; exit 1; fi
+done
+grep -qF "prefix=\"\${STAND_PREFIX:-hot-test}\"" "$wf" || { echo "FAIL the names block does not default stand-prefix to hot-test"; exit 1; }
+# shellcheck disable=SC2016 # the expression is matched literally
+grep -qF 'name: ${{ inputs.stand-prefix }}' "$wf" || { echo "FAIL the environment is not named after stand-prefix"; exit 1; }
+grep -qF "route: \${{ steps.route.outputs.up == 'true' }}" "$wf" || { echo "FAIL the job does not output route"; exit 1; }
 echo "hot-test-publish names: ok"
 
 manifest_prog=$(sed -n '/# >>> manifest/,/# <<< manifest/p' "$wf" | sed 's/^          //')
@@ -158,10 +173,10 @@ echo "hot-test-publish release: ok"
 
 summary_prog=$(sed -n '/# >>> summary/,/# <<< summary/p' "$wf" | sed 's/^          //')
 [ -n "$summary_prog" ] || { echo "summary block not found in $wf"; exit 1; }
-# summary <route up> <release ok> <release status> [code] [static prefix]; prints the summary body
+# summary <route up> <release ok> <release status> [code] [static prefix] [stand prefix]; prints the summary body
 summary() {
   : > "$root/summary.md"
-  URL=https://stand SHA=abc1234 REPO=frontend-homepage STATIC_PREFIX="${5:-v2_static/frontend_homepage}" OK=true WAITED=30 ROUTE_UP="$1" \
+  PREFIX="${6:-hot-test}" URL=https://stand SHA=abc1234 REPO=frontend-homepage STATIC_PREFIX="${5:-v2_static/frontend_homepage}" OK=true WAITED=30 ROUTE_UP="$1" \
     RELEASE_OK="$2" RELEASE_STATUS="$3" RELEASE_CODE="${4:-200}" RELEASE_PATH="$staff_path" \
     RELEASE_STAND="https://stand/$staff_path" RELEASE_BASE="https://base/$staff_path" \
     FAILED_STATIC=false FAILED_ENTRY=false FAILED_TELEPORT=false FAILED_UPLOAD=false \
@@ -170,7 +185,13 @@ summary() {
   sed -n 2p "$root/summary.md"
 }
 body=$(summary true true same)
-case "$body" in ":white_check_mark: "*) ;; *) echo "FAIL summary: same release bucket is not ✅"; exit 1;; esac
+case "$body" in ":white_check_mark: **Hot-test stand**: "*) ;; *) echo "FAIL summary: same release bucket is not ✅ Hot-test stand"; exit 1;; esac
+eq "$(sed -n 1p "$root/summary.md")" "### hot-test stand" "summary heading, default prefix"
+summary false false "" 200 v2_static/frontend_homepage e2e >/dev/null
+eq "$(sed -n 1p "$root/summary.md")" "### e2e stand" "summary heading, e2e prefix"
+grep -qF 'registered in fluxcd for e2e stands' "$root/summary.md" || { echo "FAIL summary: no route on the e2e stand does not name e2e"; exit 1; }
+case "$(sed -n 2p "$root/summary.md")" in ":warning: **E2e stand** "*) ;; *) echo "FAIL summary: the e2e body label does not follow the prefix"; exit 1;; esac
+if grep -qF 'Hot-test' "$root/summary.md"; then echo "FAIL summary: the e2e stand summary says Hot-test"; exit 1; fi
 body=$(summary true true same 200 public; sed -n 4p "$root/summary.md")
 case "$body" in *'`/public/` of `frontend-homepage` from this PR'*) ;; *) printf 'FAIL summary: own files and repo are not named\n  got: %s\n' "$body"; exit 1;; esac
 body=$(summary false false "")

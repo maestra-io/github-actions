@@ -66,6 +66,10 @@
 #                    none: no manifest, the entry is the released shell as is (the
 #                    legacy monorepo: its pages are served by the backend and load
 #                    /public/... from the stand's host, see X-Testing-Frontend below).
+#   stand-prefix     First word of the stand name (default hot-test): <stand-prefix>-<repo>-pr-<N>
+#                    is the host, the bucket folder and the GitHub environment. mcf-build.yml
+#                    passes e2e for the e2e stand: the same stand whose API the cluster proxies
+#                    to the e2e tenant (fluxcd registers e2e providers per repo separately).
 #   hot-test-domain  Domain of the stands (default testing-env.omicron.maestra.io).
 #   bucket           R2 bucket of the stands (default admin-hot-test-static-omicron).
 #   base-static-url  Released static the entry is built from: its entry/mcf-manifests.json,
@@ -77,7 +81,12 @@
 #   builder-image    frontend-entry-static-builder image, pinned tag (ECR of this account:
 #                    pulled with the runner's instance role, no Teleport).
 #
-# Bucket layout written under hot-test-<repo>-pr-<N>/ (the routes of step 4 read it):
+# Outputs:
+#   url              https://<stand-prefix>-<repo>-pr-<N>.<hot-test-domain>
+#   route            true when the stand's /entry/index.html answered 200 within the wait,
+#                    false when the static is published but the route is not (yet) there.
+#
+# Bucket layout written under <stand-prefix>-<repo>-pr-<N>/ (the routes of step 4 read it):
 #   <static-prefix>/...          the artifact as is (v2_static/<mcf>/ for an MCF, public/
 #                                for the legacy monorepo)
 #   entry/index.html             builder output; mcf-manifests.{js,json}, entry-info.json
@@ -132,6 +141,9 @@ on:
       static-artifact:
         type: string
         default: static
+      stand-prefix:
+        type: string
+        default: hot-test
       mcf:
         type: string
         default: ""
@@ -159,6 +171,8 @@ on:
     outputs:
       url:
         value: ${{ jobs.publish.outputs.url }}
+      route:
+        value: ${{ jobs.publish.outputs.route }}
 
 env:
   TELEPORT_FQDN: teleport.maestra.io:443
@@ -171,19 +185,21 @@ env:
 
 jobs:
   publish:
-    runs-on: runs-on=${{ github.run_id }}-hot-test-publish/pool=small
+    runs-on: runs-on=${{ github.run_id }}-${{ inputs.stand-prefix }}-publish/pool=small
     timeout-minutes: 20
     environment:
-      name: hot-test
+      name: ${{ inputs.stand-prefix }}
       url: ${{ steps.names.outputs.url }}
     outputs:
       url: ${{ steps.names.outputs.url }}
+      route: ${{ steps.route.outputs.up == 'true' }}
     steps:
       - uses: runs-on/action@v2.5.0
       - id: names
         env:
           REPO: ${{ inputs.repo }}
           PR_NUMBER: ${{ inputs.pr-number }}
+          STAND_PREFIX: ${{ inputs.stand-prefix }}
           EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
           MCF: ${{ inputs.mcf }}
           STATIC_PREFIX: ${{ inputs.static-prefix }}
@@ -197,6 +213,8 @@ jobs:
           mcf="${MCF:-${repo//-/_}}"
           static_prefix="${STATIC_PREFIX:-v2_static/$mcf}"
           manifest="${MANIFEST:-mcf}"
+          prefix="${STAND_PREFIX:-hot-test}"
+          [[ "$prefix" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || { echo "::error::stand-prefix '$prefix' is not [a-z0-9]([a-z0-9-]*[a-z0-9])?"; exit 1; }
           [[ "$repo" =~ ^[a-z0-9-]+$ ]] || { echo "::error::repo '$repo' is not [a-z0-9-]+"; exit 1; }
           [[ "$pr" =~ ^[0-9]+$ ]] || { echo "::error::pr-number '$pr' is not a number"; exit 1; }
           [[ "$mcf" =~ ^[a-z0-9_]+$ ]] || { echo "::error::mcf '$mcf' is not [a-z0-9_]+"; exit 1; }
@@ -205,10 +223,11 @@ jobs:
           case "$manifest" in mcf|core|none) ;; *) echo "::error::manifest '$manifest' is not mcf, core or none"; exit 1 ;; esac
           # haproxy-cdp sends every host containing -services to the kube-services backend.
           [[ "$repo" != *-services* ]] || { echo "::error::repo '$repo' contains -services: haproxy-cdp would never route its hot-test host"; exit 1; }
-          name="hot-test-${repo}-pr-${pr}"
+          name="${prefix}-${repo}-pr-${pr}"
           host="${name}.${HOT_TEST_DOMAIN}"
           # <<< names
           {
+            echo "prefix=$prefix"
             echo "repo=$repo"
             echo "pr=$pr"
             echo "mcf=$mcf"
@@ -472,6 +491,7 @@ jobs:
         env:
           URL: ${{ steps.names.outputs.url }}
           SHA: ${{ steps.names.outputs.sha }}
+          PREFIX: ${{ steps.names.outputs.prefix }}
           REPO: ${{ steps.names.outputs.repo }}
           STATIC_PREFIX: ${{ steps.names.outputs.static-prefix }}
           OK: ${{ steps.upload.outcome == 'success' }}
@@ -491,23 +511,24 @@ jobs:
           # >>> summary (scripts/test-hot-test-publish.sh runs this block)
           run="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           minutes=$(( (${WAITED:-0} + 30) / 60 )); [ "$minutes" -ge 1 ] || minutes=1
+          label="$(printf '%s' "${PREFIX:0:1}" | tr '[:lower:]' '[:upper:]')${PREFIX:1} stand"
           if [ "$FAILED_STATIC" = true ]; then reason='the static artifact is missing or incomplete'
           elif [ "$FAILED_ENTRY" = true ]; then reason='the entry build (frontend-entry-static-builder) failed'
           elif [ "$FAILED_TELEPORT" = true ]; then reason='the Teleport join failed'
           elif [ "$FAILED_UPLOAD" = true ]; then reason='the Vault login or the upload to R2 failed'
           else reason='the workflow stopped before the upload'; fi
           if [ "$OK" != true ]; then
-            body=":x: **Hot-test stand** for ${SHA} was not published: ${reason} ([run](${run}))."
+            body=":x: **${label}** for ${SHA} was not published: ${reason} ([run](${run}))."
           elif [ "$ROUTE_UP" != true ]; then
-            body=":warning: **Hot-test stand** ${URL} — ${SHA}: the static is published, but the stand route did not come up in ${minutes} min ([run](${run})). Most likely \`${REPO}\` is not registered in fluxcd for hot-test stands — see https://github.com/maestra-io/fluxcd/blob/main/base/microfrontend/README.md. Flux creates the route within ~3 min after registration; re-run the job or push a commit to re-check."
+            body=":warning: **${label}** ${URL} — ${SHA}: the static is published, but the stand route did not come up in ${minutes} min ([run](${run})). Most likely \`${REPO}\` is not registered in fluxcd for ${PREFIX} stands — see https://github.com/maestra-io/fluxcd/blob/main/base/microfrontend/README.md. Flux creates the route within ~3 min after registration; re-run the job or push a commit to re-check."
           elif [ "$RELEASE_STATUS" = differs ]; then
-            body=":x: **Hot-test stand** ${URL} — ${SHA}: релизный бакет в workflow (\`base-static-url\`) и во fluxcd (\`baseStaticDomain\` провайдера hot-test) разный, первое расхождение \`${RELEASE_PATH}\`: ${RELEASE_STAND} ≠ ${RELEASE_BASE} ([run](${run}))."
+            body=":x: **${label}** ${URL} — ${SHA}: релизный бакет в workflow (\`base-static-url\`) и во fluxcd (\`baseStaticDomain\` провайдера ${PREFIX}) разный, первое расхождение \`${RELEASE_PATH}\`: ${RELEASE_STAND} ≠ ${RELEASE_BASE} ([run](${run}))."
           elif [ "$RELEASE_STATUS" = missing ]; then
-            body=":x: **Hot-test stand** ${URL} — ${SHA}: стенд не отдал \`${RELEASE_PATH}\` (HTTP ${RELEASE_CODE}): ${RELEASE_STAND} ([run](${run}))."
+            body=":x: **${label}** ${URL} — ${SHA}: стенд не отдал \`${RELEASE_PATH}\` (HTTP ${RELEASE_CODE}): ${RELEASE_STAND} ([run](${run}))."
           elif [ "$RELEASE_OK" != true ]; then
-            body=":x: **Hot-test stand** ${URL} — ${SHA}: the release bucket check could not read the release manifests of \`base-static-url\` ([run](${run}))."
+            body=":x: **${label}** ${URL} — ${SHA}: the release bucket check could not read the release manifests of \`base-static-url\` ([run](${run}))."
           else
-            body=":white_check_mark: **Hot-test stand**: ${URL} — ${SHA} ([run](${run}))"$'\n\n'"\`/${STATIC_PREFIX}/\` of \`${REPO}\` from this PR on top of the released admin of the test tenant; the stand is removed when the PR closes."
+            body=":white_check_mark: **${label}**: ${URL} — ${SHA} ([run](${run}))"$'\n\n'"\`/${STATIC_PREFIX}/\` of \`${REPO}\` from this PR on top of the released admin of the test tenant; the stand is removed when the PR closes."
           fi
-          printf '### hot-test stand\n%s\n' "$body" >> "$GITHUB_STEP_SUMMARY"
+          printf '### %s stand\n%s\n' "$PREFIX" "$body" >> "$GITHUB_STEP_SUMMARY"
           # <<< summary
