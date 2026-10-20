@@ -146,10 +146,22 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0 # semantic-release walks the history to the last tag
-      - uses: actions/setup-node@v7.0.0
+      - id: node
+        uses: actions/setup-node@v7.0.0
         with:
           node-version: ${{ inputs.node-version }}
           node-version-file: ${{ inputs.node-version == '' && inputs.node-version-file || '' }}
+
+      # node_modules from the last run with this lockfile: `npm ci` sends the GitHub OIDC
+      # token, which expires mid-install on big packages (E401 after ~6 min), and 49
+      # packages installing at once overload nora. Keyed on the repo's own lockfile
+      # (the nora rewrite below is reverted before the save), package.json and .npmrc:
+      # a hit skips `npm ci`, so a manifest out of sync with the lockfile must miss.
+      - id: cache
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: node_modules
+          key: npm-package-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ steps.node.outputs.node-version }}-${{ hashFiles('package-lock.json', 'npm-shrinkwrap.json', 'package.json', '.npmrc') }}
 
       - name: write .npmrc
         env:
@@ -183,6 +195,7 @@ jobs:
             core.setOutput('token', t);
 
       - name: install
+        if: ${{ steps.cache.outputs.cache-hit != 'true' }}
         env:
           NPM_TOKEN: ${{ steps.token.outputs.token }}
           URL: ${{ inputs.packages-url }}
@@ -202,6 +215,13 @@ jobs:
           done
           npm ci --prefer-offline --ignore-scripts
           [ "${#locks[@]}" -eq 0 ] || git checkout -- "${locks[@]}"
+
+      # Before the checks: a red check must not cost the next run its install.
+      - if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: node_modules
+          key: ${{ steps.cache.outputs.cache-primary-key }}
 
       # lib@3 ran these as separate jobs, so one red check did not hide the others.
       # graphql-codegen goes first: on push it generates the code build:npm-package needs.
