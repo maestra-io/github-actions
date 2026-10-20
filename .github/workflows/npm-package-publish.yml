@@ -155,12 +155,13 @@ jobs:
       # node_modules from the last run with this lockfile: `npm ci` sends the GitHub OIDC
       # token, which expires mid-install on big packages (E401 after ~6 min), and 49
       # packages installing at once overload nora. Keyed on the repo's own lockfile
-      # (the nora rewrite below is reverted before the save).
+      # (the nora rewrite below is reverted before the save), package.json and .npmrc:
+      # a hit skips `npm ci`, so a manifest out of sync with the lockfile must miss.
       - id: cache
         uses: actions/cache/restore@v6.1.0
         with:
           path: node_modules
-          key: npm-package-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ steps.node.outputs.node-version }}-${{ hashFiles('package-lock.json', 'npm-shrinkwrap.json') }}
+          key: npm-package-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ steps.node.outputs.node-version }}-${{ hashFiles('package-lock.json', 'npm-shrinkwrap.json', 'package.json', '.npmrc') }}
 
       - name: write .npmrc
         env:
