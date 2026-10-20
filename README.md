@@ -483,7 +483,7 @@ test result (repo, workflow, job, run id and attempt, sha, branch, test id,
 outcome, duration, failure hash) and pushes them to the ci-telemetry
 VictoriaLogs on us-iota-lw-kube-infra
 ([issues-maestra#1592](https://github.com/maestra-io/issues-maestra/issues/1592)).
-`dotnet-service-build.yml`, `nuget-package-publish.yml` and the `test` and `functional`
+`dotnet-service-build.yml`, `nuget-package-publish.yml` and the `test`, `functional` and `e2e`
 jobs of `mcf-build.yml` call it after every test run (`test` sends the JUnit the shared
 vitest preset writes to `reports/` in CI; a repo on an older preset or with its own
 `reporters` sends nothing); the bearer comes from Vault role
@@ -511,8 +511,8 @@ top of each file.
 | [`nuget-package-publish.yml`](.github/workflows/nuget-package-publish.yml) | restore, build, test, pack, `dotnet nuget push` | dotnet-nuget-cicd-components |
 | [`npm-package-publish.yml`](.github/workflows/npm-package-publish.yml) | `npm ci`, lib@3 checks (`checks` input: graphql-codegen, check-types, check-scripts, check-styles, test; `--if-present`, all reported), optional PR coverage comment (`report-coverage`), `npm run release` (semantic-release); RunsOn `pool` input `small` (default) or `build` | frontend-ci-components `templates/lib` |
 | [`python-package-publish.yml`](.github/workflows/python-package-publish.yml) | poetry/uv build, test, `twine upload` | — |
-| [`mcf-build.yml`](.github/workflows/mcf-build.yml) | micro-frontends: `install` (node_modules cached by lockfile hash, `npm ci` only on a miss) → `codegen` (GitHub OIDC → auth-jwt omega JWT) → `checks`, `test`, `build` → `image` (rclone + `<static-prefix>`, default `v2_static/<mcf>`; `static-prefix: v2_static/core` and `manifest: core` for the admin shell frontend-core-v2) → `release` → `bake`, `sourcemaps` (Datadog US3, key from the central Vault); the bucket upload runs at promotion from the MCF's own `kustomization/`. With `tests/`: `tests-install`, `tests-checks` and, after `build`, `functional` (Playwright against the built static, [below](#mcf-build-tests-and-functional-tests)) | frontend-ci-components `templates/mcf` (mcf@3) |
-| [`hot-test-publish.yml`](.github/workflows/hot-test-publish.yml) | hot-test stand of a pull request ([issues-maestra#1574](https://github.com/maestra-io/issues-maestra/issues/1574)): the PR's static artifact + an entry from `frontend-entry-static-builder --single-run` with the PR's manifest → R2 `admin-hot-test-static-omicron/hot-test-<repo>-pr-<N>/` (Teleport GitHub join from the PR → Vault omicron → 10-minute editor keys); the stand URL `https://hot-test-<repo>-pr-<N>.testing-env.omicron.maestra.io` is in the PR as a deployment of environment `hot-test` and in the job's step summary. Called by `mcf-build.yml` on pull_request (input `hot-test`) and by the legacy admin monorepo's own `pr.yml` (`static-prefix: public`, `manifest: none`: its dist goes to `public/` of the PR folder, the entry is the released shell, and the backend links `/public/...` from the stand's host on `X-Testing-Frontend`); the routes come from the builder's chart per open PR. Inputs: `bucket` (stands' bucket, write), `base-static-url` (release static the entry is built from), `hot-test-domain`, `static-prefix` (the PR's own folder, default `v2_static/<mcf>`, the module federation folder; a repo whose files live elsewhere — `frontend` `public`, `frontend-core-v2` `v2_static/core` — sets the same path as `staticPrefix` in its fluxcd registration, which the stand's route sends to the PR folder), `manifest` (`mcf`, `core` for frontend-core-v2: its `manifest.json` and `build-info.json` become the builder's core overrides, or `none`); the tenant and the cluster's copies of these addresses live only in fluxcd (component `base/microfrontend/hot-test`). After the route is up the job compares every release manifest the entry was built from (`v2_static/core/manifest.json` and `v2_static/<mcf>/mf-manifest.json` of each MCF in its `entry/mcf-manifests.json` but those under `static-prefix`) through the stand with the ones under `base-static-url`: another release bucket in the cluster's `baseStaticDomain` (first differing path in the summary) or a non-200 from the stand is ❌ and fails the job | frontend-ci-components mcf@3 hot-test environments |
+| [`mcf-build.yml`](.github/workflows/mcf-build.yml) | micro-frontends: `install` (node_modules cached by lockfile hash, `npm ci` only on a miss) → `codegen` (GitHub OIDC → auth-jwt omega JWT) → `checks`, `test`, `build` → `image` (rclone + `<static-prefix>`, default `v2_static/<mcf>`; `static-prefix: v2_static/core` and `manifest: core` for the admin shell frontend-core-v2) → `release` → `bake`, `sourcemaps` (Datadog US3, key from the central Vault); the bucket upload runs at promotion from the MCF's own `kustomization/`. With `tests/`: `tests-install`, `tests-checks` and, after `build`, `functional` (Playwright against the built static, [below](#mcf-build-tests-and-functional-tests)), and on pull requests `e2e-stand` → `e2e` (Playwright against the PR's e2e stand, [below](#mcf-build-e2e-stand-and-e2e-tests)) | frontend-ci-components `templates/mcf` (mcf@3) |
+| [`hot-test-publish.yml`](.github/workflows/hot-test-publish.yml) | hot-test stand of a pull request ([issues-maestra#1574](https://github.com/maestra-io/issues-maestra/issues/1574)): the PR's static artifact + an entry from `frontend-entry-static-builder --single-run` with the PR's manifest → R2 `admin-hot-test-static-omicron/hot-test-<repo>-pr-<N>/` (Teleport GitHub join from the PR → Vault omicron → 10-minute editor keys); the stand URL `https://hot-test-<repo>-pr-<N>.testing-env.omicron.maestra.io` is in the PR as a deployment of environment `hot-test` and in the job's step summary. Called by `mcf-build.yml` on pull_request (input `hot-test`) and by the legacy admin monorepo's own `pr.yml` (`static-prefix: public`, `manifest: none`: its dist goes to `public/` of the PR folder, the entry is the released shell, and the backend links `/public/...` from the stand's host on `X-Testing-Frontend`); the routes come from the builder's chart per open PR. Input `stand-prefix` (default `hot-test`) is the first word of the stand name, environment and bucket folder: `mcf-build.yml` calls the workflow a second time with `e2e` for the [e2e stand](#mcf-build-e2e-stand-and-e2e-tests). Outputs: `url`, and `route` (`true` once the stand's `/entry/index.html` answered 200, `false` when the static is published but fluxcd has no route for it: ⚠️, the job stays green). Inputs: `bucket` (stands' bucket, write), `base-static-url` (release static the entry is built from), `hot-test-domain`, `static-prefix` (the PR's own folder, default `v2_static/<mcf>`, the module federation folder; a repo whose files live elsewhere — `frontend` `public`, `frontend-core-v2` `v2_static/core` — sets the same path as `staticPrefix` in its fluxcd registration, which the stand's route sends to the PR folder), `manifest` (`mcf`, `core` for frontend-core-v2: its `manifest.json` and `build-info.json` become the builder's core overrides, or `none`); the tenant and the cluster's copies of these addresses live only in fluxcd (component `base/microfrontend/hot-test`). After the route is up the job compares every release manifest the entry was built from (`v2_static/core/manifest.json` and `v2_static/<mcf>/mf-manifest.json` of each MCF in its `entry/mcf-manifests.json` but those under `static-prefix`) through the stand with the ones under `base-static-url`: another release bucket in the cluster's `baseStaticDomain` (first differing path in the summary) or a non-200 from the stand is ❌ and fails the job | frontend-ci-components mcf@3 hot-test environments |
 | [`frontend-codegen.yml`](.github/workflows/frontend-codegen.yml) | one job `codegen` for a frontend with its own pipeline (maestra-io/frontend): restores the `install` job's `node_modules` cache, GitHub OIDC → auth-jwt omega JWT (client `github-frontend-graphql-schema`, bound to this workflow at `@refs/heads/main`) → `npm run graphql-codegen`; artifact `codegen`. The same job as `codegen` in `mcf-build.yml` | frontend-ci-components graphql-codegen |
 | [`helm-chart.yml`](.github/workflows/helm-chart.yml) | PR: `check` (version bump, CHANGELOG, lint, helm-unittest); main: `release` → ECR `helm-charts/<name>` ([`push-helm-chart-to-aws-ecr`](push-helm-chart-to-aws-ecr/action.yml)) | system/components/helm-ci helm-merge-request + helm-release |
 | [`gitleaks.yml`](.github/workflows/gitleaks.yml) | PR only: one job `gitleaks`, [`gitleaks/gitleaks-action`](https://github.com/gitleaks/gitleaks-action) on the PR's commits with the central `gitleaks/gitleaks.toml`; needs the `GITLEAKS_LICENSE` org secret; each repo calls it from its own `.github/workflows/gitleaks.yml` (no shared workflow here runs it) | — |
@@ -560,6 +560,50 @@ changes in the MCF repo: the jobs switch on by files.
 
 `scripts/test-functional.sh` (selftest) runs the detection, the server wait and the
 summary blocks of the workflow.
+
+### mcf-build: e2e stand and e2e tests
+
+The port of mcf@3 e2e ([issues-maestra#1573](https://github.com/maestra-io/issues-maestra/issues/1573)):
+the Playwright tests of `tests/e2e/` (`@mindbox-cloud/frontend-playwright`) run on every pull
+request against a stand of the PR. Nothing changes in the MCF repo: the jobs switch on by
+`tests/e2e/playwright.config.ts` (with `tests/package.json`; not on `renovate/*` or `LocalizationPull`).
+
+- **`e2e-stand`** (pull requests from this repository, the same conditions as `hot-test`,
+  input `e2e-stand`, default `false`: the repo turns its e2e stand on with `e2e-stand: true` in
+  its `pr.yml`, and that PR is also its first e2e run; the default flips to `true` once every repo
+  is on): a second call of
+  [`hot-test-publish.yml`](.github/workflows/hot-test-publish.yml) with `stand-prefix: e2e`, so the
+  PR's own entry (its `CDN_URL` is the stand host) goes to
+  `admin-hot-test-static-omicron/e2e-<repo>-pr-<N>/` and the stand is
+  `https://e2e-<repo>-pr-<N>.testing-env.omicron.maestra.io`, environment `e2e`. fluxcd renders
+  its routes like the hot-test ones but sends the API to the e2e tenant (`autotests-eu.maestra.io`);
+  fluxcd registers an e2e provider for every MCF with `tests/e2e/` (except the legacy `frontend`),
+  so the `pr.yml` line is the only switch.
+- **No route → skipped.** When fluxcd has no e2e provider for the repo, `e2e-stand` publishes the
+  static, shows ⚠️ "not registered in fluxcd for e2e stands" and outputs `route: false`; `e2e` is
+  then skipped, it never fails on the login.
+- **`e2e`** (`pool=build`, 60 min): the root and `tests/` caches as `functional`, Chromium of the
+  tests' Playwright, then `npm run e2e:ci` in `tests/` with `CI=true`,
+  `BASE_URL=https://e2e-<repo>-pr-<N>.testing-env.omicron.maestra.io`, `ADMINSITE_USERNAME`,
+  `ADMINSITE_PASSWORD`, `TEST_ENVIRONMENT=pull-request`, `RETRIES=2`, `WORKERS=<e2e-workers>`
+  (default 4).
+- **Credentials.** `hashicorp/vault-action` against the central Vault (`jwt-github`), role
+  `e2e-vault-role` (default `ci-e2e-autotests-eu`), keys `ADMINSITE_USERNAME` and
+  `ADMINSITE_PASSWORD` of the KV v2 secret `e2e-vault-secret` (default
+  `gitlab/data/ci-e2e/autotests-eu`, i.e. `vault kv get gitlab/ci-e2e/autotests-eu`). The values
+  are masked step outputs passed to the test step only (`exportEnv: false`), never printed. The
+  role must be bound to `mcf-build.yml` in its `job_workflow_ref`.
+- **Advisory.** `continue-on-error: ${{ !inputs.e2e-required }}`, default `false`. `e2e` is not
+  in the `needs` of `image` or `release`: the run takes 20–50 min, and `e2e-required` only makes
+  a red run fail the workflow; gating the release on it is a later change.
+- **Results.** Step summary from `tests/e2e/test-results/results.xml` (stand URL, tests, passed,
+  failed, flaky, skipped, duration, failed tests by name; no JUnit after a red run is ❌).
+  Artifacts `e2e-junit-<attempt>` (7 days, always) and, on failure, `e2e-test-results-<attempt>`
+  (`tests/e2e/test-results` with traces, 3 days). The JUnit also goes to
+  [test-results-ingest](#test-results-ingest-flaky-test-telemetry).
+
+`scripts/test-e2e.sh` (selftest) runs the detection and summary blocks and checks the wiring of
+both jobs.
 
 [`scripts/dockerfile-from-fix.sh`](scripts/dockerfile-from-fix.sh) drops the
 `cr.yandex/crp2cvbrp76d7dmfegco/` mirror prefix from `FROM` lines (idempotent);

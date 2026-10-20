@@ -6,6 +6,7 @@
 #   version ─► install ─► codegen ─► checks, test, build ─► image ─► release ─► bake
 #                                                      │                     └─► sourcemaps
 #                                                      ├─► hot-test (pull_request)
+#                                                      ├─► e2e-stand (pull_request, tests/e2e/) ─► e2e
 #                                                      └─► functional (tests/functional/)
 #   version ─► tests-install ─► tests-checks (tests/package.json)
 #
@@ -58,6 +59,15 @@
 #   functional-required A red `functional` fails the run and holds the image and release
 #                       (default false: advisory, the summary still shows red). The default
 #                       turns true once the MCFs are green (issues-maestra#1573).
+#   e2e-stand           On pull_request with tests/e2e/, publish the e2e stand (default false: the
+#                       repo turns its e2e stand on with `e2e-stand: true` in pr.yml; the default
+#                       flips to true once every repo is on).
+#   e2e-workers         Playwright workers of `e2e` (default 4).
+#   e2e-required        A red `e2e` fails the run (default false: advisory). It never holds
+#                       the image or the release yet.
+#   e2e-vault-role      Central Vault jwt-github role of `e2e` (default ci-e2e-autotests-eu).
+#   e2e-vault-secret    KV v2 secret with ADMINSITE_USERNAME and ADMINSITE_PASSWORD, as
+#                       vault-action reads it (default gitlab/data/ci-e2e/autotests-eu).
 # Outputs:
 #   release             The release number 1.1.N.
 #
@@ -99,9 +109,11 @@
 #             functional-tests/run). JUnit -> step summary, artifact, test-results-ingest;
 #             test-results/ (traces) as an artifact on failure. Advisory unless
 #             functional-required.
+#   e2e-stand  hot-test with stand-prefix e2e (tests/e2e/): fluxcd sends its API to the e2e tenant.
+#   e2e       `npm run e2e:ci` in tests/ on the e2e stand, login from Vault; skipped without a route.
 #
-# Not ported from mcf@3: cyrillic (translation-checker, issues-maestra#1581), e2e
-# and the -e2e/-with-deps images (issues-maestra#1573),
+# Not ported from mcf@3: cyrillic (translation-checker, issues-maestra#1581),
+# the -e2e/-with-deps images (issues-maestra#1573),
 # multi-contour schema loading, and the RU contour jobs (Octopus, phrase, metrics,
 # pipelines release submit, Mindbox Datadog source maps).
 
@@ -164,6 +176,21 @@ on:
       functional-required:
         type: boolean
         default: false
+      e2e-stand:
+        type: boolean
+        default: false
+      e2e-workers:
+        type: string
+        default: "4"
+      e2e-required:
+        type: boolean
+        default: false
+      e2e-vault-role:
+        type: string
+        default: ci-e2e-autotests-eu
+      e2e-vault-secret:
+        type: string
+        default: gitlab/data/ci-e2e/autotests-eu
     outputs:
       release:
         value: ${{ jobs.version.outputs.release }}
@@ -243,7 +270,9 @@ jobs:
     outputs:
       release: ${{ steps.v.outputs.release }}
       publish: ${{ steps.v.outputs.publish }}
+      pr-stands: ${{ steps.v.outputs.pr-stands }}
       hot-test: ${{ steps.v.outputs.hot-test }}
+      e2e-stand: ${{ steps.v.outputs.pr-stands == 'true' && inputs.e2e-stand && steps.tests.outputs.e2e == 'true' }}
       image: ${{ steps.v.outputs.image }}
       service: ${{ steps.v.outputs.service }}
       mcf: ${{ steps.v.outputs.mcf }}
@@ -256,6 +285,7 @@ jobs:
       tests: ${{ steps.tests.outputs.tests }}
       tests-layout: ${{ steps.tests.outputs.tests-layout }}
       functional: ${{ steps.tests.outputs.functional }}
+      e2e: ${{ steps.tests.outputs.e2e }}
     steps:
       - uses: runs-on/action@v2.5.0
       - uses: actions/checkout@v7.0.1
@@ -267,6 +297,7 @@ jobs:
             tests/package.json
             tests/package-lock.json
             tests/functional/playwright.config.ts
+            tests/e2e/playwright.config.ts
           sparse-checkout-cone-mode: false
       - id: v
         env:
@@ -279,8 +310,11 @@ jobs:
           MANIFEST: ${{ inputs.manifest }}
           PUSH: ${{ inputs.push && github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
           PUSH_REQUESTED: ${{ inputs.push && github.event_name != 'pull_request' }}
-          HOT_TEST: ${{ inputs.hot-test && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && !startsWith(github.head_ref, 'renovate/') && github.head_ref != 'LocalizationPull' }}
+          PR_STANDS: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && !startsWith(github.head_ref, 'renovate/') && github.head_ref != 'LocalizationPull' }}
+          HOT_TEST_INPUT: ${{ inputs.hot-test }}
         run: |
+          HOT_TEST=false
+          if [ "$PR_STANDS" = true ] && [ "$HOT_TEST_INPUT" = true ]; then HOT_TEST=true; fi
           if [ "$PUSH_REQUESTED" = true ] && [ "$PUSH" != true ]; then
             echo "::warning::$GITHUB_REF is not the default branch: build only, nothing is published"
           fi
@@ -306,6 +340,7 @@ jobs:
           {
             echo "release=${prefix}.${RUN_NUMBER}"
             echo "publish=$PUSH"
+            echo "pr-stands=$PR_STANDS"
             echo "hot-test=$HOT_TEST"
             echo "image=${IMAGE:-$REPO_NAME}"
             echo "service=${SERVICE:-$REPO_NAME}"
@@ -319,25 +354,29 @@ jobs:
 
       - id: tests
         env:
-          FUNCTIONAL_EVENT: ${{ !startsWith(github.head_ref, 'renovate/') && github.head_ref != 'LocalizationPull' }}
+          PLAYWRIGHT_EVENT: ${{ !startsWith(github.head_ref, 'renovate/') && github.head_ref != 'LocalizationPull' }}
         run: |
-          # >>> tests-detect (scripts/test-functional.sh runs this block)
-          tests=false; layout=none; functional=false
+          # >>> tests-detect (scripts/test-functional.sh and scripts/test-e2e.sh run this block)
+          tests=false; layout=none
           if [ -f tests/package.json ]; then
             tests=true
             if [ -f tests/package-lock.json ]; then layout=lockfile; else layout=workspace; fi
           fi
-          if [ -f tests/functional/playwright.config.ts ]; then
+          playwright() { # playwright <functional|e2e>: run=true when tests/<kind>/ runs
+            run=false
+            [ -f "tests/$1/playwright.config.ts" ] || return 0
             if [ "$tests" != true ]; then
-              echo "::warning::tests/functional/playwright.config.ts without tests/package.json: no functional tests"
-            elif [ "$FUNCTIONAL_EVENT" = true ]; then
-              functional=true
+              echo "::warning::tests/$1/playwright.config.ts without tests/package.json: no $1 tests"
+            elif [ "$PLAYWRIGHT_EVENT" = true ]; then
+              run=true
             else
-              echo "no functional tests on $GITHUB_HEAD_REF"
+              echo "no $1 tests on $GITHUB_HEAD_REF"
             fi
-          fi
-          { echo "tests=$tests"; echo "tests-layout=$layout"; echo "functional=$functional"; } >> "$GITHUB_OUTPUT"
-          echo "tests/: $layout, functional=$functional"
+          }
+          playwright functional; functional=$run
+          playwright e2e; e2e=$run
+          { echo "tests=$tests"; echo "tests-layout=$layout"; echo "functional=$functional"; echo "e2e=$e2e"; } >> "$GITHUB_OUTPUT"
+          echo "tests/: $layout, functional=$functional, e2e=$e2e"
           # <<< tests-detect
 
       # mcf@3 build/create-hotfix-marker: the MF plugin reads LAST_HOTFIX, the newest
@@ -727,7 +766,7 @@ jobs:
           find build -name '*.map' -type f -delete
           tar -czf "$RUNNER_TEMP/static.tgz" -C build "$top"
           du -sh "$out"
-      - if: ${{ needs.version.outputs.publish == 'true' || needs.version.outputs.hot-test == 'true' || needs.version.outputs.functional == 'true' }}
+      - if: ${{ needs.version.outputs.publish == 'true' || needs.version.outputs.hot-test == 'true' || needs.version.outputs.e2e-stand == 'true' || needs.version.outputs.functional == 'true' }}
         uses: actions/upload-artifact@v7.0.1
         with:
           name: static
@@ -892,6 +931,23 @@ jobs:
       static-prefix: ${{ needs.version.outputs.static-prefix }}
       manifest: ${{ needs.version.outputs.manifest }}
       static-artifact: static
+
+  # The e2e tests' own stand: the entry bakes the stand host in, so it cannot share hot-test's.
+  e2e-stand:
+    needs: [version, build]
+    if: ${{ needs.version.outputs.e2e-stand == 'true' }}
+    uses: maestra-io/github-actions/.github/workflows/hot-test-publish.yml@main
+    permissions:
+      contents: read
+      id-token: write # Teleport join
+    with:
+      repo: ${{ github.event.repository.name }}
+      pr-number: ${{ github.event.pull_request.number }}
+      mcf: ${{ needs.version.outputs.mcf }}
+      static-prefix: ${{ needs.version.outputs.static-prefix }}
+      manifest: ${{ needs.version.outputs.manifest }}
+      static-artifact: static
+      stand-prefix: e2e
 
   functional:
     needs: [version, install, tests-install, build]
@@ -1082,6 +1138,161 @@ jobs:
         uses: maestra-io/github-actions/test-results-ingest@v1
         with:
           path: tests/functional/test-results/results.xml
+
+  e2e:
+    needs: [version, install, tests-install, e2e-stand]
+    if: ${{ !cancelled() && needs.version.outputs.e2e == 'true' && needs.e2e-stand.result == 'success' && needs.e2e-stand.outputs.route == 'true' && needs.install.result == 'success' && (needs.tests-install.result == 'success' || needs.tests-install.result == 'skipped') }}
+    runs-on: runs-on=${{ github.run_id }}-e2e/pool=build
+    timeout-minutes: 60
+    continue-on-error: ${{ !inputs.e2e-required }}
+    permissions:
+      contents: read
+      id-token: write # central Vault (jwt-github), test-results-ingest
+    steps:
+      - uses: runs-on/action@v2.5.0
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: ${{ inputs.node-version }}
+      - uses: actions/cache/restore@v6.1.0
+        with:
+          path: *root-node-modules
+          key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
+          fail-on-cache-miss: true
+      - if: ${{ needs.version.outputs.tests-layout == 'lockfile' }}
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: tests/node_modules
+          key: mcf-tests-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('tests/package-lock.json') }}
+          fail-on-cache-miss: true
+      - id: playwright
+        working-directory: tests
+        run: |
+          v=$(node -p "require('@playwright/test/package.json').version" || true)
+          [ -n "$v" ] || { echo "::error::no Playwright in tests/"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Playwright $v"
+      - id: browsers
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: mcf-playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright.outputs.version }}
+      - name: install chromium
+        working-directory: tests
+        run: npx --no playwright install --with-deps chromium
+      - if: ${{ steps.browsers.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.browsers.outputs.cache-primary-key }}
+      # Outputs only: exported env would reach every later step (uploads, ingest).
+      - id: vault
+        uses: hashicorp/vault-action@v4.0.0
+        with:
+          url: https://vault.maestra.io
+          method: jwt
+          path: jwt-github
+          role: ${{ inputs.e2e-vault-role }}
+          jwtGithubAudience: https://github.com/maestra-io
+          exportEnv: false
+          exportToken: false
+          secrets: |
+            ${{ inputs.e2e-vault-secret }} ADMINSITE_USERNAME | ADMINSITE_USERNAME ;
+            ${{ inputs.e2e-vault-secret }} ADMINSITE_PASSWORD | ADMINSITE_PASSWORD
+      - id: run
+        name: npm run e2e:ci
+        working-directory: tests
+        env:
+          CI: "true"
+          BASE_URL: ${{ needs.e2e-stand.outputs.url }}
+          ADMINSITE_USERNAME: ${{ steps.vault.outputs.ADMINSITE_USERNAME }}
+          ADMINSITE_PASSWORD: ${{ steps.vault.outputs.ADMINSITE_PASSWORD }}
+          TEST_ENVIRONMENT: pull-request
+          RETRIES: "2"
+          WORKERS: ${{ inputs.e2e-workers }}
+        run: |
+          set -o pipefail
+          npm run e2e:ci 2>&1 | tee "$RUNNER_TEMP/e2e.log"
+      - name: summary
+        if: ${{ always() }}
+        env:
+          JUNIT: tests/e2e/test-results/results.xml
+          LOG: ${{ runner.temp }}/e2e.log
+          OUTCOME: ${{ steps.run.outcome }}
+          REQUIRED: ${{ inputs.e2e-required }}
+          STAND: ${{ needs.e2e-stand.outputs.url }}
+        run: |
+          # >>> e2e-summary (scripts/test-e2e.sh runs this block)
+          python3 -I - "$JUNIT" "$LOG" "$OUTCOME" "$REQUIRED" "$STAND" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import os, re, sys
+          import xml.etree.ElementTree as ET
+
+          junit, log, outcome, required, stand = sys.argv[1:6]
+          out = ["### e2e tests", "", f"Stand: {stand}", ""]
+          if os.path.isfile(junit) and os.path.getsize(junit) > 0:
+              root = ET.parse(junit).getroot()
+              total = failed = skipped = flaky = 0
+              names, seconds = [], 0.0
+              for case in root.iter("testcase"):
+                  total += 1
+                  seconds += float(case.get("time") or 0)
+                  tags = {child.tag for child in case}
+                  if tags & {"failure", "error"}:
+                      failed += 1
+                      names.append(f"{case.get('classname', '')} › {case.get('name', '')}")
+                  elif "skipped" in tags:
+                      skipped += 1
+                  elif any(t.startswith("flaky") for t in tags):
+                      flaky += 1
+              if os.path.isfile(log):
+                  m = re.search(r"^\s*(\d+) flaky\s*$", open(log, errors="replace").read(), re.M)
+                  if m:
+                      flaky = max(flaky, int(m.group(1)))
+              if root.get("time"):
+                  seconds = float(root.get("time"))
+              if failed:
+                  out.append(f":x: {failed} of {total} failed")
+              elif outcome != "success":
+                  out.append(f":x: `e2e:ci` failed ({outcome}) with no failed test in the report")
+              else:
+                  out.append(f":white_check_mark: {total - skipped} of {total} passed")
+              out += ["", "| tests | passed | failed | flaky | skipped | duration |", "|---|---|---|---|---|---|",
+                      f"| {total} | {total - failed - skipped} | {failed} | {flaky} | {skipped} | {seconds:.1f} s |"]
+              if names:
+                  out += ["", "Failed:"] + [f"- `{n}`" for n in names]
+          elif outcome in ("", "skipped"):
+              out.append(":x: the tests did not run: an earlier step failed")
+          elif outcome == "success":
+              out.append(f":warning: `e2e:ci` passed but wrote no JUnit report at `{junit}`")
+          else:
+              out.append(f":x: `e2e:ci` failed ({outcome}) and wrote no JUnit report at `{junit}`: see the job log")
+          if required != "true":
+              out += ["", "not blocking: e2e-required is false"]
+          print("\n".join(out))
+          PY
+          # <<< e2e-summary
+      - if: ${{ failure() }}
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: e2e-test-results-${{ github.run_attempt }}
+          path: tests/e2e/test-results
+          retention-days: 3
+          if-no-files-found: ignore
+      - if: ${{ always() }}
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: e2e-junit-${{ github.run_attempt }}
+          path: tests/e2e/test-results/results.xml
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: ingest test results
+        if: ${{ always() }}
+        continue-on-error: true
+        uses: maestra-io/github-actions/test-results-ingest@v1
+        with:
+          path: tests/e2e/test-results/results.xml
 
   # The kustomize build of a changed kustomization/ tree on every pull request (a PR that
   # changes only kustomization/ skips the build/test jobs, so this is its validation);
