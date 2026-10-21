@@ -194,6 +194,17 @@ jobs:
             core.setSecret(t);
             core.setOutput('token', t);
 
+      # npm's tarball store from the latest run (this branch, else the default one): a new
+      # lockfile (a Renovate bump) fetches only the changed packages from nora, not all of
+      # them (a Renovate wave saturated nora's link, NoraHighLatency 21.10.2026).
+      - id: npm-cache
+        if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ~/.npm/_cacache
+          key: npm-cacache-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json', 'npm-shrinkwrap.json') }}
+          restore-keys: npm-cacache-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-
+
       - name: install
         if: ${{ steps.cache.outputs.cache-hit != 'true' }}
         env:
@@ -215,6 +226,12 @@ jobs:
           done
           npm ci --prefer-offline --ignore-scripts
           [ "${#locks[@]}" -eq 0 ] || git checkout -- "${locks[@]}"
+
+      - if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.npm-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/.npm/_cacache
+          key: ${{ steps.npm-cache.outputs.cache-primary-key }}
 
       # Before the checks: a red check must not cost the next run its install.
       - if: ${{ steps.cache.outputs.cache-hit != 'true' }}

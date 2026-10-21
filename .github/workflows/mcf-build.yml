@@ -74,7 +74,8 @@
 # Jobs:
 #   install   node_modules (and tests/node_modules of a `tests` npm workspace) is cached
 #             under the lockfile hash and `npm ci` runs only on a miss; every other job
-#             restores it and never reaches nora.
+#             restores it and never reaches nora. On a miss npm's tarball store
+#             (~/.npm/_cacache) is restored by key prefix, so only changed packages hit nora.
 #   tests-install  tests/ with its own tests/package-lock.json: `npm ci` there, the same
 #             nora setup as `install`, cached under that lockfile's hash. A `tests` npm
 #             workspace of the root (no tests/package-lock.json) comes from `install`.
@@ -454,6 +455,17 @@ jobs:
             const t = await core.getIDToken(process.env.AUDIENCE);
             core.setSecret(t);
             core.setOutput('token', t);
+      # npm's tarball store from the latest run (this branch, else the default one): a new
+      # lockfile (a Renovate bump) fetches only the changed packages from nora, not all
+      # ~2500 per MCF (a Renovate wave saturated nora's link, NoraHighLatency 21.10.2026).
+      - &npm-cache-restore
+        if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+        id: npm-cache
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ~/.npm/_cacache
+          key: npm-cacache-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json', 'tests/package-lock.json') }}
+          restore-keys: npm-cacache-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-
       - &npm-ci
         if: ${{ steps.cache.outputs.cache-hit != 'true' }}
         name: npm ci
@@ -475,6 +487,12 @@ jobs:
             rm -f "$f.bak"
           done
           npm ci --prefer-offline --no-audit --no-fund
+      - &npm-cache-save
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.npm-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/.npm/_cacache
+          key: ${{ steps.npm-cache.outputs.cache-primary-key }}
       - if: ${{ steps.cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6.1.0
         with:
@@ -507,7 +525,9 @@ jobs:
       - *setup-node-on-miss
       - *write-npmrc
       - *mint-token
+      - *npm-cache-restore
       - *npm-ci
+      - *npm-cache-save
       - if: ${{ steps.cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6.1.0
         with:
