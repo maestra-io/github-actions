@@ -6,7 +6,7 @@
 #   version ─► install ─► codegen ─► checks, test, build ─► image ─► release ─► bake
 #                                                      │                     └─► sourcemaps
 #                                                      ├─► hot-test (pull_request)
-#                                                      ├─► e2e-stand (pull_request, tests/e2e/) ─► e2e
+#                                                      ├─► e2e-stand (pull_request, tests/e2e/) ─► e2e (input e2e)
 #                                                      └─► functional (tests/functional/)
 #   version ─► tests-install ─► tests-checks (tests/package.json)
 #
@@ -59,9 +59,9 @@
 #   functional-required A red `functional` fails the run and holds the image and release
 #                       (default false: advisory, the summary still shows red). The default
 #                       turns true once the MCFs are green (issues-maestra#1573).
-#   e2e-stand           On pull_request with tests/e2e/, publish the e2e stand (default false: the
-#                       repo turns its e2e stand on with `e2e-stand: true` in pr.yml; the default
-#                       flips to true once every repo is on).
+#   e2e                 Run `npm run e2e:ci` on the e2e stand (default false: opt-in per repo with
+#                       `e2e: true` in pr.yml until every repo is on, then the input goes away).
+#                       The e2e stand itself is published on every pull_request with tests/e2e/.
 #   e2e-workers         Playwright workers of `e2e` (default 4).
 #   e2e-required        A red `e2e` fails the run (default false: advisory). It never holds
 #                       the image or the release yet.
@@ -111,7 +111,8 @@
 #             test-results/ (traces) as an artifact on failure. Advisory unless
 #             functional-required.
 #   e2e-stand  hot-test with stand-prefix e2e (tests/e2e/): fluxcd sends its API to the e2e tenant.
-#   e2e       `npm run e2e:ci` in tests/ on the e2e stand, login from Vault; skipped without a route.
+#   e2e       `npm run e2e:ci` in tests/ on the e2e stand, login from Vault (input e2e); skipped
+#             without a route.
 #
 # Not ported from mcf@3: cyrillic (translation-checker, issues-maestra#1581),
 # the -e2e/-with-deps images (issues-maestra#1573),
@@ -177,7 +178,7 @@ on:
       functional-required:
         type: boolean
         default: false
-      e2e-stand:
+      e2e:
         type: boolean
         default: false
       e2e-workers:
@@ -273,7 +274,7 @@ jobs:
       publish: ${{ steps.v.outputs.publish }}
       pr-stands: ${{ steps.v.outputs.pr-stands }}
       hot-test: ${{ steps.v.outputs.hot-test }}
-      e2e-stand: ${{ steps.v.outputs.pr-stands == 'true' && inputs.e2e-stand && steps.tests.outputs.e2e == 'true' }}
+      e2e-stand: ${{ steps.v.outputs.pr-stands == 'true' && steps.tests.outputs.e2e == 'true' }}
       image: ${{ steps.v.outputs.image }}
       service: ${{ steps.v.outputs.service }}
       mcf: ${{ steps.v.outputs.mcf }}
@@ -1161,7 +1162,7 @@ jobs:
 
   e2e:
     needs: [version, install, tests-install, e2e-stand]
-    if: ${{ !cancelled() && needs.version.outputs.e2e == 'true' && needs.e2e-stand.result == 'success' && needs.e2e-stand.outputs.route == 'true' && needs.install.result == 'success' && (needs.tests-install.result == 'success' || needs.tests-install.result == 'skipped') }}
+    if: ${{ !cancelled() && inputs.e2e && needs.version.outputs.e2e == 'true' && needs.e2e-stand.result == 'success' && needs.e2e-stand.outputs.route == 'true' && needs.install.result == 'success' && (needs.tests-install.result == 'success' || needs.tests-install.result == 'skipped') }}
     runs-on: runs-on=${{ github.run_id }}-e2e/pool=build
     timeout-minutes: 60
     continue-on-error: ${{ !inputs.e2e-required }}
