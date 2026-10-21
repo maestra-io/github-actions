@@ -2,8 +2,8 @@
 #
 # Self-check for the e2e jobs of mcf-build.yml: the tests/e2e/ detection (only with
 # tests/package.json, not on excluded branches), the wiring of e2e-stand (the hot-test
-# conditions plus tests/e2e/, stand-prefix e2e, the static artifact) and e2e (runs only
-# on a stand with a route, advisory unless e2e-required, never holds the image), the
+# conditions plus tests/e2e/, no input, stand-prefix e2e, the static artifact) and e2e (only
+# with input e2e on a stand with a route, advisory unless e2e-required, never holds the image), the
 # Vault credentials (step outputs only, never printed) and the e2e step summary from
 # Playwright JUnit. Runs the inline blocks of the reusable workflow itself.
 set -euo pipefail
@@ -61,8 +61,8 @@ echo "e2e detect: ok"
 # shellcheck disable=SC2016 # the expressions are matched literally
 {
   eq "$(job e2e-stand if)" '${{ needs.version.outputs.e2e-stand == '"'true'"' }}' "e2e-stand runs on the version job's verdict"
-  grep -qF 'e2e-stand: ${{ steps.v.outputs.pr-stands == '"'true'"' && inputs.e2e-stand && steps.tests.outputs.e2e == '"'true'"' }}' "$wf" \
-    || { echo "FAIL e2e-stand is not pr-stands && input e2e-stand && e2e"; exit 1; }
+  grep -qF 'e2e-stand: ${{ steps.v.outputs.pr-stands == '"'true'"' && steps.tests.outputs.e2e == '"'true'"' }}' "$wf" \
+    || { echo "FAIL e2e-stand is not pr-stands && e2e"; exit 1; }
   grep -qF 'if [ "$PR_STANDS" = true ] && [ "$HOT_TEST_INPUT" = true ]; then HOT_TEST=true; fi' "$wf" \
     || { echo "FAIL hot-test is not pr-stands && input hot-test"; exit 1; }
   grep -qF 'PR_STANDS: ${{ github.event_name == '"'pull_request'"' && github.event.pull_request.head.repo.full_name == github.repository && !startsWith(github.head_ref, '"'renovate/'"') && github.head_ref != '"'LocalizationPull'"' }}' "$wf" \
@@ -70,7 +70,8 @@ echo "e2e detect: ok"
   grep -qF "needs.version.outputs.e2e-stand == 'true'" <<<"$(jobtext build)" || { echo "FAIL build does not upload static for e2e-stand"; exit 1; }
 }
 eq "$(job e2e-stand needs)" "[version, build]" "e2e-stand needs"
-eq "$(awk '/^      e2e-stand:$/ { on = 1; next } on && /default:/ { print $2; exit }' "$wf")" "false" "e2e-stand is turned on per repo in pr.yml"
+if grep -qE 'inputs\.e2e-stand|^      e2e-stand:$' "$wf"; then echo "FAIL e2e-stand is behind an input: the stand is unconditional"; exit 1; fi
+eq "$(awk '/^      e2e:$/ { on = 1; next } on && /default:/ { print $2; exit }' "$wf")" "false" "e2e is turned on per repo in pr.yml"
 grep -qF "      e2e: \${{ steps.tests.outputs.e2e }}" "$wf" || { echo "FAIL the e2e detection output depends on more than the files"; exit 1; }
 stand=$(jobtext e2e-stand); hot=$(jobtext hot-test)
 has "$stand" "      stand-prefix: e2e" "e2e-stand prefix"
@@ -83,7 +84,7 @@ eq "$(job e2e needs)" "[version, install, tests-install, e2e-stand]" "e2e needs"
 {
   eq "$(job e2e continue-on-error)" '${{ !inputs.e2e-required }}' "e2e failure is advisory only when not required"
   e2e_if=$(job e2e if)
-  for c in '!cancelled()' "needs.e2e-stand.result == 'success'" "needs.e2e-stand.outputs.route == 'true'" \
+  for c in '!cancelled()' 'inputs.e2e &&' "needs.e2e-stand.result == 'success'" "needs.e2e-stand.outputs.route == 'true'" \
     "needs.version.outputs.e2e == 'true'" "needs.install.result == 'success'" \
     "(needs.tests-install.result == 'success' || needs.tests-install.result == 'skipped')"; do
     has "$e2e_if" "$c" "e2e if"
