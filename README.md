@@ -521,7 +521,7 @@ unconditionally, the tests run only with input `e2e`.
   PR's own entry (its `CDN_URL` is the stand host) goes to
   `admin-hot-test-static-omicron/e2e-<repo>-pr-<N>/` and the stand is
   `https://e2e-<repo>-pr-<N>.testing-env.omicron.maestra.io`, environment `e2e`. fluxcd renders
-  its routes like the hot-test ones but sends the API to the e2e tenant (`autotests-eu.maestra.io`);
+  its routes like the hot-test ones but sends the API to the e2e tenant (`ci-gate.omicron.maestra.io`);
   fluxcd registers an e2e provider for every MCF with `tests/e2e/` (except the legacy `frontend`).
 - **No route → skipped.** When fluxcd has no e2e provider for the repo, `e2e-stand` publishes the
   static, shows ⚠️ "not registered in fluxcd for e2e stands" and outputs `route: false`; `e2e` is
@@ -534,9 +534,9 @@ unconditionally, the tests run only with input `e2e`.
   `ADMINSITE_PASSWORD`, `TEST_ENVIRONMENT=pull-request`, `RETRIES=2`, `WORKERS=<e2e-workers>`
   (default 4).
 - **Credentials.** `hashicorp/vault-action` against the central Vault (`jwt-github`), role
-  `e2e-vault-role` (default `ci-e2e-autotests-eu`), keys `ADMINSITE_USERNAME` and
+  `e2e-vault-role` (default `ci-gate-e2e`), keys `ADMINSITE_USERNAME` and
   `ADMINSITE_PASSWORD` of the KV v2 secret `e2e-vault-secret` (default
-  `gitlab/data/ci-e2e/autotests-eu`, i.e. `vault kv get gitlab/ci-e2e/autotests-eu`). The values
+  `gitlab/data/ci-e2e/ci-gate`, i.e. `vault kv get gitlab/ci-e2e/ci-gate`). The values
   are masked step outputs passed to the test step only (`exportEnv: false`), never printed. The
   role must be bound to `mcf-build.yml` in its `job_workflow_ref`.
 - **Advisory.** `continue-on-error: ${{ !inputs.e2e-required }}`, default `false`. `e2e` is not
