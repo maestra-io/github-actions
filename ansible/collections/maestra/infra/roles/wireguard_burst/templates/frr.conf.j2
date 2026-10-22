@@ -1,0 +1,67 @@
+! {{ ansible_managed }}
+! Dedicated burst gateway (maestra.infra.wireguard_burst, mode dedicated).
+!
+! Each slot /32 is a static route through the tunnel that exists only while
+! BFD to the slot is up; the live ones are announced to the uplinks over eBGP
+! (BFD there too). An uplink thus loses a slot within ~1 s of its tunnel
+! dying and takes the other gateway's path. The cluster prefixes come back
+! from the uplinks; no graceful restart, so a rebooting gateway's routes are
+! dropped at once instead of kept stale for the restart time.
+frr version {{ (wireguard_burst_frr_version | string).split('.')[:2] | join('.') }}
+frr defaults traditional
+hostname {{ inventory_hostname }}
+log syslog informational
+service integrated-vtysh-config
+!
+{{ wireguard_burst_frr_static }}
+{% for r in wireguard_burst_static_routes %}
+ip route {{ r.prefix }} {{ r.nexthop }}{{ (' ' ~ r.distance) if r.distance is defined else '' }}
+{% endfor %}
+!
+router bgp {{ wireguard_burst_bgp_asn }}
+ bgp router-id {{ wireguard_burst_bgp_router_id }}
+ bgp log-neighbor-changes
+ bgp graceful-restart-disable
+ no bgp ebgp-requires-policy
+ no bgp default ipv4-unicast
+ neighbor uplinks peer-group
+ neighbor uplinks bfd
+ neighbor uplinks bfd profile {{ wireguard_burst_bgp_bfd_profile }}
+{% for u in wireguard_burst_bgp_uplinks %}
+ neighbor {{ u.address }} remote-as {{ u.remote_asn }}
+ neighbor {{ u.address }} peer-group uplinks
+{% if u.description is defined %}
+ neighbor {{ u.address }} description {{ u.description }}
+{% endif %}
+{% endfor %}
+ !
+ address-family ipv4 unicast
+  redistribute static route-map BURST-SLOTS
+  neighbor uplinks activate
+  neighbor uplinks prefix-list BURST-ACCEPT in
+  neighbor uplinks prefix-list BURST-SLOTS out
+ exit-address-family
+exit
+!
+{% for s in wireguard_burst_slots %}
+ip prefix-list BURST-SLOTS seq {{ loop.index * 10 }} permit {{ s.ip }}/32
+{% endfor %}
+{% for p in wireguard_burst_bgp_accept %}
+ip prefix-list BURST-ACCEPT seq {{ loop.index * 10 }} permit {{ p }}
+{% endfor %}
+!
+route-map BURST-SLOTS permit 10
+ match ip address prefix-list BURST-SLOTS
+exit
+!
+bfd
+{{ wireguard_burst_frr_bfd }}
+ profile {{ wireguard_burst_bgp_bfd_profile }}
+  detect-multiplier {{ wireguard_burst_bfd_multiplier }}
+  receive-interval {{ wireguard_burst_bfd_interval_ms }}
+  transmit-interval {{ wireguard_burst_bfd_interval_ms }}
+ exit
+exit
+!
+line vty
+!

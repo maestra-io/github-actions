@@ -1,0 +1,142 @@
+---
+- name: Install wireguard-tools
+  ansible.builtin.apt:
+    pkg: wireguard-tools
+    update_cache: true
+    cache_valid_time: 3600
+
+# systemd-networkd reads the private key as user systemd-network: a root-only
+# 0600 file gets "Failed to read private key ... Ignoring network device".
+- name: Create /etc/wireguard readable by systemd-networkd
+  ansible.builtin.file:
+    path: /etc/wireguard
+    state: directory
+    owner: root
+    group: systemd-network
+    mode: "0750"
+
+# The private key is generated ON the host and never leaves it.
+- name: Generate the private key once (never overwritten)
+  ansible.builtin.shell:
+    cmd: set -o pipefail; umask 077; wg genkey > /etc/wireguard/{{ wireguard_burst_interface }}.key
+    creates: /etc/wireguard/{{ wireguard_burst_interface }}.key
+    executable: /bin/bash
+
+- name: Make the private key readable by systemd-networkd
+  ansible.builtin.file:
+    path: /etc/wireguard/{{ wireguard_burst_interface }}.key
+    owner: root
+    group: systemd-network
+    mode: "0640"
+
+# In check mode on a fresh host the key is not generated, so the public-key
+# steps run only once it exists.
+- name: Check whether the private key exists
+  ansible.builtin.stat:
+    path: /etc/wireguard/{{ wireguard_burst_interface }}.key
+  register: wireguard_burst_key_stat
+  check_mode: false
+
+- name: Derive the public key from the key file
+  ansible.builtin.shell:
+    cmd: set -o pipefail; wg pubkey < /etc/wireguard/{{ wireguard_burst_interface }}.key
+    executable: /bin/bash
+  register: wireguard_burst_pubkey
+  changed_when: false
+  check_mode: false
+  when: wireguard_burst_key_stat.stat.exists
+
+- name: Keep the public key next to the private one
+  ansible.builtin.copy:
+    dest: /etc/wireguard/{{ wireguard_burst_interface }}.pub
+    content: "{{ wireguard_burst_pubkey.stdout }}\n"
+    owner: root
+    group: systemd-network
+    mode: "0644"
+  when: wireguard_burst_key_stat.stat.exists
+
+- name: Show the public key (not a secret; burst nodes peer with it)
+  ansible.builtin.debug:
+    msg: "{{ inventory_hostname }} {{ wireguard_burst_interface }} public key: {{ wireguard_burst_pubkey.stdout }}"
+  when: wireguard_burst_key_stat.stat.exists
+
+# A rebuilt host generates a new key while every burst node still carries the
+# old one: the tunnels die silently. Fail here instead, and say where the old
+# key lives. Rotation order: README "Rotating a gateway key".
+- name: Assert the public key is the one the burst nodes expect
+  ansible.builtin.assert:
+    that: wireguard_burst_pubkey.stdout == wireguard_burst_gateway_pubkeys[inventory_hostname]
+    fail_msg: >-
+      {{ inventory_hostname }} {{ wireguard_burst_interface }} public key is {{ wireguard_burst_pubkey.stdout }},
+      wireguard_burst_gateway_pubkeys expects {{ wireguard_burst_gateway_pubkeys[inventory_hostname] }}.
+      The burst nodes ({{ wireguard_burst_pubkey_consumer_hint }}) still peer with the expected key.
+      Either restore the old /etc/wireguard/{{ wireguard_burst_interface }}.key, or rotate: put the new
+      key into wireguard_burst_gateway_pubkeys AND {{ wireguard_burst_pubkey_consumer_hint }} in the same change,
+      then re-create the burst nodes.
+    quiet: true
+  when:
+    - wireguard_burst_key_stat.stat.exists
+    - inventory_hostname in wireguard_burst_gateway_pubkeys
+
+- name: Render the interface for systemd-networkd
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: /etc/systemd/network/50-{{ wireguard_burst_interface }}.{{ item.split('.') | last }}
+    owner: root
+    group: systemd-network
+    mode: "0640"
+  loop:
+    - wg.netdev
+    - wg.network
+  register: wireguard_burst_networkd
+  when: wireguard_burst_manage_interface | bool
+
+# reload creates a missing netdev and applies .network changes; it does not
+# rebuild an existing netdev, which is why the peers are synced live below.
+- name: Reload systemd-networkd
+  ansible.builtin.command: networkctl reload
+  changed_when: true
+  when:
+    - wireguard_burst_manage_interface | bool
+    - wireguard_burst_networkd is changed
+    - not ansible_check_mode
+
+- name: Wait for the interface
+  ansible.builtin.command: ip link show {{ wireguard_burst_interface }}
+  register: wireguard_burst_link
+  retries: 10
+  delay: 2
+  until: wireguard_burst_link.rc == 0
+  changed_when: false
+  when:
+    - wireguard_burst_manage_interface | bool
+    - not ansible_check_mode
+
+# networkd builds the peers only when it creates the device, so a changed slot
+# list reaches an existing interface through `wg set` (no networkd restart:
+# on a VRRP gateway that drops the VIPs).
+- name: Sync the live peers with wireguard_burst_slots
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      ip link show {{ wireguard_burst_interface }} >/dev/null 2>&1 || { echo absent; exit 0; }
+      want=$(sed '/^$/d' <<'PEERS' | sort
+      {% for s in wireguard_burst_slots %}
+      {{ s.pubkey }} {{ s.ip }}/32 {{ wireguard_burst_keepalive }}
+      {% endfor %}
+      PEERS
+      )
+      have=$(wg show {{ wireguard_burst_interface }} dump | tail -n +2 | awk '{print $1, $4, $8}' | sort)
+      [ "$want" = "$have" ] && { echo unchanged; exit 0; }
+      for k in $(wg show {{ wireguard_burst_interface }} peers); do
+        grep -q "^$k " <<<"$want" || wg set {{ wireguard_burst_interface }} peer "$k" remove
+      done
+      while read -r k ips ka; do
+        [ -n "$k" ] || continue
+        wg set {{ wireguard_burst_interface }} peer "$k" allowed-ips "$ips" persistent-keepalive "$ka"
+      done <<<"$want"
+      echo changed
+    executable: /bin/bash
+  register: wireguard_burst_peer_sync
+  changed_when: wireguard_burst_peer_sync.stdout == 'changed'
+  when: not ansible_check_mode

@@ -1,0 +1,8 @@
+# {{ ansible_managed }}
+# A /32 only: the slot routes are FRR statics that exist while BFD to the slot
+# is up (frr.conf), never connected routes of this interface.
+[Match]
+Name={{ wireguard_burst_interface }}
+
+[Network]
+Address={{ wireguard_burst_address }}/32

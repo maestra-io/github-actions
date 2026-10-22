@@ -1,0 +1,68 @@
+---
+# Dedicated mode: this host owns its sysctls, the whole nftables ruleset and
+# FRR. Nothing here applies in embedded mode.
+
+- name: Forwarding sysctls
+  ansible.builtin.template:
+    src: sysctl.conf.j2
+    dest: /etc/sysctl.d/60-wireguard-burst.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: wireguard_burst_sysctl
+
+- name: Apply the forwarding sysctls
+  ansible.builtin.command: sysctl -q -p /etc/sysctl.d/60-wireguard-burst.conf
+  changed_when: true
+  when: wireguard_burst_sysctl is changed and not ansible_check_mode
+
+- name: Create the networkd drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/networkd.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# Before FRR exists: a networkd reload must never wipe the routes zebra owns.
+- name: Keep systemd-networkd off routes it did not configure
+  ansible.builtin.template:
+    src: networkd-frr.conf.j2
+    dest: /etc/systemd/networkd.conf.d/60-wireguard-burst-frr.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: wireguard_burst_networkd_conf
+
+# Manager settings are read at start only (a reload re-reads link files).
+# Safe here: a dedicated gateway holds no VRRP addresses.
+- name: Restart systemd-networkd for its new manager settings
+  ansible.builtin.systemd:
+    name: systemd-networkd
+    state: restarted
+  when: wireguard_burst_networkd_conf is changed and not ansible_check_mode
+
+- name: Install nftables
+  ansible.builtin.apt:
+    pkg: nftables
+    cache_valid_time: 3600
+
+- name: Render the nftables ruleset
+  ansible.builtin.template:
+    src: nftables.conf.j2
+    dest: /etc/nftables.conf
+    owner: root
+    group: root
+    mode: "0755"
+    validate: nft -c -f %s
+  notify: Restart nftables (wireguard_burst)
+
+- name: Enable nftables
+  ansible.builtin.systemd:
+    name: nftables
+    enabled: true
+    state: started
+  when: not ansible_check_mode
+
+- name: Install FRR
+  ansible.builtin.import_tasks: frr.yml

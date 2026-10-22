@@ -1,0 +1,62 @@
+---
+# FRR from deb.frrouting.org: the Ubuntu 24.04 archive build (8.4) has no BFD
+# monitoring of static routes.
+- name: Add the FRR signing key
+  ansible.builtin.get_url:
+    url: https://deb.frrouting.org/frr/keys.gpg
+    dest: /usr/share/keyrings/frr-archive-keyring.gpg
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Add the FRR apt repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [signed-by=/usr/share/keyrings/frr-archive-keyring.gpg]
+      https://deb.frrouting.org/frr {{ ansible_facts['distribution_release'] }} frr-stable
+    filename: frr
+    state: present
+    update_cache: true
+
+- name: Install the FRR packages
+  ansible.builtin.apt:
+    name:
+      - "frr={{ wireguard_burst_frr_version }}-*"
+      - "frr-pythontools={{ wireguard_burst_frr_version }}-*"
+    state: present
+    cache_valid_time: 3600
+
+# The package starts FRR with its stock daemons file (bgpd=no, bfdd=no), and a
+# reload never starts a daemon that was off: restart right here, before the
+# config below is validated against running daemons.
+- name: Render /etc/frr/daemons
+  ansible.builtin.template:
+    src: frr-daemons.j2
+    dest: /etc/frr/daemons
+    owner: frr
+    group: frr
+    mode: "0640"
+  register: wireguard_burst_frr_daemons
+
+- name: Restart FRR with the daemons this host needs
+  ansible.builtin.systemd:
+    name: frr
+    state: restarted
+  when: wireguard_burst_frr_daemons is changed and not ansible_check_mode
+
+- name: Render /etc/frr/frr.conf
+  ansible.builtin.template:
+    src: frr.conf.j2
+    dest: /etc/frr/frr.conf
+    owner: frr
+    group: frr
+    mode: "0640"
+    validate: vtysh -f %s --dryrun
+  notify: Reload frr (wireguard_burst)
+
+- name: Enable FRR
+  ansible.builtin.systemd:
+    name: frr
+    enabled: true
+    state: started
+  when: not ansible_check_mode

@@ -1,0 +1,2 @@
+iifname "{{ wireguard_burst_wan_interface }}" udp dport {{ wireguard_burst_port }} accept
+iifname "{{ wireguard_burst_interface }}" ip saddr { {{ wireguard_burst_slots | map(attribute='ip') | join(', ') }} } udp dport { 3784, 3785 } accept

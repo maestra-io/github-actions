@@ -1,0 +1,103 @@
+---
+# maestra.infra.wireguard_burst — WireGuard termination for Kubernetes burst
+# nodes that live outside the private network (issues-maestra#1444), with one
+# BFD-tracked FRR static /32 per slot: a slot's route exists only while BFD
+# over its tunnel is up. Full contract: README.md next to this file.
+
+# embedded  | the host is also something else (a NAT gateway) and owns
+#           | nftables.conf and frr.conf itself: the role manages the WireGuard
+#           | interface, keys, peers and metrics, and EXPOSES the FRR and
+#           | nftables lines below for the consumer's own templates.
+# dedicated | the host does only this: the role also owns /etc/nftables.conf,
+#           | /etc/frr/{daemons,frr.conf}, forwarding sysctls, and announces the
+#           | live slot /32s to its uplinks over eBGP with BFD.
+wireguard_burst_mode: dedicated
+
+wireguard_burst_interface: wg0
+# The role writes the interface as systemd-networkd files
+# (/etc/systemd/network/50-<interface>.{netdev,network}). false = the consumer
+# renders the interface itself (e.g. netplan) with the same key file
+# (/etc/wireguard/<interface>.key) and peers; the role still owns the key,
+# the live peer sync, the outputs and the metrics.
+wireguard_burst_manage_interface: true
+wireguard_burst_port: 51820
+wireguard_burst_mtu: 1420
+# This host's own address on the tunnel, a /32 out of the slot block (no
+# prefix length). Required.
+wireguard_burst_address: ""
+# PersistentKeepalive towards every slot. Stays below the 60 s UDP conntrack
+# timeout of the far side's NAT/firewall.
+wireguard_burst_keepalive: 25
+
+# The fixed slot pool: one entry per burst node address. `pubkey` is the slot's
+# WireGuard PUBLIC key (the private half is handed to the VM that takes the
+# slot); `ip` is the node address, routed as a /32.
+#   - {name: burst01, ip: 10.0.32.11, pubkey: "<base64 public key>"}
+wireguard_burst_slots: []
+
+# Expected public key of THIS host's tunnel, keyed by inventory_hostname. The
+# burst nodes carry these literals (consumer-side config), so a regenerated key
+# (rebuilt host) must stop the play instead of silently breaking every tunnel.
+# A host without an entry is not checked (first deploy: run, read the printed
+# key, add it here and wherever the nodes take it from).
+wireguard_burst_gateway_pubkeys: {}
+# Where the burst nodes take the gateway public keys from, named in the assert
+# message so whoever rotates a key updates both sides in one change.
+wireguard_burst_pubkey_consumer_hint: "the burst node configuration"
+
+# BFD towards each slot: 300 ms x 3 = a dead tunnel is withdrawn in < 1 s.
+wireguard_burst_bfd_profile: burst
+wireguard_burst_bfd_interval_ms: 300
+wireguard_burst_bfd_multiplier: 3
+
+# node_exporter textfile collector: per-slot handshake age and byte counters,
+# refreshed by a systemd timer. Empty dir = no metrics.
+wireguard_burst_textfile_dir: /var/lib/node_exporter/textfile_collector
+wireguard_burst_metrics_interval: 30s
+
+# ── embedded mode ────────────────────────────────────────────────────────────
+# The other gateway of the pair, reached on the LAN. A slot whose own tunnel is
+# down falls back to it (distance below), and to a blackhole (250) when both
+# tunnels are down. Empty = no fallback, only the blackhole.
+wireguard_burst_neighbour_lan_ip: ""
+# MAC address of that neighbour's LAN interface. With both tunnels down each
+# gateway's fallback points at the other; the nftables snippet drops a slot
+# packet that came FROM the neighbour and would go back TO it, which is the
+# only shape that loop can take. Required with wireguard_burst_neighbour_lan_ip.
+wireguard_burst_neighbour_mac: ""
+wireguard_burst_lan_interface: eth0
+wireguard_burst_fallback_distance: 20
+
+# ── dedicated mode ───────────────────────────────────────────────────────────
+wireguard_burst_wan_interface: eth1
+# FRR from deb.frrouting.org (the Ubuntu archive build predates staticd BFD).
+wireguard_burst_frr_version: "10.7.0"
+wireguard_burst_bgp_asn: 65002
+wireguard_burst_bgp_router_id: ""
+# eBGP uplinks (the cluster's routers): they get the live slot /32s, we take
+# the cluster prefixes from them. All with BFD (profile below).
+#   - {address: 10.0.15.252, remote_asn: 65000}
+wireguard_burst_bgp_uplinks: []
+wireguard_burst_bgp_bfd_profile: uplink
+# Prefixes accepted from the uplinks, prefix-list syntax.
+wireguard_burst_bgp_accept: []
+# Static routes this host owns besides the slots, e.g. the LAN aggregate via
+# its gateway: {prefix: 10.0.0.0/16, nexthop: 10.0.15.254}. No blackhole floors
+# here on purpose: a blackhole fails the rp_filter check for a source behind
+# it, which drops the very BFD packets that bring a slot up. Fail-closed is the
+# forward chain instead (nothing is forwarded to or from the WAN interface).
+wireguard_burst_static_routes: []
+# Private ranges: never forwarded to or from the public interface, never
+# connection-tracked when both ends are private.
+wireguard_burst_private_ranges:
+  - 10.0.0.0/8
+  - 172.16.0.0/12
+  - 192.168.0.0/16
+
+# ── outputs (set by the role, read by embedded consumers) ───────────────────
+# After the role ran, these facts hold ready-to-render text (newline-separated):
+#   wireguard_burst_frr_static   static routes, top level of frr.conf
+#   wireguard_burst_frr_bfd      BFD profile, INSIDE the consumer's `bfd` node
+#   wireguard_burst_nft_input    lines for the `inet filter` input chain
+#   wireguard_burst_nft_forward  lines for the `inet filter` forward chain
+# Run the role BEFORE the consumer templates frr.conf / nftables.conf.

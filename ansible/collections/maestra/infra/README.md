@@ -15,6 +15,12 @@ a NAT gateway vs a VPN host — is a task-file contract each consumer repo imple
 Full contract and rationale:
 [docs/ansible-os-update.md](https://github.com/maestra-io/github-actions/blob/main/docs/ansible-os-update.md).
 
+## `wireguard_burst`
+
+WireGuard termination for Kubernetes burst nodes outside the private network,
+one BFD-tracked FRR static `/32` per slot, in `embedded` or `dedicated` mode.
+Inputs, outputs and design notes: [roles/wireguard_burst/README.md](roles/wireguard_burst/README.md).
+
 ## Install
 
 The repo is public, so no CI auth is involved:
