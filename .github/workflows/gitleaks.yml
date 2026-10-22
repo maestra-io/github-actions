@@ -7,8 +7,9 @@
 # SHA (`pinact run --check` on the PR diff only, so lines nobody touched never block a
 # merge). Write `uses: owner/repo@<40-hex sha> # vX.Y.Z` (`pinact run` does it); the org
 # requires SHA-pinned actions (sha_pinning_required, maestra-io/issues-maestra#1649).
-# maestra-io reusable workflows (`.../.github/workflows/x.yml@ref`) are exempt, as in
-# GitHub's policy. It rides on this workflow because every repo already calls it.
+# Reusable workflows (`.../.github/workflows/x.yml@ref`) are exempt, as in GitHub's
+# policy (slsa-github-generator even requires its tag). It rides on this workflow
+# because every repo already calls it.
 #
 # What is scanned: gitleaks-action lists the PR's commits through the API and runs
 # `gitleaks detect --log-opts="--no-merges --first-parent <first>^..<last>"`, so only
@@ -130,7 +131,7 @@ jobs:
           rules:
             - ignore: true
               conditions:
-                - expr: lower(ActionRepoOwner) == "maestra-io" && ActionName contains "/.github/workflows/"
+                - expr: ActionName contains "/.github/workflows/"
           YAML
           git diff HEAD^1 HEAD > "$RUNNER_TEMP/pr.diff"
           # --no-api: a syntactic check (40-hex SHA plus a version comment), no token needed.
