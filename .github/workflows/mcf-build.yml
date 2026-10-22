@@ -623,8 +623,10 @@ jobs:
           PR: ${{ github.event_name == 'pull_request' }}
         run: |
           logs="$RUNNER_TEMP/checks"; mkdir -p "$logs"
+          # >>> checks-start
           names=(); advisory=" unused-code localization-keys "
           start() { local n=$1; shift; names+=("$n"); ( rc=0; "$@" > "$logs/$n.log" 2>&1 || rc=$?; echo "$rc" > "$logs/$n.rc" ) & }
+          # <<< checks-start
           has() { jq -e --arg s "$1" '.scripts[$s]' package.json > /dev/null; }
           has check-types && start types npm run check-types
           has check-scripts && start lint npm run check-scripts
@@ -647,6 +649,7 @@ jobs:
             # <<< localization-keys
             [ -f "$i18n/deadLocalizationKeys.js" ] && start localization-keys l10n
           fi
+          # >>> checks-verdict
           wait
           printf '### checks\n\n| check | result |\n|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
           failed=""
@@ -660,6 +663,7 @@ jobs:
           done
           cat "$logs"/unused-keys.md "$logs"/missing-keys.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
           [ -z "$failed" ] || { echo "::error::checks failed:$failed"; exit 1; }
+          # <<< checks-verdict
 
   test:
     needs: codegen
