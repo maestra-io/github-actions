@@ -316,7 +316,7 @@ jobs:
       - name: upload test results
         if: ${{ always() && inputs.run-tests }}
         continue-on-error: true # telemetry never fails the build
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-results-${{ github.job }}-${{ github.run_attempt }}-${{ steps.test-results-id.outputs.id }}
           path: ${{ runner.temp }}/test-results
@@ -328,7 +328,7 @@ jobs:
       - name: ingest test results
         if: ${{ always() && inputs.run-tests }}
         continue-on-error: true
-        uses: maestra-io/github-actions/test-results-ingest@4810e33793d010b8ff485d52a0798d48fc7df5a6 # v1.46.1
+        uses: maestra-io/github-actions/test-results-ingest@2450cdaaf4688887cb65579fc45ab5304cb81967 # v1.46.2
 
       # Never leave the temporary pin behind (nothing here commits, but the
       # workspace is the caller's checkout).

@@ -113,7 +113,7 @@ jobs:
       - name: ecr login
         id: ecr
         if: ${{ steps.exists.outputs.found != 'true' }}
-        uses: maestra-io/github-actions/push-to-aws-ecr-repository@4810e33793d010b8ff485d52a0798d48fc7df5a6 # v1.46.1
+        uses: maestra-io/github-actions/push-to-aws-ecr-repository@2450cdaaf4688887cb65579fc45ab5304cb81967 # v1.46.2
         with:
           awsRegion: us-west-2
           repositories: ${{ matrix.repository }}
