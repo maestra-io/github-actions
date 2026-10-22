@@ -2,13 +2,12 @@
 # Per-slot handshake time and byte counters as node_exporter textfile metrics,
 # refreshed every wireguard_burst_metrics_interval. Slots are labelled by name;
 # public keys never appear in the output.
-- name: Create the textfile collector directory
+# Only make sure it exists: the directory usually belongs to node_exporter's
+# own install (owner, mode), and pinning them here would flip it every run.
+- name: Create the textfile collector directory if missing
   ansible.builtin.file:
     path: "{{ wireguard_burst_textfile_dir }}"
-    state: directory
-    owner: root
-    group: root
-    mode: "0755"
+    state: directory  # noqa: risky-file-permissions
 
 - name: Install the metrics collector
   ansible.builtin.template:

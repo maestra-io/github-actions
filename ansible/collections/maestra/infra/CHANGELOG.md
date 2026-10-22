@@ -7,6 +7,15 @@ finding, and because the `os_update` contract is shared across four repos:
 anything that changes a variable name or a hook expectation has to be findable
 from one place.
 
+## 1.3.1
+
+- `wireguard_burst`: a fresh host passes `--check`. The FRR install and
+  config are skipped in check mode while the FRR apt repository is still only
+  "would add" (apt had no `frr=<version>` candidate, user `frr` and `/etc/frr`
+  did not exist); the textfile directory is only created if missing, so it no
+  longer fights node_exporter's own owner/mode on every run.
+- No consumer change.
+
 ## 1.3.0
 
 - New role `wireguard_burst` ([issues-maestra#1444](https://github.com/maestra-io/issues-maestra/issues/1444)):

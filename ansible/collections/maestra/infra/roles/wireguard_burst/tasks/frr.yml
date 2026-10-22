@@ -17,46 +17,54 @@
     filename: frr
     state: present
     update_cache: true
+  register: wireguard_burst_frr_repo
 
-- name: Install the FRR packages
-  ansible.builtin.apt:
-    name:
-      - "frr={{ wireguard_burst_frr_version }}-*"
-      - "frr-pythontools={{ wireguard_burst_frr_version }}-*"
-    state: present
-    cache_valid_time: 3600
+# Check mode on a fresh host: the repository above is only reported, not
+# added, so apt has no candidate for frr=<version> and user frr / /etc/frr do
+# not exist for the files below. Skip the rest there (it is all "would
+# install / would write"); a real run, or check mode on a converged host, runs it.
+- name: FRR packages and configuration
+  when: not (ansible_check_mode and wireguard_burst_frr_repo is changed)
+  block:
+    - name: Install the FRR packages
+      ansible.builtin.apt:
+        name:
+          - "frr={{ wireguard_burst_frr_version }}-*"
+          - "frr-pythontools={{ wireguard_burst_frr_version }}-*"
+        state: present
+        cache_valid_time: 3600
 
-# The package starts FRR with its stock daemons file (bgpd=no, bfdd=no), and a
-# reload never starts a daemon that was off: restart right here, before the
-# config below is validated against running daemons.
-- name: Render /etc/frr/daemons
-  ansible.builtin.template:
-    src: frr-daemons.j2
-    dest: /etc/frr/daemons
-    owner: frr
-    group: frr
-    mode: "0640"
-  register: wireguard_burst_frr_daemons
+    # The package starts FRR with its stock daemons file (bgpd=no, bfdd=no), and a
+    # reload never starts a daemon that was off: restart right here, before the
+    # config below is validated against running daemons.
+    - name: Render /etc/frr/daemons
+      ansible.builtin.template:
+        src: frr-daemons.j2
+        dest: /etc/frr/daemons
+        owner: frr
+        group: frr
+        mode: "0640"
+      register: wireguard_burst_frr_daemons
 
-- name: Restart FRR with the daemons this host needs
-  ansible.builtin.systemd:
-    name: frr
-    state: restarted
-  when: wireguard_burst_frr_daemons is changed and not ansible_check_mode
+    - name: Restart FRR with the daemons this host needs
+      ansible.builtin.systemd:
+        name: frr
+        state: restarted
+      when: wireguard_burst_frr_daemons is changed and not ansible_check_mode
 
-- name: Render /etc/frr/frr.conf
-  ansible.builtin.template:
-    src: frr.conf.j2
-    dest: /etc/frr/frr.conf
-    owner: frr
-    group: frr
-    mode: "0640"
-    validate: vtysh -f %s --dryrun
-  notify: Reload frr (wireguard_burst)
+    - name: Render /etc/frr/frr.conf
+      ansible.builtin.template:
+        src: frr.conf.j2
+        dest: /etc/frr/frr.conf
+        owner: frr
+        group: frr
+        mode: "0640"
+        validate: vtysh -f %s --dryrun
+      notify: Reload frr (wireguard_burst)
 
-- name: Enable FRR
-  ansible.builtin.systemd:
-    name: frr
-    enabled: true
-    state: started
-  when: not ansible_check_mode
+    - name: Enable FRR
+      ansible.builtin.systemd:
+        name: frr
+        enabled: true
+        state: started
+      when: not ansible_check_mode
