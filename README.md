@@ -375,6 +375,35 @@ Vault app join for PR hot-test stands) and `maestra-io/dockerfiles` `.github/wor
 
 Tested by [`scripts/test-tbot-join.sh`](scripts/test-tbot-join.sh) (stub `tbot`, run by `selftest`).
 
+## Terraform providers through nora (`terraform-nora`)
+
+Every `registry.terraform.io` provider installs from `https://packages.maestra.io/terraform/`
+(nora's network mirror: quarantine, versions younger than 3 days hidden), not from the public
+registry or a third-party mirror (issues-maestra#1649). Providers from other hosts
+(`terraform.releases.teleport.dev`, ...) still install directly. Add it right after
+`hashicorp/setup-terraform`; the job needs `id-token: write`:
+
+```yaml
+permissions:
+  id-token: write
+steps:
+  - uses: hashicorp/setup-terraform@<sha> # v4.0.1
+  - uses: maestra-io/github-actions/terraform-nora@<40-hex sha> # vX.Y.Z
+  - run: terraform init
+```
+
+It writes a CLI config to `$RUNNER_TEMP/terraform-nora/terraform.tfrc`, exports
+`TF_CLI_CONFIG_FILE` (keeping the credentials setup-terraform put in `~/.terraformrc`) and installs
+a credentials helper (`~/.terraform.d/plugins/terraform-credentials-nora`) that mints a fresh GitHub
+OIDC token (`aud` `packages.maestra.io`) each time Terraform asks, so a second `terraform init`
+later in the job does not hit an expired token. A private provider from a local directory:
+`fs-mirror-path` + `fs-mirror-include` (e.g. `registry.terraform.io/mindbox-private/*`).
+
+A version younger than 3 days is hidden from nora's version lists, so `terraform init` without a
+lock picks the newest older one; a `.terraform.lock.hcl` that pins a younger version fails until it
+matures (`host packages.maestra.io rejected the given authentication credentials` is that 403).
+Test: `scripts/test-terraform-nora.sh` (selftest).
+
 ## Gitleaks on pull requests (`gitleaks.yml`)
 
 The reusable workflow [`gitleaks.yml`](.github/workflows/gitleaks.yml) runs the official

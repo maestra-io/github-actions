@@ -29,6 +29,7 @@ on:
       - "scripts/**"
       - "push-helm-chart-to-aws-ecr/**"
       - "tbot-join/**"
+      - "terraform-nora/**"
       - ".github/workflows/pr-checks.yml"
       - "pr-checks/**"
       - ".github/workflows/gitleaks.yml"
@@ -72,6 +73,9 @@ jobs:
 
       - name: tbot-join retries (stub tbot; real 5 s / 15 s backoff, ~70 s)
         run: bash scripts/test-tbot-join.sh
+
+      - name: terraform-nora CLI config and credentials helper (stub curl)
+        run: bash scripts/test-terraform-nora.sh
 
       - name: nuget build SDK pin (highest TFM, global.json kept/restored, workflow copy)
         run: bash scripts/test-nuget-sdk-pin.sh
