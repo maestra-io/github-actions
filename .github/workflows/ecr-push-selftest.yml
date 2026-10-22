@@ -25,7 +25,7 @@ jobs:
       id-token: write # Teleport join
     env:
       REPOSITORY: selftest-ecr-push
-      TAG: ${{ github.run_number }}
+      TAG: ${{ github.run_number }}-${{ github.run_attempt }} # a re-run keeps run_number, the tag-absent case needs a fresh tag
     steps:
       - uses: runs-on/action@v2.5.0
       - uses: actions/checkout@v7.0.1
@@ -123,7 +123,9 @@ jobs:
         run: |
           [ "$DIGEST" != "${{ steps.build.outputs.digest }}" ] || { echo "::error::a and b built to the same digest"; exit 1; }
           : > "$RUNNER_TEMP/out"
-          if GITHUB_OUTPUT="$RUNNER_TEMP/out" bash -eo pipefail "$RUNNER_TEMP/check.sh"; then echo "::error::check accepted another digest for an existing tag"; exit 1; fi
+          if GITHUB_OUTPUT="$RUNNER_TEMP/out" bash -eo pipefail "$RUNNER_TEMP/check.sh" > "$RUNNER_TEMP/check.log" 2>&1; then echo "::error::check accepted another digest for an existing tag"; exit 1; fi
+          # the digest guard, not an ECR read error, must be what failed
+          grep -q 'already exists in ECR' "$RUNNER_TEMP/check.log" || { echo "::error::check failed for another reason:"; cat "$RUNNER_TEMP/check.log"; exit 1; }
       - name: push b as ${{ env.TAG }}-b (only the variant layer is new)
         id: push-b
         uses: docker/build-push-action@v7.4.0

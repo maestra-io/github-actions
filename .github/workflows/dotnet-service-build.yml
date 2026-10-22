@@ -1251,8 +1251,9 @@ jobs:
           target: ${{ matrix.target }}
           build-contexts: ${{ steps.base.outputs.context }}
           builder: ${{ steps.runs-on.outputs.buildkit-builder }}
-          no-cache: ${{ steps.cache.outputs.nocache == 'true' }}
-          no-cache-filters: ${{ steps.cache.outputs.nocachefilter }}
+          # no no-cache / no-cache-filters here: the first build refreshed the token
+          # stages or the NuGet mount; this one must hit its cache so the digest is
+          # the one `already in ECR?` checked (CodeRabbit on #192).
           provenance: false
           push: true
           tags: ${{ steps.ecr.outputs.registry }}/${{ matrix.image }}:${{ needs.version.outputs.release }}
