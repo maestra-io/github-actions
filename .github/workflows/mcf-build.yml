@@ -20,12 +20,13 @@
 #   jobs:
 #     build:
 #       uses: maestra-io/github-actions/.github/workflows/mcf-build.yml@main
-#       permissions: { contents: write, id-token: write, pull-requests: read }
+#       permissions: { contents: write, id-token: write, pull-requests: write }
 #       with:
 #         push: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
 #
-#   pull-requests: read is for the hotfix label; the hot-test stand link reaches the PR
-#   as a deployment of environment hot-test.
+#   pull-requests: write is for the coverage comment of `test` (and the hotfix label lookup);
+#   GitHub checks it on every event, so release.yml grants it too. The hot-test stand link
+#   reaches the PR as a deployment of environment hot-test.
 #
 # Inputs:
 #   node-version        Exact Node.js version (default 24.19.0, as mcf@3).
@@ -88,7 +89,8 @@
 #             which never fail the job (mcf@3 allow_failure).
 #   test      vitest with coverage, fails under min-lines-coverage. JUnit comes from the
 #             shared vitest preset (reports/ in CI) -> artifact, test-results-ingest; a
-#             repo on an older preset or with its own `reporters` sends nothing.
+#             repo on an older preset or with its own `reporters` sends nothing. On
+#             pull_request one PR comment, updated in place, has the coverage and the floor.
 #   build     package.json version = release, LAST_HOTFIX from hotfix/* tags (the MF
 #             plugin bakes both into the bundle), `npm run build`.
 #   image     rclone + build/<static-prefix> without source maps -> ECR <image>:<release>,
@@ -650,6 +652,7 @@ jobs:
     permissions:
       contents: read
       id-token: write # test-results-ingest
+      pull-requests: write # coverage comment
     steps:
       - uses: runs-on/action@v2.5.0
       - uses: actions/checkout@v7.0.1
@@ -688,6 +691,38 @@ jobs:
           if awk "BEGIN { exit !($lines < $MIN_LINES_COVERAGE) }"; then
             echo "::error::lines coverage ${lines}% is below ${MIN_LINES_COVERAGE}%"; exit 1
           fi
+      - name: coverage comment
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        continue-on-error: true
+        uses: actions/github-script@v9.0.0
+        env:
+          MIN_LINES_COVERAGE: ${{ inputs.min-lines-coverage }}
+        with:
+          script: |
+            const fs = require('fs');
+            const MARKER = '<!-- mcf-build-coverage -->';
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const floor = Number(process.env.MIN_LINES_COVERAGE);
+            let body;
+            try {
+              const total = JSON.parse(fs.readFileSync('coverage/coverage-summary.json', 'utf8')).total;
+              const rows = ['lines', 'statements', 'functions', 'branches']
+                .map(k => `| ${k} | ${total[k].pct}% | ${total[k].covered}/${total[k].total} |`);
+              const verdict = total.lines.pct >= floor ? ':white_check_mark:' : ':x: below';
+              body = [MARKER, '**Coverage summary**', '', '| | % | covered |', '|---|---|---|', ...rows, '',
+                `${verdict} lines floor ${floor}% (\`min-lines-coverage\`). [The run](${run}).`];
+            } catch {
+              body = [MARKER, '**Coverage report** :x:', '', `Coverage not found in [the run](${run}): vitest failed before writing it.`];
+            }
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const existing = comments.find(c => c.body && c.body.includes(MARKER));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body: body.join('\n') });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body: body.join('\n') });
+            }
       - if: ${{ always() }}
         uses: actions/upload-artifact@v7.0.1
         with:
