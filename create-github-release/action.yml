@@ -1,0 +1,73 @@
+# Vendored from mindbox-cloud/github-actions/create-github-release@658e582 so every
+# inner action is SHA-pinned: the org SHA-pinning policy checks nested `uses:` too.
+name: 'Create Release'
+description: 'Create a GitHub release with a generated release number and changelog'
+inputs:
+  release-number:
+    description: 'Release number'
+    required: true
+    default: 'empty'
+  prerelease:
+    description: 'If prerelease - true, else false'
+    required: false
+    default: false
+  checkout:
+    description: 'If it need to checkout master'
+    required: false
+    default: 'true'
+outputs:
+  release-number:
+    description: "Release number"
+    value: ${{ inputs.release-number != 'empty' && inputs.release-number || steps.release-number.outputs.release-number }}
+  release-notes-body:
+    description: "Body for Release Notes"
+    value: '[View release in GitHub](${{ steps.create_release.outputs.html_url }}) <br /> ${{ steps.clean-changelog.outputs.changelog }} <br/><br/>${{ steps.first-built-on.outputs.first-built-on }}'
+  release-url:
+    description: "GitHub Release URL"
+    value: ${{ steps.create_release.outputs.html_url }}
+runs:
+  using: "composite"
+  steps:
+    - name: "Checkout"
+      if: ${{ inputs.checkout == 'true' }}
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: generate release number
+      if: ${{ inputs.release-number == 'empty' }}
+      id: release-number
+      uses: mindbox-cloud/gha-release-number@2e59ef5cea3cfc6df48854ec5718bfb520aa1337 # master
+      with:
+        token: ${{ github.token }}
+
+    - name: Changelog
+      uses: mindbox-cloud/github-actions/generate-release-changelog@658e5820721d2df8a446dc3e923411f83abb4746 # master
+      id: changelog
+      env:
+        REPO: ${{ github.repository }}
+
+    - name: clean changelog from quotes
+      id: clean-changelog
+      shell: bash
+      env:
+        CHANGELOG: ${{ steps.changelog.outputs.changelog }}
+      run: |
+        echo "changelog=$(printf '%s' "$CHANGELOG" | sed "s/\"//g; s/'//g")" >> "$GITHUB_OUTPUT"
+
+    - name: generate first built on
+      id: first-built-on
+      shell: bash
+      run: |
+        echo "first-built-on=<p>First built on $(date '+%Y-%m-%d %H:%M:%S') </p>" >> "$GITHUB_OUTPUT"
+
+    - name: "Create GitHub Release"
+      id: create_release
+      uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v0.1.15
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      with:
+        tag_name: "${{ inputs.release-number != 'empty' && inputs.release-number || steps.release-number.outputs.release-number }}"
+        name: "Release ${{ inputs.release-number != 'empty' && inputs.release-number || steps.release-number.outputs.release-number }}"
+        body: |
+          ${{ steps.clean-changelog.outputs.changelog }}
+        draft: false
+        prerelease: ${{ inputs.prerelease }}
