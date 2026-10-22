@@ -110,23 +110,28 @@ jobs:
           chmod 0755 "$ctx/$ASSET"
           cp "$DOCKERFILE" "$ctx/Dockerfile"
 
-      - name: build
+      - name: ecr login
+        id: ecr
         if: ${{ steps.exists.outputs.found != 'true' }}
-        env:
-          REPOSITORY: ${{ matrix.repository }}
-          TAG: ${{ matrix.tag }}
-        run: |
-          docker build --pull -t "local/${REPOSITORY}:${TAG}" \
-            --label org.opencontainers.image.source="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
-            --label org.opencontainers.image.revision="${GITHUB_SHA}" \
-            "$RUNNER_TEMP/ctx"
-
-      - name: push ${{ matrix.repository }}:${{ matrix.tag }}
-        if: ${{ steps.exists.outputs.found != 'true' }}
-        uses: maestra-io/github-actions/push-to-aws-ecr-repository@v1.5.3
+        uses: maestra-io/github-actions/push-to-aws-ecr-repository@v1
         with:
           awsRegion: us-west-2
           repositories: ${{ matrix.repository }}
-          localTag: ${{ matrix.tag }}
           targetTag: ${{ matrix.tag }}
           teleportToken: image-push-github-actions-maestra-io
+          push: false
+
+      - if: ${{ steps.exists.outputs.found != 'true' }}
+        uses: docker/setup-buildx-action@v4.4.1
+      - name: build and push ${{ matrix.repository }}:${{ matrix.tag }}
+        if: ${{ steps.exists.outputs.found != 'true' }}
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: ${{ runner.temp }}/ctx
+          pull: true
+          provenance: false
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ matrix.repository }}:${{ matrix.tag }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}

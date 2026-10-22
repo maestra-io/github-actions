@@ -1,0 +1,166 @@
+---
+# End-to-end check of the BuildKit push path (README "Push from BuildKit") against
+# the real ECR: build -> push-to-aws-ecr-repository push:false -> ecr-push-check ->
+# docker/build-push-action push:true, then the idempotent re-run (same digest:
+# skip), the immutable-tag guard (other digest: fail) and the legacy docker-push
+# path of the action (push:true, localTag). Writes tags <run_number>* into the
+# selftest-ecr-push repository: on pull requests that touch the push path (a
+# workflow_dispatch needs the file on the default branch first). Joins with the
+# action's default token image-push-github-actions-github-actions (per-repo, any
+# ref; the org-wide token takes main/master only, fluxcd#25580).
+name: ecr-push-selftest
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/ecr-push-selftest.yml"
+      - ".github/workflows/service-build.yml"
+      - "push-to-aws-ecr-repository/**"
+jobs:
+  push:
+    runs-on: runs-on=${{ github.run_id }}-ecr-push/pool=build
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write # Teleport join
+    env:
+      REPOSITORY: selftest-ecr-push
+      TAG: ${{ github.run_number }}-${{ github.run_attempt }} # a re-run keeps run_number, the tag-absent case needs a fresh tag
+    steps:
+      - uses: runs-on/action@v2.5.0
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v4.4.1
+      - name: contexts
+        run: |
+          for v in a b; do
+            d="$RUNNER_TEMP/ctx-$v"; mkdir -p "$d"
+            printf 'FROM docker.io/library/busybox:1.37\nRUN echo shared > /shared\nRUN echo %s > /variant\n' "$v" > "$d/Dockerfile"
+          done
+          echo "value=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
+        id: epoch
+      - name: build a
+        id: build
+        uses: docker/build-push-action@v7.4.0
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.value }}
+        with:
+          context: ${{ runner.temp }}/ctx-a
+          provenance: false
+          outputs: type=image,push=false
+          tags: local/${{ env.REPOSITORY }}:${{ env.TAG }}
+      - name: ecr login
+        id: ecr
+        uses: ./push-to-aws-ecr-repository
+        with:
+          awsRegion: us-west-2
+          repositories: ${{ env.REPOSITORY }}
+          targetTag: ${{ env.TAG }}
+          push: false
+      - name: check block
+        id: block
+        run: |
+          # the same block service-build.yml and dotnet-service-build.yml run (scripts/test-ecr-push-check.sh)
+          sed -n '/# >>> ecr-push-check/,/# <<< ecr-push-check/p' .github/workflows/service-build.yml | sed 's/^          //' > "$RUNNER_TEMP/check.sh"
+          test -s "$RUNNER_TEMP/check.sh"
+      - name: a already in ECR? (expect push)
+        id: existing
+        env:
+          IMAGE: ${{ env.REPOSITORY }}
+          RELEASE: ${{ env.TAG }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          AWS_REGION: us-west-2
+        run: |
+          bash -eo pipefail "$RUNNER_TEMP/check.sh"
+          grep -q '^skip=false$' "$GITHUB_OUTPUT"
+      - name: push a
+        id: push
+        if: ${{ steps.existing.outputs.skip != 'true' }}
+        uses: docker/build-push-action@v7.4.0
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.value }}
+        with:
+          context: ${{ runner.temp }}/ctx-a
+          provenance: false
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.REPOSITORY }}:${{ env.TAG }}
+      - name: pushed digest = built digest, tag stored in ECR
+        env:
+          BUILT: ${{ steps.build.outputs.digest }}
+          PUSHED: ${{ steps.push.outputs.digest }}
+          AWS_REGION: us-west-2
+        run: |
+          [ "$BUILT" = "$PUSHED" ] || { echo "::error::build digest $BUILT != pushed digest $PUSHED (SOURCE_DATE_EPOCH not honoured?)"; exit 1; }
+          stored=$(aws ecr describe-images --repository-name "$REPOSITORY" --image-ids imageTag="$TAG" --query 'imageDetails[0].imageDigest' --output text)
+          [ "$stored" = "$BUILT" ] || { echo "::error::ECR stores $stored for $REPOSITORY:$TAG, built $BUILT"; exit 1; }
+          echo "$REPOSITORY:$TAG @ $stored"
+      - name: re-run of a (expect skip)
+        env:
+          IMAGE: ${{ env.REPOSITORY }}
+          RELEASE: ${{ env.TAG }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          AWS_REGION: us-west-2
+        run: |
+          : > "$RUNNER_TEMP/out"; GITHUB_OUTPUT="$RUNNER_TEMP/out" bash -eo pipefail "$RUNNER_TEMP/check.sh"
+          grep -q '^skip=true$' "$RUNNER_TEMP/out"
+      - name: build b
+        id: build-b
+        uses: docker/build-push-action@v7.4.0
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.value }}
+        with:
+          context: ${{ runner.temp }}/ctx-b
+          provenance: false
+          outputs: type=image,push=false
+          tags: local/${{ env.REPOSITORY }}:${{ env.TAG }}-b
+      - name: b against the tag of a (expect fail, immutable tag)
+        env:
+          IMAGE: ${{ env.REPOSITORY }}
+          RELEASE: ${{ env.TAG }}
+          DIGEST: ${{ steps.build-b.outputs.digest }}
+          AWS_REGION: us-west-2
+        run: |
+          [ "$DIGEST" != "${{ steps.build.outputs.digest }}" ] || { echo "::error::a and b built to the same digest"; exit 1; }
+          : > "$RUNNER_TEMP/out"
+          if GITHUB_OUTPUT="$RUNNER_TEMP/out" bash -eo pipefail "$RUNNER_TEMP/check.sh" > "$RUNNER_TEMP/check.log" 2>&1; then echo "::error::check accepted another digest for an existing tag"; exit 1; fi
+          # the digest guard, not an ECR read error, must be what failed
+          grep -q 'already exists in ECR' "$RUNNER_TEMP/check.log" || { echo "::error::check failed for another reason:"; cat "$RUNNER_TEMP/check.log"; exit 1; }
+      - name: push b as ${{ env.TAG }}-b (only the variant layer is new)
+        id: push-b
+        uses: docker/build-push-action@v7.4.0
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.value }}
+        with:
+          context: ${{ runner.temp }}/ctx-b
+          provenance: false
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.REPOSITORY }}:${{ env.TAG }}-b
+      - name: a and b share every layer but the last
+        env:
+          AWS_REGION: us-west-2
+        run: |
+          layers() { aws ecr batch-get-image --repository-name "$REPOSITORY" --image-ids imageTag="$1" --accepted-media-types application/vnd.oci.image.manifest.v1+json application/vnd.docker.distribution.manifest.v2+json --query 'images[0].imageManifest' --output text | jq -r '.layers[].digest'; }
+          a=$(layers "$TAG"); b=$(layers "$TAG-b")
+          shared=$(comm -12 <(sort <<<"$a") <(sort <<<"$b") | wc -l); na=$(wc -l <<<"$a")
+          echo "a: $na layers, shared with b: $shared"
+          [ "$shared" -eq $((na-1)) ] || { echo "::error::expected all but one layer shared"; exit 1; }
+      # Legacy path of the action: a daemon image + docker push (callers on @v1 with localTag).
+      - name: build legacy (daemon)
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: ${{ runner.temp }}/ctx-a
+          provenance: false
+          load: true
+          tags: local/${{ env.REPOSITORY }}:${{ env.TAG }}-legacy
+      - name: push legacy (docker push)
+        uses: ./push-to-aws-ecr-repository
+        with:
+          awsRegion: us-west-2
+          repositories: ${{ env.REPOSITORY }}
+          localTag: ${{ env.TAG }}-legacy
+          targetTag: ${{ env.TAG }}-legacy
+      - name: legacy tag stored
+        env:
+          AWS_REGION: us-west-2
+        run: aws ecr describe-images --repository-name "$REPOSITORY" --image-ids imageTag="$TAG-legacy" --query 'imageDetails[0].imageDigest' --output text

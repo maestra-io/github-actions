@@ -1161,12 +1161,25 @@ jobs:
             NUGET_CREDENTIALS=${{ runner.temp }}/packages-token/NUGET_CREDENTIALS
           cache-from: ${{ steps.cache-base.outputs.from }}
 
-      # Built into the local daemon as local/<image>:<release>, then pushed by the
-      # shared push-to-aws-ecr-repository action: it creates the repository
-      # IMMUTABLE_WITH_EXCLUSION with the org pull policy and logs in through the
-      # Teleport image-push bot (no static AWS keys).
+      # Built once into the BuildKit builder (type=image, no daemon load), then the
+      # shared push-to-aws-ecr-repository action logs in through the Teleport
+      # image-push bot and creates the repository (IMMUTABLE_WITH_EXCLUSION, org
+      # pull policy), and a second, fully cached build pushes from BuildKit: it
+      # uploads only the layers ECR is missing. The old `load: true` + `docker push`
+      # re-uploaded every layer from the runner's fresh daemon (service-build.yml,
+      # data-mesh-algs-413 on 22.10.2026: 2.3 GB a release for 3 MB of change).
+      # SOURCE_DATE_EPOCH pins the image timestamps to the commit, so the same
+      # commit rebuilds to the same manifest digest: a re-run of a failed job finds
+      # its own image under the immutable tag and skips the push (the diff_ids
+      # comparison against a daemon-loaded image this replaces needed the load).
+      - name: source date epoch
+        id: epoch
+        run: echo "value=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
       - name: build ${{ matrix.image }} (${{ matrix.target }})
+        id: build
         uses: docker/build-push-action@v7.4.0
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.value }}
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
@@ -1175,8 +1188,8 @@ jobs:
           builder: ${{ steps.runs-on.outputs.buildkit-builder }}
           no-cache: ${{ steps.cache.outputs.nocache == 'true' }}
           no-cache-filters: ${{ steps.cache.outputs.nocachefilter }}
-          load: true
-          push: false
+          provenance: false
+          outputs: type=image,push=false
           tags: local/${{ matrix.image }}:${{ needs.version.outputs.release }}
           build-args: |
             revision=${{ needs.version.outputs.release }} (${{ github.sha }})
@@ -1190,62 +1203,71 @@ jobs:
             NUGET_CREDENTIALS=${{ runner.temp }}/packages-token/NUGET_CREDENTIALS
           cache-from: ${{ steps.cache.outputs.from }}
           cache-to: ${{ steps.cache.outputs.to }}
-
-      # Idempotent re-run: the tag may already be in ECR (immutable) from an
-      # earlier attempt of this run. Same layers (rootfs diff_ids of the ECR
-      # image config = those of the image just built, i.e. a cache-hit rebuild
-      # of the same commit) = that attempt pushed this image: skip the push.
-      # Anything else would end in ECR TAG_INVALID: fail and say what to do.
-      # Layers, not the image id: with the containerd image store `.Id` is a
-      # manifest digest, and the config's `created` may differ between attempts.
+      - name: ecr login
+        id: ecr
+        if: ${{ needs.version.outputs.publish == 'true' }}
+        uses: maestra-io/github-actions/push-to-aws-ecr-repository@v1
+        with:
+          awsRegion: us-west-2
+          repositories: ${{ matrix.image }}
+          targetTag: ${{ needs.version.outputs.release }}
+          teleportToken: ${{ needs.version.outputs.teleport-token }}
+          push: false
       - name: ${{ matrix.image }}:${{ needs.version.outputs.release }} already in ECR?
         id: existing
         if: ${{ needs.version.outputs.publish == 'true' }}
         env:
           IMAGE: ${{ matrix.image }}
           RELEASE: ${{ needs.version.outputs.release }}
-          # Instance-role credentials come from IMDS; the CLI default (1 s, one
-          # attempt) answered NoCredentials after a long build on a busy t3a.
-          AWS_METADATA_SERVICE_TIMEOUT: "5"
-          AWS_METADATA_SERVICE_NUM_ATTEMPTS: "5"
+          DIGEST: ${{ steps.build.outputs.digest }}
+          AWS_REGION: us-west-2
         run: |
-          region="$(cut -d. -f4 <<< "$ECR_REGISTRY")"
-          if ! out=$(aws ecr batch-get-image --region "$region" --repository-name "$IMAGE" \
-                --image-ids imageTag="$RELEASE" \
-                --accepted-media-types application/vnd.docker.distribution.manifest.v2+json application/vnd.oci.image.manifest.v1+json \
-                --output json 2>&1); then
-            if grep -q RepositoryNotFoundException <<<"$out"; then echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          # >>> ecr-push-check (scripts/test-ecr-push-check.sh runs this block)
+          # Idempotent re-run: the immutable tag may already hold this run's image from an
+          # earlier attempt. Same digest (SOURCE_DATE_EPOCH makes the rebuild reproducible)
+          # = pushed already: skip. Another digest would end in ECR TAG_INVALID: fail and say what to do.
+          [ -n "$DIGEST" ] || { echo "::error::no image digest from the build step"; exit 1; }
+          if ! out=$(aws ecr describe-images --repository-name "$IMAGE" --image-ids imageTag="$RELEASE" --output json 2>&1); then
+            if grep -qE 'ImageNotFoundException|RepositoryNotFoundException' <<<"$out"; then echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0; fi
             echo "::error::cannot read ${IMAGE}:${RELEASE} from ECR: $out"; exit 1
           fi
-          if [ "$(jq '.images | length' <<<"$out")" -eq 0 ]; then
-            echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          digest=$(jq -r '.images[0].imageId.imageDigest' <<<"$out")
-          config=$(jq -r '.images[0].imageManifest | fromjson | .config.digest // empty' <<<"$out")
-          remote=""
-          if [ -n "$config" ]; then
-            url=$(aws ecr get-download-url-for-layer --region "$region" --repository-name "$IMAGE" \
-              --layer-digest "$config" --query downloadUrl --output text)
-            remote=$(curl -sfL --retry 3 "$url" | jq -c '.rootfs.diff_ids') || remote=""
-          fi
-          local=$(docker image inspect --format '{{json .RootFS.Layers}}' "local/${IMAGE}:${RELEASE}" | jq -c .)
-          if [ -n "$remote" ] && [ "$remote" = "$local" ]; then
-            echo "${IMAGE}:${RELEASE} is already in ECR (${digest}) with the layers just built: push skipped"
+          existing=$(jq -r '.imageDetails[0].imageDigest // empty' <<<"$out")
+          if [ "$existing" = "$DIGEST" ]; then
+            echo "${IMAGE}:${RELEASE} is already in ECR (${DIGEST}): push skipped"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::error::${IMAGE}:${RELEASE} already exists in ECR (${digest}) with other layers than the image built now; tags are immutable. Dispatch the release workflow again: it takes the next release number."
+            echo "::error::${IMAGE}:${RELEASE} already exists in ECR (${existing:-<none>}) and is not the image built now (${DIGEST}); tags are immutable. Dispatch the release workflow again: it takes the next release number."
             exit 1
           fi
-
+          # <<< ecr-push-check
       - name: push ${{ matrix.image }}:${{ needs.version.outputs.release }}
         if: ${{ needs.version.outputs.publish == 'true' && steps.existing.outputs.skip != 'true' }}
-        uses: maestra-io/github-actions/push-to-aws-ecr-repository@v1
+        uses: docker/build-push-action@v7.4.0
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.value }}
         with:
-          awsRegion: us-west-2
-          repositories: ${{ matrix.image }}
-          localTag: ${{ needs.version.outputs.release }}
-          targetTag: ${{ needs.version.outputs.release }}
-          teleportToken: ${{ needs.version.outputs.teleport-token }}
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
+          build-contexts: ${{ steps.base.outputs.context }}
+          builder: ${{ steps.runs-on.outputs.buildkit-builder }}
+          # no no-cache / no-cache-filters here: the first build refreshed the token
+          # stages or the NuGet mount; this one must hit its cache so the digest is
+          # the one `already in ECR?` checked (CodeRabbit on #192).
+          provenance: false
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ matrix.image }}:${{ needs.version.outputs.release }}
+          build-args: |
+            revision=${{ needs.version.outputs.release }} (${{ github.sha }})
+            release=${{ needs.version.outputs.release }} (${{ github.sha }})
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.version.outputs.release }}
+          secret-files: |
+            PRIVATE_PACKAGES_TOKEN=${{ runner.temp }}/packages-token/PRIVATE_PACKAGES_TOKEN
+            NUGET_CREDENTIALS=${{ runner.temp }}/packages-token/NUGET_CREDENTIALS
+          cache-from: ${{ steps.cache.outputs.from }}
 
   # Git tag + GitHub Release BEFORE the bake: bake-oci-manifests checks out the
   # release tag. Bare `1.1.N`, same shape as create-gitlab-release.
