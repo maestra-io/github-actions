@@ -716,8 +716,13 @@ jobs:
             }
             const { owner, repo } = context.repo;
             const issue_number = context.issue.number;
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: issue_number });
+            if (pr.head.sha !== context.payload.pull_request.head.sha) {
+              core.info(`not the PR head (${pr.head.sha}): a re-run of an older commit, the comment stays`);
+              return;
+            }
             const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
-            const existing = comments.find(c => c.body && c.body.includes(MARKER));
+            const existing = comments.find(c => c.user?.login === 'github-actions[bot]' && c.body?.includes(MARKER));
             if (existing) {
               await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body: body.join('\n') });
             } else {
