@@ -107,7 +107,6 @@
     - wg.netdev
     - wg.network
   register: wireguard_burst_networkd
-  when: wireguard_burst_manage_interface | bool
 
 # reload creates a missing netdev and applies .network changes; it does not
 # rebuild an existing netdev, which is why the peers are synced live below.
@@ -115,7 +114,6 @@
   ansible.builtin.command: networkctl reload
   changed_when: true
   when:
-    - wireguard_burst_manage_interface | bool
     - wireguard_burst_networkd is changed
     - not ansible_check_mode
 
@@ -126,9 +124,7 @@
   delay: 2
   until: wireguard_burst_link.rc == 0
   changed_when: false
-  when:
-    - wireguard_burst_manage_interface | bool
-    - not ansible_check_mode
+  when: not ansible_check_mode
 
 # networkd builds the peers only when it creates the device, so a changed slot
 # list reaches an existing interface through `wg set` (no networkd restart:

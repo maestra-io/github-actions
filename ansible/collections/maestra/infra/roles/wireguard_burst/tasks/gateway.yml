@@ -1,6 +1,6 @@
 ---
-# Dedicated mode: this host owns its sysctls, the whole nftables ruleset and
-# FRR. Nothing here applies in embedded mode.
+# The gateway does only this: it owns its sysctls, the whole nftables ruleset
+# and FRR.
 
 - name: Forwarding sysctls
   ansible.builtin.template:
@@ -35,7 +35,7 @@
   register: wireguard_burst_networkd_conf
 
 # Manager settings are read at start only (a reload re-reads link files).
-# Safe here: a dedicated gateway holds no VRRP addresses.
+# Safe here: the gateway holds no VRRP addresses.
 - name: Restart systemd-networkd for its new manager settings
   ansible.builtin.systemd:
     name: systemd-networkd
@@ -52,7 +52,7 @@
   register: wireguard_burst_netplan
   when: wireguard_burst_wan_address | length > 0 or (wireguard_burst_lan_mtu | int) > 0
 
-# A dedicated gateway holds no VRRP addresses, so `netplan apply` is safe.
+# The gateway holds no VRRP addresses, so `netplan apply` is safe.
 - name: Apply netplan
   ansible.builtin.command: netplan apply
   changed_when: true
