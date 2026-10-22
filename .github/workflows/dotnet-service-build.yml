@@ -300,9 +300,9 @@ jobs:
       # releases on 2026-10-19.
       code: ${{ github.event_name == 'pull_request' && steps.c.outputs.code || 'true' }}
     steps:
-      - uses: runs-on/action@v2.5.0
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       # The test merge commit and its first parent, the base branch tip (HEAD^1).
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: ${{ github.event_name == 'pull_request' }}
         with:
           fetch-depth: 2
@@ -354,7 +354,7 @@ jobs:
       publish: ${{ steps.v.outputs.publish }}
       teleport-token: ${{ steps.v.outputs.teleport-token }}
     steps:
-      - uses: runs-on/action@v2.5.0
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - id: v
         env:
           PREFIX: ${{ vars.RELEASE_PREFIX }}
@@ -459,14 +459,14 @@ jobs:
       id-token: write # nora OIDC token
       packages: read  # only for a private-packages-token: GITHUB_TOKEN override (GitHub Packages)
     steps:
-      - uses: runs-on/action@v2.5.0
-      - uses: actions/checkout@v7.0.1
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: mint packages token
         id: token
-        uses: actions/github-script@v9.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           OVERRIDE: ${{ secrets.private-packages-token }}
           AUDIENCE: ${{ inputs.packages-audience }}
@@ -524,7 +524,7 @@ jobs:
       # ── Dockerfile stage (GitLab .run-docker-test) ───────────────────────
       - if: ${{ inputs.docker-test-target != '' }}
         id: buildx
-        uses: docker/setup-buildx-action@v4.4.1
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - if: ${{ inputs.docker-test-target != '' }}
         # GitLab Dockerfiles bind-mount the CI NuGet cache dir; it must exist.
         run: mkdir -p .nuget
@@ -634,7 +634,7 @@ jobs:
           fi
       - if: ${{ steps.mount.outputs.dir != '' }}
         id: mount-cache
-        uses: actions/cache/restore@v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/nuget-mount
           key: nuget-mount-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/*.props', '**/packages.lock.json', '**/nuget.config', 'global.json', inputs.dockerfile) }}
@@ -654,7 +654,7 @@ jobs:
           echo "NuGet cache mount: restored $(find "$DIR" -mindepth 2 -maxdepth 2 -type d | wc -l) package versions"
           # <<< nuget-mount-seed
       - if: ${{ inputs.docker-test-target != '' }}
-        uses: docker/build-push-action@v7.4.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: ${{ inputs.dockerfile }}
@@ -685,7 +685,7 @@ jobs:
           if [ "$n" -gt 0 ]; then echo "save=true" >> "$GITHUB_OUTPUT"; fi
           # <<< nuget-mount-extract
       - if: ${{ steps.mount-out.outputs.save == 'true' }}
-        uses: actions/cache/save@v6.1.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/nuget-mount
           key: ${{ steps.mount-cache.outputs.cache-primary-key }}
@@ -710,7 +710,7 @@ jobs:
       # test-command on the runner in a .NET repo (processing-orders' run-tests.sh: ~500 MB
       # from nora per job, 16.10.2026). The docker-test-target path has its own above.
       - if: ${{ inputs.docker-test-target == '' && (inputs.test-command == '' || (inputs.test-image == '' && hashFiles('**/*.csproj') != '')) }}
-        uses: actions/cache@v6.1.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.nuget/packages
           key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/*.props', '**/packages.lock.json', '**/nuget.config', 'global.json') }}
@@ -755,7 +755,7 @@ jobs:
           { echo "version=$version"; echo "file=$file"; } >> "$GITHUB_OUTPUT"
           # <<< sdk-version
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command == '' }}
-        uses: actions/setup-dotnet@v6.0.0
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: ${{ steps.sdk.outputs.version }}
           global-json-file: ${{ steps.sdk.outputs.file }}
@@ -794,7 +794,7 @@ jobs:
       - name: upload test results
         if: ${{ always() }}
         continue-on-error: true # telemetry never fails the build
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-results-${{ github.job }}-${{ github.run_attempt }}-${{ steps.test-results-id.outputs.id }}
           path: ${{ runner.temp }}/test-results
@@ -806,7 +806,7 @@ jobs:
       - name: ingest test results
         if: ${{ always() }}
         continue-on-error: true
-        uses: maestra-io/github-actions/test-results-ingest@v1
+        uses: maestra-io/github-actions/test-results-ingest@b68a3d398ded49d3985408c9f56a2a5ba912ffb1 # v1.46.0
 
       # ── base-image: built once here into the cache, the `images` legs reuse it ──
       - if: ${{ needs.version.outputs.base-name != '' && (github.event_name != 'pull_request' || inputs.pr-images) }}
@@ -818,7 +818,7 @@ jobs:
               | docker login --username AWS --password-stdin "$ECR_REGISTRY"
           fi
       - if: ${{ needs.version.outputs.base-name != '' && (github.event_name != 'pull_request' || inputs.pr-images) }}
-        uses: docker/setup-buildx-action@v4.4.1
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: layer cache (base image)
         id: cache-base
         if: ${{ needs.version.outputs.base-name != '' && (github.event_name != 'pull_request' || inputs.pr-images) }}
@@ -884,7 +884,7 @@ jobs:
       # this build filled nothing the images legs read and re-downloaded every package.
       - name: base image ${{ needs.version.outputs.base-name }}
         if: ${{ needs.version.outputs.base-name != '' && (github.event_name != 'pull_request' || inputs.pr-images) && steps.cache-base.outputs.to != '' }}
-        uses: docker/build-push-action@v7.4.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: ${{ needs.version.outputs.base-dockerfile }}
@@ -931,10 +931,10 @@ jobs:
       # sticky_cache=buildkit (sticky-buildkit only): the action binds the BuildKit
       # state to the sticky disk and names the builder; empty = plain runner.
       - id: runs-on
-        uses: runs-on/action@v2.5.0
+        uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
         with:
           sticky_cache: ${{ inputs.sticky-buildkit && 'buildkit' || '' }}
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -942,7 +942,7 @@ jobs:
       # builder. With it, the RunsOn post step stops the builder itself before the
       # snapshot (cleanup=false), and the agent's default buildkitd config (Docker Hub
       # mirror) still applies: no explicit config is passed.
-      - uses: docker/setup-buildx-action@v4.4.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
           name: ${{ steps.runs-on.outputs.buildkit-builder }}
           driver: docker-container
@@ -1147,7 +1147,7 @@ jobs:
           # <<< layer-cache
       - name: base image ${{ needs.version.outputs.base-name }}
         if: ${{ steps.base.outputs.context != '' }}
-        uses: docker/build-push-action@v7.4.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: ${{ needs.version.outputs.base-dockerfile }}
@@ -1177,7 +1177,7 @@ jobs:
         run: echo "value=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
       - name: build ${{ matrix.image }} (${{ matrix.target }})
         id: build
-        uses: docker/build-push-action@v7.4.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         env:
           SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.value }}
         with:
@@ -1206,7 +1206,7 @@ jobs:
       - name: ecr login
         id: ecr
         if: ${{ needs.version.outputs.publish == 'true' }}
-        uses: maestra-io/github-actions/push-to-aws-ecr-repository@v1
+        uses: maestra-io/github-actions/push-to-aws-ecr-repository@b68a3d398ded49d3985408c9f56a2a5ba912ffb1 # v1.46.0
         with:
           awsRegion: us-west-2
           repositories: ${{ matrix.image }}
@@ -1242,7 +1242,7 @@ jobs:
           # <<< ecr-push-check
       - name: push ${{ matrix.image }}:${{ needs.version.outputs.release }}
         if: ${{ needs.version.outputs.publish == 'true' && steps.existing.outputs.skip != 'true' }}
-        uses: docker/build-push-action@v7.4.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         env:
           SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.value }}
         with:
@@ -1279,7 +1279,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: runs-on/action@v2.5.0
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - env:
           GH_TOKEN: ${{ github.token }}
           RELEASE: ${{ needs.version.outputs.release }}
@@ -1300,8 +1300,8 @@ jobs:
       contents: read
       id-token: write # Teleport join + cosign keyless
     steps:
-      - uses: runs-on/action@v2.5.0
-      - uses: maestra-io/github-actions/bake-oci-manifests@v1
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: maestra-io/github-actions/bake-oci-manifests@b68a3d398ded49d3985408c9f56a2a5ba912ffb1 # v1.46.0
         with:
           service: ${{ needs.version.outputs.service }}
           images: ${{ needs.version.outputs.images }}
@@ -1324,8 +1324,8 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.version.outputs.bake-matrix) }}
     steps:
-      - uses: runs-on/action@v2.5.0
-      - uses: maestra-io/github-actions/bake-oci-manifests@v1
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: maestra-io/github-actions/bake-oci-manifests@b68a3d398ded49d3985408c9f56a2a5ba912ffb1 # v1.46.0
         with:
           service: ${{ matrix.service }}
           images: ${{ matrix.images }}
@@ -1350,7 +1350,7 @@ jobs:
     runs-on: runs-on=${{ github.run_id }}-pr-gate/pool=small
     timeout-minutes: 5
     steps:
-      - uses: runs-on/action@v2.5.0
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - env:
           RESULTS: ${{ toJSON(needs.*.result) }}
         run: |

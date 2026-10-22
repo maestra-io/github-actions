@@ -115,7 +115,7 @@ runs:
         echo "version=$tag" >> "$GITHUB_OUTPUT"
         echo "Baking manifests for ${SERVICE} $tag"
 
-    - uses: actions/checkout@v7.0.1
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         ref: ${{ inputs.ref || steps.ver.outputs.version }}
         fetch-depth: 1
@@ -136,7 +136,7 @@ runs:
     # download gets one retry after a pause.
     - id: tp-setup
       continue-on-error: true
-      uses: teleport-actions/setup@v1.1.1
+      uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
       with:
         version: ${{ steps.tp-version.outputs.version }}
         proxy: ${{ inputs.teleport-fqdn }}
@@ -144,7 +144,7 @@ runs:
       shell: bash
       run: sleep 20
     - if: ${{ steps.tp-setup.outcome == 'failure' }}
-      uses: teleport-actions/setup@v1.1.1
+      uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
       with:
         version: ${{ steps.tp-version.outputs.version }}
         proxy: ${{ inputs.teleport-fqdn }}
@@ -181,13 +181,13 @@ runs:
         bash "${GITHUB_ACTION_PATH}/../tbot-join/tbot-join.sh" -c /tmp/tbot.yaml -r /tmp/tbot-output/jwt_svid \
           -l "token ${token}" -H "does ${token} exist in image-push-tokens.yaml, and does the job have id-token: write?"
 
-    - uses: aws-actions/configure-aws-credentials@v4.3.1
+    - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
       with:
         role-to-assume: ${{ inputs.aws-role-arn }}
         aws-region: ${{ inputs.aws-region }}
         web-identity-token-file: /tmp/tbot-output/jwt_svid
 
-    - uses: aws-actions/amazon-ecr-login@v2.1.7
+    - uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
       with:
         registries: "515260921971"
 
@@ -377,12 +377,12 @@ runs:
 
     - id: cosign-install
       continue-on-error: true
-      uses: sigstore/cosign-installer@v3.9.1
+      uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
     - if: ${{ steps.cosign-install.outcome == 'failure' }}
       shell: bash
       run: sleep 20
     - if: ${{ steps.cosign-install.outcome == 'failure' }}
-      uses: sigstore/cosign-installer@v3.9.1
+      uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
 
     - name: cosign keyless sign manifests
       shell: bash

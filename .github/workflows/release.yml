@@ -51,8 +51,8 @@ jobs:
       # Push the tag and publish the release. Everything else stays read-only.
       contents: write
     steps:
-      - uses: runs-on/action@v2.5.0
-      - uses: actions/checkout@v7.0.1
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The version is computed from tags and from the commit range since
           # the previous one; a shallow clone has neither.

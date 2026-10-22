@@ -120,13 +120,13 @@ jobs:
     # nine consumer repos; was ubuntu-slim.
     runs-on: runs-on=${{ github.run_id }}-lint/runner=t3a-small
     steps:
-      - uses: runs-on/action@v2.5.0
-      - uses: actions/checkout@v7.0.1
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # uv-managed Python instead of actions/setup-python: on the bare slim
       # image setup-python downloads + copies a toolcache Python (~21s); uv
       # fetches a standalone build in ~2s. The venv lives in runner.temp, NOT
       # the workspace, so yamllint/ansible-lint over `lint_paths` never see it.
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           enable-cache: true
           python-version: ${{ inputs.python_version }}
@@ -141,7 +141,7 @@ jobs:
           REQUIREMENTS_LINT: ${{ inputs.requirements_lint }}
         run: uv pip install ansible -r "$REQUIREMENTS_LINT"
       - name: Cache Ansible Galaxy collections
-        uses: actions/cache@v6.1.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.ansible/collections
           key: galaxy-${{ runner.os }}-${{ hashFiles(inputs.requirements_galaxy) }}
@@ -219,15 +219,15 @@ jobs:
     if: ${{ always() && github.event_name == 'pull_request' }}
     runs-on: runs-on=${{ github.run_id }}-comment/runner=t3a-small # see `lint`
     steps:
-      - uses: runs-on/action@v2.5.0
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - name: Download all check logs (flat)
-        uses: actions/download-artifact@v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: ansible-check-*
           merge-multiple: true
           path: logs
       - name: Upsert plan-diff comment
-        uses: actions/github-script@v9.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const fs = require('fs');

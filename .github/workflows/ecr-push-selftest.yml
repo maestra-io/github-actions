@@ -27,11 +27,11 @@ jobs:
       REPOSITORY: selftest-ecr-push
       TAG: ${{ github.run_number }}-${{ github.run_attempt }} # a re-run keeps run_number, the tag-absent case needs a fresh tag
     steps:
-      - uses: runs-on/action@v2.5.0
-      - uses: actions/checkout@v7.0.1
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: docker/setup-buildx-action@v4.4.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: contexts
         run: |
           for v in a b; do
@@ -42,7 +42,7 @@ jobs:
         id: epoch
       - name: build a
         id: build
-        uses: docker/build-push-action@v7.4.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         env:
           SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.value }}
         with:
@@ -77,7 +77,7 @@ jobs:
       - name: push a
         id: push
         if: ${{ steps.existing.outputs.skip != 'true' }}
-        uses: docker/build-push-action@v7.4.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         env:
           SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.value }}
         with:
@@ -106,7 +106,7 @@ jobs:
           grep -q '^skip=true$' "$RUNNER_TEMP/out"
       - name: build b
         id: build-b
-        uses: docker/build-push-action@v7.4.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         env:
           SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.value }}
         with:
@@ -128,7 +128,7 @@ jobs:
           grep -q 'already exists in ECR' "$RUNNER_TEMP/check.log" || { echo "::error::check failed for another reason:"; cat "$RUNNER_TEMP/check.log"; exit 1; }
       - name: push b as ${{ env.TAG }}-b (only the variant layer is new)
         id: push-b
-        uses: docker/build-push-action@v7.4.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         env:
           SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.value }}
         with:
@@ -147,7 +147,7 @@ jobs:
           [ "$shared" -eq $((na-1)) ] || { echo "::error::expected all but one layer shared"; exit 1; }
       # Legacy path of the action: a daemon image + docker push (callers on @v1 with localTag).
       - name: build legacy (daemon)
-        uses: docker/build-push-action@v7.4.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ${{ runner.temp }}/ctx-a
           provenance: false

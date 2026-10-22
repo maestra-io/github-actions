@@ -15,7 +15,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: hashicorp/vault-action@v4.0.0
+    - uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
       with:
         url: https://vault.maestra.io
         method: jwt
