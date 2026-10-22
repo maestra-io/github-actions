@@ -33,6 +33,7 @@
       - wireguard_burst_bgp_router_id | length > 0
       - wireguard_burst_bgp_uplinks | length > 0
       - wireguard_burst_bgp_accept | length > 0
-    fail_msg: "dedicated mode needs wireguard_burst_bgp_router_id, wireguard_burst_bgp_uplinks and wireguard_burst_bgp_accept."
+      - wireguard_burst_wan_address | length == 0 or wireguard_burst_wan_gateway | length > 0
+    fail_msg: "dedicated mode needs wireguard_burst_bgp_router_id, wireguard_burst_bgp_uplinks and wireguard_burst_bgp_accept (and wireguard_burst_wan_gateway with a WAN address)."
     quiet: true
   when: wireguard_burst_mode == 'dedicated'

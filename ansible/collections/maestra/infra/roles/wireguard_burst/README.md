@@ -13,6 +13,7 @@ withdrawn in under a second.
 | Host | also something else (a NAT gateway) | does only this |
 | Tunnel, key, peer sync, key assert, metrics | role | role |
 | `/etc/nftables.conf` | consumer, includes `wireguard_burst_nft_*` | role |
+| WAN leg (netplan, source-routed table), LAN MTU | consumer | role |
 | `/etc/frr/frr.conf`, `daemons` | consumer, includes `wireguard_burst_frr_*` | role (FRR from deb.frrouting.org) |
 | A dead tunnel | slot falls back to the neighbour gateway on the LAN, then a blackhole | slot `/32` withdrawn from eBGP; the uplinks use the other gateway |
 | Sysctls | consumer (`rp_filter` 0 on the tunnel, see below) | role (`ip_forward`, `rp_filter` 2, L4 multipath hash) |

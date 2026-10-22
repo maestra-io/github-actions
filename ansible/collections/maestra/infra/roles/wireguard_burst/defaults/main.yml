@@ -70,6 +70,21 @@ wireguard_burst_fallback_distance: 20
 
 # ── dedicated mode ───────────────────────────────────────────────────────────
 wireguard_burst_wan_interface: eth1
+# The public leg the tunnel listens on (netplan, /etc/netplan/60-wireguard-burst.yaml).
+# Its default route sits in its own table selected by source address, so only
+# traffic sourced from the public address (WireGuard replies) leaves through
+# it; the host's own default route stays on the LAN. Empty address = the role
+# leaves the WAN interface alone.
+wireguard_burst_wan_address: ""  # CIDR, e.g. 203.0.113.10/26
+wireguard_burst_wan_gateway: ""
+# netplan `match` for the WAN NIC when it does not already carry the name
+# (an SR-IOV VF: {macaddress: "02:..."}); empty = the interface is matched by name.
+wireguard_burst_wan_match: {}
+wireguard_burst_wan_table: 100
+# LAN MTU (0 = leave it). Set it to the LAN's MTU: a jumbo LAN frame for a
+# burst node must reach this host whole, so that the tunnel's MTU (not a
+# silent drop on the LAN NIC) is what answers with "fragmentation needed".
+wireguard_burst_lan_mtu: 0
 # FRR from deb.frrouting.org (the Ubuntu archive build predates staticd BFD).
 wireguard_burst_frr_version: "10.7.0"
 wireguard_burst_bgp_asn: 65002

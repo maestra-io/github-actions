@@ -42,6 +42,22 @@
     state: restarted
   when: wireguard_burst_networkd_conf is changed and not ansible_check_mode
 
+- name: Render the WAN leg and LAN MTU for netplan
+  ansible.builtin.template:
+    src: netplan.yaml.j2
+    dest: /etc/netplan/60-wireguard-burst.yaml
+    owner: root
+    group: root
+    mode: "0600"
+  register: wireguard_burst_netplan
+  when: wireguard_burst_wan_address | length > 0 or (wireguard_burst_lan_mtu | int) > 0
+
+# A dedicated gateway holds no VRRP addresses, so `netplan apply` is safe.
+- name: Apply netplan
+  ansible.builtin.command: netplan apply
+  changed_when: true
+  when: wireguard_burst_netplan is changed and not ansible_check_mode
+
 - name: Install nftables
   ansible.builtin.apt:
     pkg: nftables
