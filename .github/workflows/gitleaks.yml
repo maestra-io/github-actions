@@ -132,10 +132,13 @@ jobs:
             - ignore: true
               conditions:
                 - expr: ActionName contains "/.github/workflows/"
+                - expr: ActionVersion matches "^[0-9a-f]{40}$"
           YAML
           git diff HEAD^1 HEAD > "$RUNNER_TEMP/pr.diff"
-          # --no-api: a syntactic check (40-hex SHA plus a version comment), no token needed.
+          # --no-api: a syntactic check, no token needed. Any 40-hex SHA passes (the second
+          # rule), whatever its comment says: a branch pin `@<sha> # main` is pinned too, and
+          # pinact --no-api would reject its non-semver comment.
           if ! "$RUNNER_TEMP/pinact" run --fix=false --no-api -c "$RUNNER_TEMP/pinact.yaml" --diff-file "$RUNNER_TEMP/pr.diff"; then
-            echo "::error::an action this PR adds or changes is not pinned to a full commit SHA with a version comment. Run \`pinact run\` locally and commit the result."
+            echo "::error::an action this PR adds or changes is not pinned to a full commit SHA. Run \`pinact run\` locally and commit the result."
             exit 1
           fi
