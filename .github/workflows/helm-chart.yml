@@ -120,6 +120,6 @@ jobs:
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
         with:
           version: ${{ inputs.helm-version }}
-      - uses: maestra-io/github-actions/push-helm-chart-to-aws-ecr@b68a3d398ded49d3985408c9f56a2a5ba912ffb1 # v1.46.0
+      - uses: maestra-io/github-actions/push-helm-chart-to-aws-ecr@4810e33793d010b8ff485d52a0798d48fc7df5a6 # v1.46.1
         with:
           chartPath: ${{ inputs.chart-path }}

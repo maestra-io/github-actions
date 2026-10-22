@@ -364,7 +364,7 @@ jobs:
           mkdir -p "$out/wi" "$out/app"
           echo "dir=$out" >> "$GITHUB_OUTPUT"
       - id: teleport
-        uses: maestra-io/github-actions/tbot-join@b68a3d398ded49d3985408c9f56a2a5ba912ffb1 # v1.46.0
+        uses: maestra-io/github-actions/tbot-join@4810e33793d010b8ff485d52a0798d48fc7df5a6 # v1.46.1
         with:
           config: ${{ steps.tbot-config.outputs.dir }}/tbot.yaml
           require: |

@@ -744,7 +744,7 @@ jobs:
       - name: ingest test results
         if: ${{ always() }}
         continue-on-error: true
-        uses: maestra-io/github-actions/test-results-ingest@b68a3d398ded49d3985408c9f56a2a5ba912ffb1 # v1.46.0
+        uses: maestra-io/github-actions/test-results-ingest@4810e33793d010b8ff485d52a0798d48fc7df5a6 # v1.46.1
         with:
           path: reports
 
@@ -875,7 +875,7 @@ jobs:
       # re-uploaded them every release).
       - name: ecr login
         id: ecr
-        uses: maestra-io/github-actions/push-to-aws-ecr-repository@b68a3d398ded49d3985408c9f56a2a5ba912ffb1 # v1.46.0
+        uses: maestra-io/github-actions/push-to-aws-ecr-repository@4810e33793d010b8ff485d52a0798d48fc7df5a6 # v1.46.1
         with:
           awsRegion: us-west-2
           repositories: ${{ needs.version.outputs.image }}
@@ -990,7 +990,7 @@ jobs:
       id-token: write # Teleport join + cosign keyless
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: maestra-io/github-actions/bake-oci-manifests@b68a3d398ded49d3985408c9f56a2a5ba912ffb1 # v1.46.0
+      - uses: maestra-io/github-actions/bake-oci-manifests@4810e33793d010b8ff485d52a0798d48fc7df5a6 # v1.46.1
         with:
           service: ${{ needs.version.outputs.service }}
           images: ${{ needs.version.outputs.image }}
@@ -1217,7 +1217,7 @@ jobs:
       - name: ingest test results
         if: ${{ always() }}
         continue-on-error: true
-        uses: maestra-io/github-actions/test-results-ingest@b68a3d398ded49d3985408c9f56a2a5ba912ffb1 # v1.46.0
+        uses: maestra-io/github-actions/test-results-ingest@4810e33793d010b8ff485d52a0798d48fc7df5a6 # v1.46.1
         with:
           path: tests/functional/test-results/results.xml
 
@@ -1372,7 +1372,7 @@ jobs:
       - name: ingest test results
         if: ${{ always() }}
         continue-on-error: true
-        uses: maestra-io/github-actions/test-results-ingest@b68a3d398ded49d3985408c9f56a2a5ba912ffb1 # v1.46.0
+        uses: maestra-io/github-actions/test-results-ingest@4810e33793d010b8ff485d52a0798d48fc7df5a6 # v1.46.1
         with:
           path: tests/e2e/test-results/results.xml
 
