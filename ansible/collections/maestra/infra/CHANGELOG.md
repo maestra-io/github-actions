@@ -7,6 +7,17 @@ finding, and because the `os_update` contract is shared across four repos:
 anything that changes a variable name or a hook expectation has to be findable
 from one place.
 
+## 1.4.0
+
+- `wireguard_burst`: the `embedded` mode is gone (it had no consumer; the NAT
+  gateways no longer terminate burst-node WireGuard). Removed variables:
+  `wireguard_burst_mode`, `wireguard_burst_manage_interface`,
+  `wireguard_burst_neighbour_lan_ip`, `wireguard_burst_neighbour_mac`,
+  `wireguard_burst_fallback_distance` and the output facts
+  `wireguard_burst_{frr_static,frr_bfd,nft_input,nft_forward}`. The rendered
+  files of a gateway are byte-identical to 1.3.1.
+- Consumer change: drop `wireguard_burst_mode` from the inventory (now unused).
+
 ## 1.3.1
 
 - `wireguard_burst`: a fresh host passes `--check`. The FRR install and

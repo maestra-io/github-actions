@@ -1,3 +1,0 @@
-{% if wireguard_burst_mode == 'embedded' and wireguard_burst_neighbour_lan_ip | length > 0 %}
-iifname "{{ wireguard_burst_lan_interface }}" oifname "{{ wireguard_burst_lan_interface }}" ether saddr {{ wireguard_burst_neighbour_mac }} ip daddr { {{ wireguard_burst_slots | map(attribute='ip') | join(', ') }} } drop
-{% endif %}

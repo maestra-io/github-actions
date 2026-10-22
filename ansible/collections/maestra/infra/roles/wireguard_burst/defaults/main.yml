@@ -4,22 +4,8 @@
 # BFD-tracked FRR static /32 per slot: a slot's route exists only while BFD
 # over its tunnel is up. Full contract: README.md next to this file.
 
-# embedded  | the host is also something else (a NAT gateway) and owns
-#           | nftables.conf and frr.conf itself: the role manages the WireGuard
-#           | interface, keys, peers and metrics, and EXPOSES the FRR and
-#           | nftables lines below for the consumer's own templates.
-# dedicated | the host does only this: the role also owns /etc/nftables.conf,
-#           | /etc/frr/{daemons,frr.conf}, forwarding sysctls, and announces the
-#           | live slot /32s to its uplinks over eBGP with BFD.
-wireguard_burst_mode: dedicated
-
+# Rendered as systemd-networkd files (/etc/systemd/network/50-<interface>.*).
 wireguard_burst_interface: wg0
-# The role writes the interface as systemd-networkd files
-# (/etc/systemd/network/50-<interface>.{netdev,network}). false = the consumer
-# renders the interface itself (e.g. netplan) with the same key file
-# (/etc/wireguard/<interface>.key) and peers; the role still owns the key,
-# the live peer sync, the outputs and the metrics.
-wireguard_burst_manage_interface: true
 wireguard_burst_port: 51820
 wireguard_burst_mtu: 1420
 # This host's own address on the tunnel, a /32 out of the slot block (no
@@ -55,20 +41,8 @@ wireguard_burst_bfd_multiplier: 3
 wireguard_burst_textfile_dir: /var/lib/node_exporter/textfile_collector
 wireguard_burst_metrics_interval: 30s
 
-# ── embedded mode ────────────────────────────────────────────────────────────
-# The other gateway of the pair, reached on the LAN. A slot whose own tunnel is
-# down falls back to it (distance below), and to a blackhole (250) when both
-# tunnels are down. Empty = no fallback, only the blackhole.
-wireguard_burst_neighbour_lan_ip: ""
-# MAC address of that neighbour's LAN interface. With both tunnels down each
-# gateway's fallback points at the other; the nftables snippet drops a slot
-# packet that came FROM the neighbour and would go back TO it, which is the
-# only shape that loop can take. Required with wireguard_burst_neighbour_lan_ip.
-wireguard_burst_neighbour_mac: ""
+# ── gateway ──────────────────────────────────────────────────────────────────
 wireguard_burst_lan_interface: eth0
-wireguard_burst_fallback_distance: 20
-
-# ── dedicated mode ───────────────────────────────────────────────────────────
 wireguard_burst_wan_interface: eth1
 # The public leg the tunnel listens on (netplan, /etc/netplan/60-wireguard-burst.yaml).
 # Its default route sits in its own table selected by source address, so only
@@ -108,11 +82,3 @@ wireguard_burst_private_ranges:
   - 10.0.0.0/8
   - 172.16.0.0/12
   - 192.168.0.0/16
-
-# ── outputs (set by the role, read by embedded consumers) ───────────────────
-# After the role ran, these facts hold ready-to-render text (newline-separated):
-#   wireguard_burst_frr_static   static routes, top level of frr.conf
-#   wireguard_burst_frr_bfd      BFD profile, INSIDE the consumer's `bfd` node
-#   wireguard_burst_nft_input    lines for the `inet filter` input chain
-#   wireguard_burst_nft_forward  lines for the `inet filter` forward chain
-# Run the role BEFORE the consumer templates frr.conf / nftables.conf.
