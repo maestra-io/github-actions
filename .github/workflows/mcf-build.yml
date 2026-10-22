@@ -67,9 +67,9 @@
 #   e2e-workers         Playwright workers of `e2e` (default 4).
 #   e2e-required        A red `e2e` fails the run and `pr gate` (default false: advisory). It
 #                       never holds the image or the release yet.
-#   e2e-vault-role      Central Vault jwt-github role of `e2e` (default ci-e2e-autotests-eu).
+#   e2e-vault-role      Central Vault jwt-github role of `e2e` (default ci-gate-e2e).
 #   e2e-vault-secret    KV v2 secret with ADMINSITE_USERNAME and ADMINSITE_PASSWORD, as
-#                       vault-action reads it (default gitlab/data/ci-e2e/autotests-eu).
+#                       vault-action reads it (default gitlab/data/ci-e2e/ci-gate).
 # Outputs:
 #   release             The release number 1.1.N.
 #
@@ -197,10 +197,10 @@ on:
         default: false
       e2e-vault-role:
         type: string
-        default: ci-e2e-autotests-eu
+        default: ci-gate-e2e
       e2e-vault-secret:
         type: string
-        default: gitlab/data/ci-e2e/autotests-eu
+        default: gitlab/data/ci-e2e/ci-gate
     outputs:
       release:
         value: ${{ jobs.version.outputs.release }}
