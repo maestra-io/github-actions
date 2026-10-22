@@ -233,9 +233,9 @@ jobs:
       # releases on 2026-10-19.
       code: ${{ github.event_name == 'pull_request' && steps.c.outputs.code || 'true' }}
     steps:
-      - uses: runs-on/action@v2.5.0
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       # The test merge commit and its first parent, the base branch tip (HEAD^1).
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: ${{ github.event_name == 'pull_request' }}
         with:
           fetch-depth: 2
@@ -297,8 +297,8 @@ jobs:
       functional: ${{ steps.tests.outputs.functional }}
       e2e: ${{ steps.tests.outputs.e2e }}
     steps:
-      - uses: runs-on/action@v2.5.0
-      - uses: actions/checkout@v7.0.1
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           sparse-checkout: |
@@ -417,12 +417,12 @@ jobs:
       contents: read
       id-token: write # nora OIDC token
     steps:
-      - uses: runs-on/action@v2.5.0
-      - uses: actions/checkout@v7.0.1
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - id: cache
-        uses: actions/cache/restore@v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           # Missing paths are skipped; the cache version hashes this list: every restore repeats it.
           path: &root-node-modules |
@@ -432,7 +432,7 @@ jobs:
           lookup-only: true
       - &setup-node-on-miss
         if: ${{ steps.cache.outputs.cache-hit != 'true' }}
-        uses: actions/setup-node@v7.0.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ inputs.node-version }}
       - &write-npmrc
@@ -456,7 +456,7 @@ jobs:
         if: ${{ steps.cache.outputs.cache-hit != 'true' }}
         name: mint packages token
         id: token
-        uses: actions/github-script@v9.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           AUDIENCE: ${{ inputs.packages-audience }}
         with:
@@ -470,7 +470,7 @@ jobs:
       - &npm-cache-restore
         if: ${{ steps.cache.outputs.cache-hit != 'true' }}
         id: npm-cache
-        uses: actions/cache/restore@v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.npm/_cacache
           key: npm-cacache-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json', 'tests/package-lock.json') }}
@@ -498,12 +498,12 @@ jobs:
           npm ci --prefer-offline --no-audit --no-fund
       - &npm-cache-save
         if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.npm-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v6.1.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.npm/_cacache
           key: ${{ steps.npm-cache.outputs.cache-primary-key }}
       - if: ${{ steps.cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v6.1.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: *root-node-modules
           # The lockfile is rewritten to nora by now: its hash is not the key the other jobs look up.
@@ -521,12 +521,12 @@ jobs:
       run:
         working-directory: tests
     steps:
-      - uses: runs-on/action@v2.5.0
-      - uses: actions/checkout@v7.0.1
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - id: cache
-        uses: actions/cache/restore@v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: tests/node_modules
           key: mcf-tests-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('tests/package-lock.json') }}
@@ -538,7 +538,7 @@ jobs:
       - *npm-ci
       - *npm-cache-save
       - if: ${{ steps.cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v6.1.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: tests/node_modules
           key: ${{ steps.cache.outputs.cache-primary-key }}
@@ -551,14 +551,14 @@ jobs:
       contents: read
       id-token: write # auth-jwt login
     steps:
-      - uses: runs-on/action@v2.5.0
-      - uses: actions/checkout@v7.0.1
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ inputs.node-version }}
-      - uses: actions/cache/restore@v6.1.0
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: *root-node-modules
           key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
@@ -587,7 +587,7 @@ jobs:
           find src \( -path src/generated -o -name __generated__ \) -type d -prune -print0 \
             | tar -czf "$RUNNER_TEMP/codegen.tgz" --null -T -
           echo "generated: $(tar -tzf "$RUNNER_TEMP/codegen.tgz" | wc -l) entries"
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: codegen
           path: ${{ runner.temp }}/codegen.tgz
@@ -598,19 +598,19 @@ jobs:
     runs-on: runs-on=${{ github.run_id }}-checks/pool=build
     timeout-minutes: 30
     steps:
-      - uses: runs-on/action@v2.5.0
-      - uses: actions/checkout@v7.0.1
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ inputs.node-version }}
-      - uses: actions/cache/restore@v6.1.0
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: *root-node-modules
           key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
           fail-on-cache-miss: true
-      - uses: actions/download-artifact@v8.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: codegen
           path: ${{ runner.temp }}
@@ -660,19 +660,19 @@ jobs:
       id-token: write # test-results-ingest
       pull-requests: write # coverage comment
     steps:
-      - uses: runs-on/action@v2.5.0
-      - uses: actions/checkout@v7.0.1
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ inputs.node-version }}
-      - uses: actions/cache/restore@v6.1.0
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: *root-node-modules
           key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
           fail-on-cache-miss: true
-      - uses: actions/download-artifact@v8.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: codegen
           path: ${{ runner.temp }}
@@ -700,7 +700,7 @@ jobs:
       - name: coverage comment
         if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         continue-on-error: true
-        uses: actions/github-script@v9.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           MIN_LINES_COVERAGE: ${{ inputs.min-lines-coverage }}
         with:
@@ -735,7 +735,7 @@ jobs:
               await github.rest.issues.createComment({ owner, repo, issue_number, body: body.join('\n') });
             }
       - if: ${{ always() }}
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-results-vitest-${{ github.run_attempt }}
           path: reports/
@@ -744,7 +744,7 @@ jobs:
       - name: ingest test results
         if: ${{ always() }}
         continue-on-error: true
-        uses: maestra-io/github-actions/test-results-ingest@v1
+        uses: maestra-io/github-actions/test-results-ingest@b68a3d398ded49d3985408c9f56a2a5ba912ffb1 # v1.46.0
         with:
           path: reports
 
@@ -756,25 +756,25 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: runs-on/action@v2.5.0
-      - uses: actions/checkout@v7.0.1
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ inputs.node-version }}
-      - uses: actions/cache/restore@v6.1.0
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: *root-node-modules
           key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
           fail-on-cache-miss: true
       - if: ${{ needs.version.outputs.tests-layout == 'lockfile' }}
-        uses: actions/cache/restore@v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: tests/node_modules
           key: mcf-tests-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('tests/package-lock.json') }}
           fail-on-cache-miss: true
-      - uses: actions/download-artifact@v8.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: codegen
           path: ${{ runner.temp }}
@@ -802,19 +802,19 @@ jobs:
     runs-on: runs-on=${{ github.run_id }}-build/pool=build
     timeout-minutes: 30
     steps:
-      - uses: runs-on/action@v2.5.0
-      - uses: actions/checkout@v7.0.1
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ inputs.node-version }}
-      - uses: actions/cache/restore@v6.1.0
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: *root-node-modules
           key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
           fail-on-cache-miss: true
-      - uses: actions/download-artifact@v8.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: codegen
           path: ${{ runner.temp }}
@@ -839,13 +839,13 @@ jobs:
           tar -czf "$RUNNER_TEMP/static.tgz" -C build "$top"
           du -sh "$out"
       - if: ${{ needs.version.outputs.publish == 'true' || needs.version.outputs.hot-test == 'true' || needs.version.outputs.e2e-stand == 'true' || needs.version.outputs.functional == 'true' }}
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: static
           path: ${{ runner.temp }}/static.tgz
           retention-days: 1
       - if: ${{ needs.version.outputs.publish == 'true' }}
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sourcemaps
           path: ${{ runner.temp }}/sourcemaps.tgz
@@ -860,8 +860,8 @@ jobs:
       contents: read
       id-token: write # Teleport join
     steps:
-      - uses: runs-on/action@v2.5.0
-      - uses: actions/download-artifact@v8.0.1
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: static
           path: ${{ runner.temp }}
@@ -875,16 +875,16 @@ jobs:
       # re-uploaded them every release).
       - name: ecr login
         id: ecr
-        uses: maestra-io/github-actions/push-to-aws-ecr-repository@v1
+        uses: maestra-io/github-actions/push-to-aws-ecr-repository@b68a3d398ded49d3985408c9f56a2a5ba912ffb1 # v1.46.0
         with:
           awsRegion: us-west-2
           repositories: ${{ needs.version.outputs.image }}
           targetTag: ${{ needs.version.outputs.release }}
           teleportToken: ${{ inputs.teleport-token }}
           push: false
-      - uses: docker/setup-buildx-action@v4.4.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: build and push ${{ needs.version.outputs.image }}:${{ needs.version.outputs.release }}
-        uses: docker/build-push-action@v7.4.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ${{ runner.temp }}/image
           provenance: false
@@ -904,7 +904,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: runs-on/action@v2.5.0
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - env:
           GH_TOKEN: ${{ github.token }}
           RELEASE: ${{ needs.version.outputs.release }}
@@ -932,15 +932,15 @@ jobs:
       contents: read
       id-token: write # central Vault (jwt-github), nora
     steps:
-      - uses: runs-on/action@v2.5.0
-      - uses: actions/download-artifact@v8.0.1
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: sourcemaps
           path: ${{ runner.temp }}
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ inputs.node-version }}
-      - uses: hashicorp/vault-action@v4.0.0
+      - uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
         with:
           url: https://vault.maestra.io
           method: jwt
@@ -951,7 +951,7 @@ jobs:
             github/data/mcf-build/datadog api_key | DATADOG_API_KEY ;
       - name: mint packages token
         id: token
-        uses: actions/github-script@v9.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           AUDIENCE: ${{ inputs.packages-audience }}
         with:
@@ -989,8 +989,8 @@ jobs:
       contents: read
       id-token: write # Teleport join + cosign keyless
     steps:
-      - uses: runs-on/action@v2.5.0
-      - uses: maestra-io/github-actions/bake-oci-manifests@v1
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: maestra-io/github-actions/bake-oci-manifests@b68a3d398ded49d3985408c9f56a2a5ba912ffb1 # v1.46.0
         with:
           service: ${{ needs.version.outputs.service }}
           images: ${{ needs.version.outputs.image }}
@@ -1041,25 +1041,25 @@ jobs:
       contents: read
       id-token: write # nora OIDC token, test-results-ingest
     steps:
-      - uses: runs-on/action@v2.5.0
-      - uses: actions/checkout@v7.0.1
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ inputs.node-version }}
-      - uses: actions/cache/restore@v6.1.0
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: *root-node-modules
           key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
           fail-on-cache-miss: true
       - if: ${{ needs.version.outputs.tests-layout == 'lockfile' }}
-        uses: actions/cache/restore@v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: tests/node_modules
           key: mcf-tests-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('tests/package-lock.json') }}
           fail-on-cache-miss: true
-      - uses: actions/download-artifact@v8.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: static
           path: ${{ runner.temp }}
@@ -1079,7 +1079,7 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "Playwright $v"
       - id: browsers
-        uses: actions/cache/restore@v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: mcf-playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright.outputs.version }}
@@ -1087,13 +1087,13 @@ jobs:
         working-directory: tests
         run: npx --no playwright install --with-deps chromium
       - if: ${{ steps.browsers.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v6.1.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: ${{ steps.browsers.outputs.cache-primary-key }}
       - name: mint packages token
         id: token
-        uses: actions/github-script@v9.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           AUDIENCE: ${{ inputs.packages-audience }}
         with:
@@ -1201,14 +1201,14 @@ jobs:
           PY
           # <<< functional-summary
       - if: ${{ failure() }}
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: functional-test-results-${{ github.run_attempt }}
           path: tests/functional/test-results
           retention-days: 3
           if-no-files-found: ignore
       - if: ${{ always() }}
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: functional-junit-${{ github.run_attempt }}
           path: tests/functional/test-results/results.xml
@@ -1217,7 +1217,7 @@ jobs:
       - name: ingest test results
         if: ${{ always() }}
         continue-on-error: true
-        uses: maestra-io/github-actions/test-results-ingest@v1
+        uses: maestra-io/github-actions/test-results-ingest@b68a3d398ded49d3985408c9f56a2a5ba912ffb1 # v1.46.0
         with:
           path: tests/functional/test-results/results.xml
 
@@ -1231,20 +1231,20 @@ jobs:
       contents: read
       id-token: write # central Vault (jwt-github), test-results-ingest
     steps:
-      - uses: runs-on/action@v2.5.0
-      - uses: actions/checkout@v7.0.1
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ inputs.node-version }}
-      - uses: actions/cache/restore@v6.1.0
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: *root-node-modules
           key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
           fail-on-cache-miss: true
       - if: ${{ needs.version.outputs.tests-layout == 'lockfile' }}
-        uses: actions/cache/restore@v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: tests/node_modules
           key: mcf-tests-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('tests/package-lock.json') }}
@@ -1257,7 +1257,7 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "Playwright $v"
       - id: browsers
-        uses: actions/cache/restore@v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: mcf-playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright.outputs.version }}
@@ -1265,13 +1265,13 @@ jobs:
         working-directory: tests
         run: npx --no playwright install --with-deps chromium
       - if: ${{ steps.browsers.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v6.1.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: ${{ steps.browsers.outputs.cache-primary-key }}
       # Outputs only: exported env would reach every later step (uploads, ingest).
       - id: vault
-        uses: hashicorp/vault-action@v4.0.0
+        uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
         with:
           url: https://vault.maestra.io
           method: jwt
@@ -1356,14 +1356,14 @@ jobs:
           PY
           # <<< e2e-summary
       - if: ${{ failure() }}
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-test-results-${{ github.run_attempt }}
           path: tests/e2e/test-results
           retention-days: 3
           if-no-files-found: ignore
       - if: ${{ always() }}
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-junit-${{ github.run_attempt }}
           path: tests/e2e/test-results/results.xml
@@ -1372,7 +1372,7 @@ jobs:
       - name: ingest test results
         if: ${{ always() }}
         continue-on-error: true
-        uses: maestra-io/github-actions/test-results-ingest@v1
+        uses: maestra-io/github-actions/test-results-ingest@b68a3d398ded49d3985408c9f56a2a5ba912ffb1 # v1.46.0
         with:
           path: tests/e2e/test-results/results.xml
 
@@ -1395,7 +1395,7 @@ jobs:
     runs-on: runs-on=${{ github.run_id }}-pr-gate/pool=small
     timeout-minutes: 5
     steps:
-      - uses: runs-on/action@v2.5.0
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - env:
           NEEDS: ${{ toJSON(needs) }}
           FUNCTIONAL_REQUIRED: ${{ inputs.functional-required }}

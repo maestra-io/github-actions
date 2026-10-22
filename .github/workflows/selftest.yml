@@ -41,8 +41,8 @@ jobs:
   shell:
     runs-on: runs-on=${{ github.run_id }}-shell/runner=t3a-small
     steps:
-      - uses: runs-on/action@v2.5.0
-      - uses: actions/checkout@v7.0.1
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -115,7 +115,7 @@ jobs:
 
       # warn-as-error must keep tests running on the Microsoft.Testing.Platform
       # runner too (a bare /warnaserror ran zero tests there, exit 5).
-      - uses: actions/setup-dotnet@v6.0.0
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: 10.0.x
       - name: dotnet-service-build warn-as-error on MTP and VSTest runners (workflow copy)

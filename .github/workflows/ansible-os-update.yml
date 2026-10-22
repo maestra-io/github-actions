@@ -143,17 +143,17 @@ jobs:
     outputs:
       hosts: ${{ steps.list.outputs.hosts }}
     steps:
-      - uses: runs-on/action@v2.5.0
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - name: Checkout
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v6.3.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.14"
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v8.2.0
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           enable-cache: true
 
@@ -168,7 +168,7 @@ jobs:
           echo "version=${VER}" >> "$GITHUB_OUTPUT"
 
       - name: Setup Teleport
-        uses: teleport-actions/setup@v1.1.1
+        uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
         with:
           version: ${{ steps.tp-version.outputs.version }}
 
@@ -179,7 +179,7 @@ jobs:
       - name: Teleport auth
         id: teleport-auth
         continue-on-error: true
-        uses: teleport-actions/auth@v2.1.2
+        uses: teleport-actions/auth@3b365df2b4f64891358392a444ff34929ba0d0b1 # v2.1.2
         with:
           proxy: teleport.maestra.io:443
           token: github-actions-infra-deploy
@@ -188,7 +188,7 @@ jobs:
       - name: Teleport auth — retry
         id: teleport-auth-retry
         if: steps.teleport-auth.outcome == 'failure'
-        uses: teleport-actions/auth@v2.1.2
+        uses: teleport-actions/auth@3b365df2b4f64891358392a444ff34929ba0d0b1 # v2.1.2
         with:
           proxy: teleport.maestra.io:443
           token: github-actions-infra-deploy
@@ -455,7 +455,7 @@ jobs:
     if: ${{ inputs.mode == 'apply' && !cancelled() && contains(fromJSON('["success","failure"]'), needs.apply.result) }}
     runs-on: ${{ inputs.runs_on }}
     steps:
-      - uses: runs-on/action@v2.5.0
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       # A 15-min installation token of the App maestra-vault-github, scoped to
       # actions:write on maestra-io/soc only, minted by the central Vault
       # (github-app/token/soc-vulnscan-dispatcher; jwt-github role
@@ -470,7 +470,7 @@ jobs:
       - name: Mint a soc-scoped token from Vault
         id: soc-token
         continue-on-error: true
-        uses: hashicorp/vault-action@v4.0.0
+        uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
         with:
           url: https://vault.maestra.io
           method: jwt

@@ -119,8 +119,8 @@ jobs:
       contents: read
       id-token: write # nora OIDC token
     steps:
-      - uses: runs-on/action@v2.5.0
-      - uses: actions/checkout@v7.0.1
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           lfs: ${{ inputs.lfs }}
@@ -179,7 +179,7 @@ jobs:
           echo "global-json=${global_json:-true}" >> "$GITHUB_OUTPUT"
           echo "SDKs: ${versions//$'\n'/ }"
           # sdk-set: end
-      - uses: actions/setup-dotnet@v6.0.0
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: ${{ steps.sdk.outputs.versions }}
           global-json-file: ${{ inputs.dotnet-version == '' && steps.sdk.outputs.global-json == 'true' && hashFiles('global.json') != '' && 'global.json' || '' }}
@@ -233,7 +233,7 @@ jobs:
 
       - name: mint packages token
         id: token
-        uses: actions/github-script@v9.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           AUDIENCE: ${{ inputs.packages-audience }}
         with:
@@ -316,7 +316,7 @@ jobs:
       - name: upload test results
         if: ${{ always() && inputs.run-tests }}
         continue-on-error: true # telemetry never fails the build
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-results-${{ github.job }}-${{ github.run_attempt }}-${{ steps.test-results-id.outputs.id }}
           path: ${{ runner.temp }}/test-results
@@ -328,7 +328,7 @@ jobs:
       - name: ingest test results
         if: ${{ always() && inputs.run-tests }}
         continue-on-error: true
-        uses: maestra-io/github-actions/test-results-ingest@v1
+        uses: maestra-io/github-actions/test-results-ingest@b68a3d398ded49d3985408c9f56a2a5ba912ffb1 # v1.46.0
 
       # Never leave the temporary pin behind (nothing here commits, but the
       # workspace is the caller's checkout).
@@ -342,7 +342,7 @@ jobs:
       # Fresh token: the build may outlive the first one.
       - name: mint push token
         if: ${{ github.event_name != 'pull_request' || inputs.prerelease-on-pr }}
-        uses: actions/github-script@v9.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         id: push-token
         env:
           AUDIENCE: ${{ inputs.packages-audience }}

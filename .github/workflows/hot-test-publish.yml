@@ -194,7 +194,7 @@ jobs:
       url: ${{ steps.names.outputs.url }}
       route: ${{ steps.route.outputs.up == 'true' }}
     steps:
-      - uses: runs-on/action@v2.5.0
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - id: names
         env:
           REPO: ${{ inputs.repo }}
@@ -241,7 +241,7 @@ jobs:
           echo "stand https://$host, bucket folder $name/, own files $static_prefix/, manifest $manifest"
 
       - id: static
-        uses: actions/download-artifact@v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ inputs.static-artifact }}
           path: ${{ runner.temp }}/artifact
@@ -329,7 +329,7 @@ jobs:
           v=$(curl -sf "https://${TELEPORT_FQDN}/webapi/find" | jq -r '.auto_update.tools_version // .server_version')
           echo "version=$v" >> "$GITHUB_OUTPUT"
       - id: teleport-setup
-        uses: teleport-actions/setup@v1.1.1
+        uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
         with:
           version: ${{ steps.tp-version.outputs.version }}
           proxy: ${{ env.TELEPORT_FQDN }}
@@ -364,7 +364,7 @@ jobs:
           mkdir -p "$out/wi" "$out/app"
           echo "dir=$out" >> "$GITHUB_OUTPUT"
       - id: teleport
-        uses: maestra-io/github-actions/tbot-join@v1
+        uses: maestra-io/github-actions/tbot-join@b68a3d398ded49d3985408c9f56a2a5ba912ffb1 # v1.46.0
         with:
           config: ${{ steps.tbot-config.outputs.dir }}/tbot.yaml
           require: |

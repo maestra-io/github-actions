@@ -27,8 +27,20 @@ touches `ci/`).
 
 ### How consumers should pin
 
-**Reusable workflows and composite actions** — reference a release tag, not a commit sha (this repo
-does the same for every action it uses). Renovate bumps the tag:
+**Composite actions** (and every other action, ours and external) — a full commit SHA with the
+release tag as a comment. The org is moving to `sha_pinning_required` (issues-maestra#1649), which
+rejects any action referenced by a tag; Renovate (`helpers:pinGitHubActionDigests`) bumps the SHA and
+the comment together:
+
+```yaml
+uses: maestra-io/github-actions/tbot-join@<40-hex sha> # v1.46.0
+```
+
+`pinact run` writes this form from a tag. The reusable workflows of this repo call its composite
+actions the same way, so a change to a composite action reaches them only once that SHA is bumped.
+
+**Reusable workflows** — a release tag. GitHub's SHA-pinning policy exempts reusable workflows, and
+Renovate bumps the tag:
 
 ```yaml
 uses: maestra-io/github-actions/.github/workflows/terraform-run.yml@v1.1.7

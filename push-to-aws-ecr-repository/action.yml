@@ -92,7 +92,7 @@ runs:
 
     - name: Configure AWS Credentials
       if: ${{ inputs.awsAccessKey != '' }}
-      uses: aws-actions/configure-aws-credentials@v2.2.0
+      uses: aws-actions/configure-aws-credentials@5fd3084fc36e372ff1fff382a39b10d03659f355 # v2.2.0
       with:
         aws-access-key-id: ${{ inputs.awsAccessKey }}
         aws-secret-access-key: ${{ inputs.awsSecretKey }}
@@ -118,7 +118,7 @@ runs:
     - id: tp-setup
       if: ${{ inputs.awsAccessKey == '' }}
       continue-on-error: true
-      uses: teleport-actions/setup@v1.1.1
+      uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
       with:
         version: ${{ steps.tp-version.outputs.version }}
         proxy: ${{ inputs.teleportFqdn }}
@@ -127,7 +127,7 @@ runs:
       shell: bash
       run: sleep 20
     - if: ${{ steps.tp-setup.outcome == 'failure' }}
-      uses: teleport-actions/setup@v1.1.1
+      uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
       with:
         version: ${{ steps.tp-version.outputs.version }}
         proxy: ${{ inputs.teleportFqdn }}
@@ -169,7 +169,7 @@ runs:
 
     - name: Configure AWS Credentials (workload identity)
       if: ${{ inputs.awsAccessKey == '' }}
-      uses: aws-actions/configure-aws-credentials@v4.3.1
+      uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
       with:
         role-to-assume: ${{ inputs.awsRoleArn }}
         aws-region: ${{ steps.region.outputs.value }}
@@ -177,7 +177,7 @@ runs:
 
     - name: Login to Amazon ECR Private
       id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v2.1.7
+      uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
 
     # Inputs reach the shell through `env:`, never through ${{ }} in the script
     # body: GitHub substitutes the expression BEFORE bash parses the line, so a

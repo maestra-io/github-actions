@@ -64,7 +64,7 @@ jobs:
     runs-on: runs-on=${{ github.run_id }}-gitleaks/pool=small
     timeout-minutes: 10
     steps:
-      - uses: runs-on/action@v2.5.0
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       # gitleaks-action scans the first 30 commits of a PR and no more (one page of
       # the commits API): a longer PR must not pass on a partial scan.
       - if: ${{ github.event.pull_request.commits > 30 }}
@@ -73,20 +73,20 @@ jobs:
           exit 1
       # Full history: the scanned range starts at the parent of the PR's first commit.
       # No token left in git config.
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
       # The central config from `ref`, not from the workflow's own ref: a reusable
       # workflow cannot reach files of its repo by path.
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: maestra-io/github-actions
           ref: ${{ inputs.ref }}
           path: .github-actions
           sparse-checkout: gitleaks
           persist-credentials: false
-      - uses: gitleaks/gitleaks-action@v3.0.0
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}

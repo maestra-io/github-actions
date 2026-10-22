@@ -89,7 +89,7 @@ runs:
         echo "version=$version" >> "$GITHUB_OUTPUT"
 
     - if: ${{ steps.chart.outputs.version != '0.0.0' && steps.tbot.outputs.installed != 'true' }}
-      uses: teleport-actions/setup@v1.1.1
+      uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
       with:
         version: ${{ steps.tp-version.outputs.version }}
         proxy: ${{ inputs.teleportFqdn }}
@@ -129,7 +129,7 @@ runs:
 
     - name: Configure AWS Credentials (workload identity)
       if: ${{ steps.chart.outputs.version != '0.0.0' }}
-      uses: aws-actions/configure-aws-credentials@v4.3.1
+      uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
       with:
         role-to-assume: ${{ inputs.awsRoleArn }}
         aws-region: ${{ inputs.awsRegion }}
