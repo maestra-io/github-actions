@@ -636,9 +636,16 @@ jobs:
           if [ "$PR" = true ]; then
             has check-unused-code && start unused-code npm run check-unused-code
             i18n=./node_modules/@mindbox-cloud/frontend-i18n/utils
-            [ -f "$i18n/deadLocalizationKeys.js" ] && start localization-keys bash -c "
-              node $i18n/deadLocalizationKeys.js --md-report $logs/unused-keys.md
-              [ ! -f $i18n/undefinedLocalizationKeys.js ] || node $i18n/undefinedLocalizationKeys.js --md-report $logs/missing-keys.md"
+            # >>> localization-keys
+            l10n() {
+              local rc=0
+              node "$i18n/deadLocalizationKeys.js" --md-report "$logs/unused-keys.md" || rc=$?
+              [ ! -f "$i18n/undefinedLocalizationKeys.js" ] \
+                || node "$i18n/undefinedLocalizationKeys.js" --md-report "$logs/missing-keys.md" || true
+              return "$rc"
+            }
+            # <<< localization-keys
+            [ -f "$i18n/deadLocalizationKeys.js" ] && start localization-keys l10n
           fi
           wait
           printf '### checks\n\n| check | result |\n|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
