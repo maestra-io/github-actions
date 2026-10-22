@@ -256,8 +256,6 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/terraform-plugins
-          # NOTE: no .terraform.lock.hcl exists in any consumer today -> the key
-          # is a degenerate static key. Kept as-is deliberately (harvest decision).
           key: tf-providers-${{ hashFiles('terraform/**/.terraform.lock.hcl') }}
 
       # --- retry-once, and ONLY on the steps that dial the internet -----------
@@ -863,6 +861,11 @@ jobs:
         with:
           terraform_version: ${{ inputs.terraform_version }}
           terraform_wrapper: false
+
+      # registry.terraform.io providers from packages.maestra.io (nora: quarantine,
+      # versions younger than 3 days hidden; issues-maestra#1649).
+      - name: Terraform providers through nora
+        uses: maestra-io/github-actions/terraform-nora@0b488dd7ca11b7bd0d5147b4b4887452a9b9f486 # v1.50.1
 
       - name: Terraform Init
         working-directory: terraform/environments/${{ inputs.env_dir != '' && inputs.env_dir || inputs.environment }}
