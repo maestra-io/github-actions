@@ -21,10 +21,10 @@ outputs:
     value: ${{ inputs.release-number != 'empty' && inputs.release-number || steps.release-number.outputs.release-number }}
   release-notes-body:
     description: "Body for Release Notes"
-    value: '[View release in GitHub](${{ steps.create_release.outputs.html_url }}) <br /> ${{ steps.clean-changelog.outputs.changelog }} <br/><br/>${{ steps.first-built-on.outputs.first-built-on }}'
+    value: '[View release in GitHub](${{ steps.create_release.outputs.url }}) <br /> ${{ steps.clean-changelog.outputs.changelog }} <br/><br/>${{ steps.first-built-on.outputs.first-built-on }}'
   release-url:
     description: "GitHub Release URL"
-    value: ${{ steps.create_release.outputs.html_url }}
+    value: ${{ steps.create_release.outputs.url }}
 runs:
   using: "composite"
   steps:
@@ -51,7 +51,10 @@ runs:
       env:
         CHANGELOG: ${{ steps.changelog.outputs.changelog }}
       run: |
-        echo "changelog=$(printf '%s' "$CHANGELOG" | sed "s/\"//g; s/'//g")" >> "$GITHUB_OUTPUT"
+        # The generator escapes newlines as %0A (%0D, %25), which file-command outputs do not decode.
+        clean=$(printf '%s' "$CHANGELOG" | sed "s/\"//g; s/'//g; s/%0A/\n/g; s/%0D/\r/g; s/%25/%/g")
+        delim="CHANGELOG_$(cat /proc/sys/kernel/random/uuid)"
+        { echo "changelog<<$delim"; printf '%s\n' "$clean"; echo "$delim"; } >> "$GITHUB_OUTPUT"
 
     - name: generate first built on
       id: first-built-on
