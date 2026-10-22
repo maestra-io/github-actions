@@ -562,3 +562,16 @@ RUN (it writes the minutes-lived OIDC token into a cached layer, replayed after 
 expired) with `--mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_<source>`
 on every `dotnet` RUN that can reach the feed (idempotent). Until then the
 workflows build such a Dockerfile without the layer cache.
+
+## Create GitHub Release (`create-github-release`)
+
+A copy of `mindbox-cloud/github-actions/create-github-release` with the same inputs and
+outputs. Every inner action is SHA-pinned, because the org SHA-pinning policy also checks the
+`uses:` lines inside a composite. One change from upstream: the changelog goes into the shell
+through `env:`, not by interpolation. Swap the upstream reference for this one:
+
+```yaml
+- uses: maestra-io/github-actions/create-github-release@<40-hex sha> # v1.48.0
+  with:
+    release-number: ${{ steps.version.outputs.release-number }}
+```
