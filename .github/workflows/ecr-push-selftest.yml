@@ -5,7 +5,9 @@
 # skip), the immutable-tag guard (other digest: fail) and the legacy docker-push
 # path of the action (push:true, localTag). Writes tags <run_number>* into the
 # selftest-ecr-push repository: on pull requests that touch the push path (a
-# workflow_dispatch needs the file on the default branch first).
+# workflow_dispatch needs the file on the default branch first). Joins with the
+# action's default token image-push-github-actions-github-actions (per-repo, any
+# ref; the org-wide token takes main/master only, fluxcd#25580).
 name: ecr-push-selftest
 on:
   workflow_dispatch:
@@ -54,7 +56,6 @@ jobs:
           awsRegion: us-west-2
           repositories: ${{ env.REPOSITORY }}
           targetTag: ${{ env.TAG }}
-          teleportToken: image-push-github-actions-maestra-io
           push: false
       - name: check block
         id: block
@@ -152,7 +153,6 @@ jobs:
           repositories: ${{ env.REPOSITORY }}
           localTag: ${{ env.TAG }}-legacy
           targetTag: ${{ env.TAG }}-legacy
-          teleportToken: image-push-github-actions-maestra-io
       - name: legacy tag stored
         env:
           AWS_REGION: us-west-2
