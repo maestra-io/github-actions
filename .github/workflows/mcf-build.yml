@@ -100,7 +100,7 @@
 #             functional passed. A skipped tests-checks/functional skips nothing after it:
 #             image, release, sourcemaps and bake guard on results, not on success().
 #   deps-image  node_modules + the sources -> ECR <image>-with-deps:<release> (uid 10001, no .git), the
-#             image the promote hook runs the schema check in. After image: ECR tags are immutable,
+#             image chart mcf-schema-check runs the schema check in at promotion. After image: ECR tags are immutable,
 #             so a push before checks and tests pass breaks "Re-run all jobs". release waits for it.
 #   release   git tag + GitHub Release <release>; a PR labelled `hotfix` also gets
 #             the marker tag hotfix/<release>.
