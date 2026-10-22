@@ -47,6 +47,7 @@ jobs:
           SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.value }}
         with:
           context: ${{ runner.temp }}/ctx-a
+          provenance: false
           outputs: type=image,push=false
           tags: local/${{ env.REPOSITORY }}:${{ env.TAG }}
       - name: ecr login
@@ -81,6 +82,7 @@ jobs:
           SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.value }}
         with:
           context: ${{ runner.temp }}/ctx-a
+          provenance: false
           push: true
           tags: ${{ steps.ecr.outputs.registry }}/${{ env.REPOSITORY }}:${{ env.TAG }}
       - name: pushed digest = built digest, tag stored in ECR
@@ -109,6 +111,7 @@ jobs:
           SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.value }}
         with:
           context: ${{ runner.temp }}/ctx-b
+          provenance: false
           outputs: type=image,push=false
           tags: local/${{ env.REPOSITORY }}:${{ env.TAG }}-b
       - name: b against the tag of a (expect fail, immutable tag)
@@ -128,6 +131,7 @@ jobs:
           SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.value }}
         with:
           context: ${{ runner.temp }}/ctx-b
+          provenance: false
           push: true
           tags: ${{ steps.ecr.outputs.registry }}/${{ env.REPOSITORY }}:${{ env.TAG }}-b
       - name: a and b share every layer but the last
@@ -144,6 +148,7 @@ jobs:
         uses: docker/build-push-action@v7.4.0
         with:
           context: ${{ runner.temp }}/ctx-a
+          provenance: false
           load: true
           tags: local/${{ env.REPOSITORY }}:${{ env.TAG }}-legacy
       - name: push legacy (docker push)

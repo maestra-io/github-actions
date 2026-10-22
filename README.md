@@ -177,6 +177,7 @@ its own image under the immutable tag and skips the push instead of failing on `
   env:
     SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.value }}
   with:
+    provenance: false # an attestation index would change the digest on push
     outputs: type=image,push=false
     tags: local/my-service:${{ steps.v.outputs.release }}
 - uses: maestra-io/github-actions/push-to-aws-ecr-repository@v1
@@ -190,6 +191,7 @@ its own image under the immutable tag and skips the push instead of failing on `
   env:
     SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.value }}
   with:
+    provenance: false
     push: true
     tags: ${{ steps.ecr.outputs.registry }}/my-service:${{ steps.v.outputs.release }}
 ```

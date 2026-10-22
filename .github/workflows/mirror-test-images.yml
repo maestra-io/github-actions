@@ -129,6 +129,7 @@ jobs:
         with:
           context: ${{ runner.temp }}/ctx
           pull: true
+          provenance: false
           push: true
           tags: ${{ steps.ecr.outputs.registry }}/${{ matrix.repository }}:${{ matrix.tag }}
           labels: |

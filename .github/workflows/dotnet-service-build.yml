@@ -1188,6 +1188,7 @@ jobs:
           builder: ${{ steps.runs-on.outputs.buildkit-builder }}
           no-cache: ${{ steps.cache.outputs.nocache == 'true' }}
           no-cache-filters: ${{ steps.cache.outputs.nocachefilter }}
+          provenance: false
           outputs: type=image,push=false
           tags: local/${{ matrix.image }}:${{ needs.version.outputs.release }}
           build-args: |
@@ -1252,6 +1253,7 @@ jobs:
           builder: ${{ steps.runs-on.outputs.buildkit-builder }}
           no-cache: ${{ steps.cache.outputs.nocache == 'true' }}
           no-cache-filters: ${{ steps.cache.outputs.nocachefilter }}
+          provenance: false
           push: true
           tags: ${{ steps.ecr.outputs.registry }}/${{ matrix.image }}:${{ needs.version.outputs.release }}
           build-args: |

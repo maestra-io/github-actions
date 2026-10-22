@@ -887,6 +887,7 @@ jobs:
         uses: docker/build-push-action@v7.4.0
         with:
           context: ${{ runner.temp }}/image
+          provenance: false
           push: true
           tags: ${{ steps.ecr.outputs.registry }}/${{ needs.version.outputs.image }}:${{ needs.version.outputs.release }}
           labels: |

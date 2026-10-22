@@ -693,6 +693,7 @@ jobs:
           context: ${{ fromJSON(needs.version.outputs.specs)[matrix.image].context }}
           file: ${{ fromJSON(needs.version.outputs.specs)[matrix.image].dockerfile }}
           target: ${{ matrix.target }}
+          provenance: false
           outputs: type=image,push=false
           tags: local/${{ matrix.image }}:${{ needs.version.outputs.release }}
           build-args: |
@@ -752,6 +753,7 @@ jobs:
           context: ${{ fromJSON(needs.version.outputs.specs)[matrix.image].context }}
           file: ${{ fromJSON(needs.version.outputs.specs)[matrix.image].dockerfile }}
           target: ${{ matrix.target }}
+          provenance: false
           push: true
           tags: ${{ steps.ecr.outputs.registry }}/${{ matrix.image }}:${{ needs.version.outputs.release }}
           build-args: |
