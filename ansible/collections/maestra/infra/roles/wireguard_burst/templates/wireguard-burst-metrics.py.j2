@@ -7,6 +7,7 @@ writes handshake time and byte counters. Keys are never written out.
 """
 import os
 import subprocess
+import sys
 import tempfile
 
 IFACE = {{ wireguard_burst_interface | to_json }}
@@ -21,9 +22,16 @@ METRICS = (
 )
 
 
+def label(value):
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
 def main():
-    dump = subprocess.run(["wg", "show", IFACE, "dump"], capture_output=True,
-                          text=True, check=True).stdout.splitlines()[1:]
+    try:
+        dump = subprocess.run(["wg", "show", IFACE, "dump"], capture_output=True,
+                              text=True, check=True, timeout=10).stdout.splitlines()[1:]
+    except subprocess.TimeoutExpired:
+        sys.exit("wg show timed out; the previous metrics file stays in place")
     rows = {}
     for line in dump:
         fields = line.split("\t")
@@ -33,7 +41,7 @@ def main():
     for name, kind, text, col in METRICS:
         out += [f"# HELP {name} {text}", f"# TYPE {name} {kind}"]
         for slot in sorted(rows):
-            out.append(f'{name}{{interface="{IFACE}",slot="{slot}"}} {int(rows[slot][col])}')
+            out.append(f'{name}{{interface="{label(IFACE)}",slot="{label(slot)}"}} {int(rows[slot][col])}')
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(OUT), prefix=".wireguard_burst.")
     with os.fdopen(fd, "w") as fh:
         fh.write("\n".join(out) + "\n")

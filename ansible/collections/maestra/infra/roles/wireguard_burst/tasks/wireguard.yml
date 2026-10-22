@@ -22,20 +22,21 @@
     creates: /etc/wireguard/{{ wireguard_burst_interface }}.key
     executable: /bin/bash
 
+# In check mode on a fresh host the key is not generated, so every step on
+# the key file runs only once it exists.
+- name: Check whether the private key exists
+  ansible.builtin.stat:
+    path: /etc/wireguard/{{ wireguard_burst_interface }}.key
+  register: wireguard_burst_key_stat
+  check_mode: false
+
 - name: Make the private key readable by systemd-networkd
   ansible.builtin.file:
     path: /etc/wireguard/{{ wireguard_burst_interface }}.key
     owner: root
     group: systemd-network
     mode: "0640"
-
-# In check mode on a fresh host the key is not generated, so the public-key
-# steps run only once it exists.
-- name: Check whether the private key exists
-  ansible.builtin.stat:
-    path: /etc/wireguard/{{ wireguard_burst_interface }}.key
-  register: wireguard_burst_key_stat
-  check_mode: false
+  when: wireguard_burst_key_stat.stat.exists
 
 - name: Derive the public key from the key file
   ansible.builtin.shell:
@@ -58,6 +59,23 @@
 - name: Show the public key (not a secret; burst nodes peer with it)
   ansible.builtin.debug:
     msg: "{{ inventory_hostname }} {{ wireguard_burst_interface }} public key: {{ wireguard_burst_pubkey.stdout }}"
+  when: wireguard_burst_key_stat.stat.exists
+
+# networkd reads the key only when it creates the netdev: after a key-file
+# rotation the running interface would keep the old key. Absent interface
+# (first run) = nothing to reconcile, networkd picks the file up below.
+- name: Apply the on-disk private key to the running interface
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      cur=$(wg show {{ wireguard_burst_interface }} public-key 2>/dev/null) || exit 0
+      [ "$cur" = "{{ wireguard_burst_pubkey.stdout }}" ] && exit 0
+      wg set {{ wireguard_burst_interface }} private-key /etc/wireguard/{{ wireguard_burst_interface }}.key
+      [ "$(wg show {{ wireguard_burst_interface }} public-key)" = "{{ wireguard_burst_pubkey.stdout }}" ] && echo applied
+    executable: /bin/bash
+  register: wireguard_burst_live_key
+  changed_when: "'applied' in wireguard_burst_live_key.stdout"
+  failed_when: wireguard_burst_live_key.rc != 0
   when: wireguard_burst_key_stat.stat.exists
 
 # A rebuilt host generates a new key while every burst node still carries the
