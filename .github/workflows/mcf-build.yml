@@ -3,8 +3,8 @@
 # (issues-maestra#1571). The static files reach the buckets at promotion, by the
 # upload Job of the MCF's own kustomization/, not from here.
 #
-#   version ─► install ─► codegen ─► checks, test, build ─► image ─► release ─► bake
-#                                                      │                     └─► sourcemaps
+#   version ─► install ─► codegen ─► checks, test, build ─► image ─► deps-image ─► release ─► bake
+#                                                      │                                   └─► sourcemaps
 #                                                      ├─► hot-test (pull_request)
 #                                                      ├─► e2e-stand (pull_request, tests/e2e/) ─► e2e (input e2e)
 #                                                      └─► functional (tests/functional/)
@@ -99,6 +99,9 @@
 #             once checks, test, build, tests-checks (with tests/) and a required
 #             functional passed. A skipped tests-checks/functional skips nothing after it:
 #             image, release, sourcemaps and bake guard on results, not on success().
+#   deps-image  node_modules + the sources -> ECR <image>-with-deps:<release> (uid 10001, no .git), the
+#             image the promote hook runs the schema check in. After image: ECR tags are immutable,
+#             so a push before checks and tests pass breaks "Re-run all jobs". release waits for it.
 #   release   git tag + GitHub Release <release>; a PR labelled `hotfix` also gets
 #             the marker tag hotfix/<release>.
 #   sourcemaps  the release's source maps -> Datadog US3 (service <mcf>, version <release>,
@@ -123,7 +126,7 @@
 #             on pull_request.
 #
 # Not ported from mcf@3: cyrillic (translation-checker, issues-maestra#1581),
-# the -e2e/-with-deps images (issues-maestra#1573),
+# the -e2e image (issues-maestra#1573),
 # multi-contour schema loading, and the RU contour jobs (Octopus, phrase, metrics,
 # pipelines release submit, Mindbox Datadog source maps).
 
@@ -895,10 +898,48 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ needs.version.outputs.release }}
 
+  deps-image:
+    needs: [version, install, image]
+    if: ${{ !cancelled() && needs.version.outputs.publish == 'true' && needs.install.result == 'success' && needs.image.result == 'success' }}
+    runs-on: runs-on=${{ github.run_id }}-deps-image/pool=small
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write # Teleport join
+    steps:
+      - uses: runs-on/action@v2.5.0
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/cache/restore@v6.1.0
+        with:
+          path: *root-node-modules
+          key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
+          fail-on-cache-miss: true
+      - name: build ${{ needs.version.outputs.image }}-with-deps:${{ needs.version.outputs.release }}
+        env:
+          NODE_VERSION: ${{ inputs.node-version }}
+          IMAGE: ${{ needs.version.outputs.image }}
+          RELEASE: ${{ needs.version.outputs.release }}
+        run: |
+          printf '.git\n' > .dockerignore
+          printf 'FROM docker.io/library/node:%s-slim\nWORKDIR /app\nRUN chown 10001:10001 /app\nCOPY --chown=10001:10001 . .\n' "$NODE_VERSION" > "$RUNNER_TEMP/Dockerfile.deps"
+          docker build -f "$RUNNER_TEMP/Dockerfile.deps" . -t "local/$IMAGE-with-deps:$RELEASE" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.version=$RELEASE"
+      - uses: maestra-io/github-actions/push-to-aws-ecr-repository@v1
+        with:
+          awsRegion: us-west-2
+          repositories: ${{ needs.version.outputs.image }}-with-deps
+          localTag: ${{ needs.version.outputs.release }}
+          targetTag: ${{ needs.version.outputs.release }}
+          teleportToken: ${{ inputs.teleport-token }}
+
   # Git tag + GitHub Release BEFORE the bake: bake-oci-manifests checks out the release tag.
   release:
-    needs: [version, image]
-    if: ${{ !cancelled() && needs.image.result == 'success' }}
+    needs: [version, image, deps-image]
+    if: ${{ !cancelled() && needs.image.result == 'success' && needs.deps-image.result == 'success' }}
     runs-on: runs-on=${{ github.run_id }}-release/pool=small
     timeout-minutes: 5
     permissions:

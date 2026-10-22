@@ -14,7 +14,7 @@ job() { awk -v j="  $1:" -v k="    $2: " '$0 == j { on = 1; next } on && /^  [a-
 
 # Every job but pr-gate itself and the publish chain, which never runs on pull_request.
 jobs=$(awk '/^jobs:$/ { on = 1; next } on && /^  [a-z][a-z0-9-]*:$/ { sub(/^  /, ""); sub(/:$/, ""); print }' "$wf" \
-  | grep -vxE 'pr-gate|image|release|sourcemaps|bake' | paste -sd, - | sed 's/,/, /g')
+  | grep -vxE 'pr-gate|image|deps-image|release|sourcemaps|bake'| paste -sd, - | sed 's/,/, /g')
 eq "$(job pr-gate needs)" "[$jobs]" "pr-gate needs every PR job"
 # shellcheck disable=SC2016 # the expression is matched literally
 eq "$(job pr-gate if)" '${{ always() && github.event_name == '"'pull_request'"' }}' "pr-gate runs on pull_request after any outcome"
