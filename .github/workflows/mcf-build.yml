@@ -80,7 +80,8 @@
 #             nora setup as `install`, cached under that lockfile's hash. A `tests` npm
 #             workspace of the root (no tests/package-lock.json) comes from `install`.
 #   tests-checks  tests/package.json: check-types and check-scripts in tests/ (mcf@3
-#             unified-tests-types, unified-tests-lint). Fails the run, holds the image.
+#             unified-tests-types, unified-tests-lint) with codegen output. Fails the run,
+#             holds the image.
 #   codegen   GitHub OIDC -> auth-jwt JWT (masked) -> `npm run graphql-codegen`; the
 #             generated code goes to the other jobs as an artifact.
 #   checks    check-types, check-scripts, check-styles, entries in parallel; on
@@ -703,8 +704,8 @@ jobs:
           path: reports
 
   tests-checks:
-    needs: [version, install, tests-install]
-    if: ${{ !cancelled() && needs.version.outputs.tests == 'true' && needs.install.result == 'success' && (needs.tests-install.result == 'success' || needs.tests-install.result == 'skipped') }}
+    needs: [version, install, tests-install, codegen]
+    if: ${{ !cancelled() && needs.version.outputs.tests == 'true' && needs.install.result == 'success' && needs.codegen.result == 'success' && (needs.tests-install.result == 'success' || needs.tests-install.result == 'skipped') }}
     runs-on: runs-on=${{ github.run_id }}-tests-checks/pool=small
     timeout-minutes: 15
     permissions:
@@ -728,6 +729,11 @@ jobs:
           path: tests/node_modules
           key: mcf-tests-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('tests/package-lock.json') }}
           fail-on-cache-miss: true
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: codegen
+          path: ${{ runner.temp }}
+      - run: tar -xzf "$RUNNER_TEMP/codegen.tgz"
       - name: tests/ checks
         working-directory: tests
         run: |
