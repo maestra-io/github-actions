@@ -3,11 +3,17 @@
 # the real ECR: build -> push-to-aws-ecr-repository push:false -> ecr-push-check ->
 # docker/build-push-action push:true, then the idempotent re-run (same digest:
 # skip), the immutable-tag guard (other digest: fail) and the legacy docker-push
-# path of the action (push:true, localTag). workflow_dispatch only: it writes
-# tags <run_number>* into the selftest-ecr-push repository.
+# path of the action (push:true, localTag). Writes tags <run_number>* into the
+# selftest-ecr-push repository: on pull requests that touch the push path (a
+# workflow_dispatch needs the file on the default branch first).
 name: ecr-push-selftest
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/ecr-push-selftest.yml"
+      - ".github/workflows/service-build.yml"
+      - "push-to-aws-ecr-repository/**"
 jobs:
   push:
     runs-on: runs-on=${{ github.run_id }}-ecr-push/pool=build
