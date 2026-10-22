@@ -2,6 +2,15 @@
 # gitleaks/gitleaks-action. One job, `gitleaks` (the check is `<caller job> / gitleaks`),
 # skipped outside pull_request.
 #
+# A second job, `actions pinned` (`<caller job> / actions pinned`), fails when a line the
+# PR adds or changes references an action by a tag or branch instead of a full commit
+# SHA (`pinact run --check` on the PR diff only, so lines nobody touched never block a
+# merge). Write `uses: owner/repo@<40-hex sha> # vX.Y.Z` (`pinact run` does it); the org
+# requires SHA-pinned actions (sha_pinning_required, maestra-io/issues-maestra#1649).
+# Reusable workflows (`.../.github/workflows/x.yml@ref`) are exempt, as in GitHub's
+# policy (slsa-github-generator even requires its tag). It rides on this workflow
+# because every repo already calls it.
+#
 # What is scanned: gitleaks-action lists the PR's commits through the API and runs
 # `gitleaks detect --log-opts="--no-merges --first-parent <first>^..<last>"`, so only
 # what the PR adds is scanned, never the whole tree. The checkout is full depth
@@ -92,3 +101,41 @@ jobs:
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
           GITLEAKS_VERSION: latest
           GITLEAKS_CONFIG: .github-actions/gitleaks/gitleaks.toml
+
+  actions-pinned:
+    name: actions pinned
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: runs-on=${{ github.run_id }}-actions-pinned/pool=small
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      PINACT_VERSION: 5.0.1
+      PINACT_SHA256: 12500c0fff5db94a0155e2e76ed959d1dc0e899056ee168d8fb7b4840e7c04f0
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      # The test merge commit and its first parent, the base branch tip (HEAD^1).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: pinact --check (lines this PR changes)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/pinact.tar.gz" \
+            "https://github.com/suzuki-shunsuke/pinact/releases/download/v${PINACT_VERSION}/pinact_linux_amd64.tar.gz"
+          echo "${PINACT_SHA256}  $RUNNER_TEMP/pinact.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/pinact.tar.gz" -C "$RUNNER_TEMP" pinact
+          cat > "$RUNNER_TEMP/pinact.yaml" <<'YAML'
+          version: 3
+          rules:
+            - ignore: true
+              conditions:
+                - expr: ActionName contains "/.github/workflows/"
+          YAML
+          git diff HEAD^1 HEAD > "$RUNNER_TEMP/pr.diff"
+          # --no-api: a syntactic check (40-hex SHA plus a version comment), no token needed.
+          if ! "$RUNNER_TEMP/pinact" run --fix=false --no-api -c "$RUNNER_TEMP/pinact.yaml" --diff-file "$RUNNER_TEMP/pr.diff"; then
+            echo "::error::an action this PR adds or changes is not pinned to a full commit SHA with a version comment. Run \`pinact run\` locally and commit the result."
+            exit 1
+          fi
