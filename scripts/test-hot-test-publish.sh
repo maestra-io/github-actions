@@ -58,6 +58,20 @@ done
 grep -qF "prefix=\"\${STAND_PREFIX:-hot-test}\"" "$wf" || { echo "FAIL the names block does not default stand-prefix to hot-test"; exit 1; }
 # shellcheck disable=SC2016 # the expression is matched literally
 grep -qF 'name: ${{ inputs.stand-prefix }}' "$wf" || { echo "FAIL the environment is not named after stand-prefix"; exit 1; }
+
+pages_prog=$(sed -n '/# >>> pages/,/# <<< pages/p' "$wf" | sed 's/^          //')
+[ -n "$pages_prog" ] || { echo "pages block not found in $wf"; exit 1; }
+pages() { PAGES="$1" bash -c "set -eo pipefail; $pages_prog"$'\n''echo "$pages"'; }
+eq "$(pages "")" "[]" "no pages"
+eq "$(pages $'standard-blocks /email-editor/common-block-templates-preview?standardFlexBlocks=true\n')" \
+  '[{"name":"standard-blocks","path":"/email-editor/common-block-templates-preview?standardFlexBlocks=true"}]' "one page, YAML block newline"
+eq "$(pages $'  a /x\n\nb /y/z?q=1&r=%20\n')" '[{"name":"a","path":"/x"},{"name":"b","path":"/y/z?q=1&r=%20"}]' "two pages, indent and a blank line"
+for bad in "Std /x" "a- /x" "a x" "a" "a /x y" 'a /x"y' $'a /x\na /y'; do
+  if pages "$bad" >/dev/null 2>&1; then echo "FAIL page '$bad': accepted"; exit 1; fi
+done
+# shellcheck disable=SC2016 # the expression is matched literally
+grep -qF 'name: ${{ inputs.stand-prefix }}-${{ matrix.page.name }}' "$wf" || { echo "FAIL the page environment is not <stand-prefix>-<name>"; exit 1; }
+echo "hot-test-publish pages: ok"
 grep -qF "route: \${{ steps.route.outputs.up == 'true' }}" "$wf" || { echo "FAIL the job does not output route"; exit 1; }
 echo "hot-test-publish names: ok"
 

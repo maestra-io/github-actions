@@ -70,6 +70,10 @@
 #                    is the host, the bucket folder and the GitHub environment. mcf-build.yml
 #                    passes e2e for the e2e stand: the same stand whose API the cluster proxies
 #                    to the e2e tenant (fluxcd registers e2e providers per repo separately).
+#   pages            More pages of the stand to link from the PR, one `<name> <path>` per line
+#                    (default none): once the stand answers, each gets the deployment of
+#                    environment <stand-prefix>-<name> with the url <stand url><path>, e.g.
+#                    `standard-blocks /email-editor/common-block-templates-preview?standardFlexBlocks=true`.
 #   hot-test-domain  Domain of the stands (default testing-env.omicron.maestra.io).
 #   bucket           R2 bucket of the stands (default admin-hot-test-static-omicron).
 #   base-static-url  Released static the entry is built from: its entry/mcf-manifests.json,
@@ -124,6 +128,7 @@
 # Permissions: none are declared here on purpose; the job runs with what the calling
 # job grants: contents: read and id-token: write (Teleport join). The PR shows the stand
 # as a deployment of environment hot-test: no token permission, created on first run.
+# The pages job does the same per page, so pages need no permission either.
 # Credentials: the Teleport bot's app certificate reaches Vault omicron, whose role
 # hot-test-static-publish issues 10-minute editor keys for this bucket only.
 
@@ -144,6 +149,9 @@ on:
       stand-prefix:
         type: string
         default: hot-test
+      pages:
+        type: string
+        default: ""
       mcf:
         type: string
         default: ""
@@ -193,6 +201,7 @@ jobs:
     outputs:
       url: ${{ steps.names.outputs.url }}
       route: ${{ steps.route.outputs.up == 'true' }}
+      pages: ${{ steps.names.outputs.pages }}
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - id: names
@@ -206,6 +215,7 @@ jobs:
           MANIFEST: ${{ inputs.manifest }}
           HOT_TEST_DOMAIN: ${{ inputs.hot-test-domain }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PAGES: ${{ inputs.pages }}
         run: |
           # >>> names (scripts/test-hot-test-publish.sh runs this block)
           repo="${REPO:-${GITHUB_REPOSITORY##*/}}"
@@ -226,6 +236,17 @@ jobs:
           name="${prefix}-${repo}-pr-${pr}"
           host="${name}.${HOT_TEST_DOMAIN}"
           # <<< names
+          # >>> pages (scripts/test-hot-test-publish.sh runs this block)
+          pages='[]'
+          path_re='^/[A-Za-z0-9._~/?&=%:+,-]*$'
+          while read -r page_name page_path page_extra; do
+            [ -n "$page_name" ] || continue
+            [[ "$page_name" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || { echo "::error::page name '$page_name' is not [a-z0-9]([a-z0-9-]*[a-z0-9])?"; exit 1; }
+            [[ "$page_path" =~ $path_re && -z "$page_extra" ]] || { echo "::error::page $page_name: '$page_path${page_extra:+ $page_extra}' is not one URL path starting with /"; exit 1; }
+            jq -e --arg n "$page_name" 'all(.[]; .name != $n)' <<<"$pages" >/dev/null || { echo "::error::page $page_name is listed twice"; exit 1; }
+            pages=$(jq -c --arg n "$page_name" --arg p "$page_path" '. + [{name: $n, path: $p}]' <<<"$pages")
+          done <<<"$PAGES"
+          # <<< pages
           {
             echo "prefix=$prefix"
             echo "repo=$repo"
@@ -237,6 +258,7 @@ jobs:
             echo "host=$host"
             echo "url=https://$host"
             echo "sha=${HEAD_SHA:0:7}"
+            echo "pages=$pages"
           } >> "$GITHUB_OUTPUT"
           echo "stand https://$host, bucket folder $name/, own files $static_prefix/, manifest $manifest"
 
@@ -532,3 +554,19 @@ jobs:
           fi
           printf '### %s stand\n%s\n' "$PREFIX" "$body" >> "$GITHUB_STEP_SUMMARY"
           # <<< summary
+
+  pages:
+    needs: publish
+    if: ${{ needs.publish.outputs.route == 'true' && needs.publish.outputs.pages != '[]' }}
+    runs-on: runs-on=${{ github.run_id }}-${{ inputs.stand-prefix }}-pages/pool=small
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        page: ${{ fromJSON(needs.publish.outputs.pages) }}
+    environment:
+      name: ${{ inputs.stand-prefix }}-${{ matrix.page.name }}
+      url: ${{ needs.publish.outputs.url }}${{ matrix.page.path }}
+    steps:
+      - env:
+          URL: ${{ needs.publish.outputs.url }}${{ matrix.page.path }}
+        run: echo "$URL"

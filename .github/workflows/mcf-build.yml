@@ -44,6 +44,8 @@
 #   hot-test            On pull_request, publish the hot-test stand of the PR (default true):
 #                       hot-test-publish.yml, https://hot-test-<repo>-pr-<N>.testing-env.omicron.maestra.io.
 #                       Not for renovate/* and LocalizationPull branches or PRs from forks.
+#   hot-test-pages      More pages of the hot-test stand linked from the PR, one `<name> <path>`
+#                       per line (default none): hot-test-publish.yml input pages.
 #   static-prefix       Folder of the built static under build/, no leading or trailing
 #                       slash (default v2_static/<mcf>, <mcf> = the package name without its
 #                       scope, - -> _). The admin shell frontend-core-v2 builds v2_static/core.
@@ -156,6 +158,9 @@ on:
       hot-test:
         type: boolean
         default: true
+      hot-test-pages:
+        type: string
+        default: ""
       static-prefix:
         type: string
         default: ""
@@ -1065,6 +1070,7 @@ jobs:
       static-prefix: ${{ needs.version.outputs.static-prefix }}
       manifest: ${{ needs.version.outputs.manifest }}
       static-artifact: static
+      pages: ${{ inputs.hot-test-pages }}
 
   # The e2e tests' own stand: the entry bakes the stand host in, so it cannot share hot-test's.
   e2e-stand:
