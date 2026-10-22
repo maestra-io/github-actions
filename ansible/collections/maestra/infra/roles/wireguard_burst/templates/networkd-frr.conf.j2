@@ -1,0 +1,6 @@
+# {{ ansible_managed }}
+# FRR (zebra) installs the slot and BGP routes; networkd must not remove
+# routes it did not configure when it reloads or reconfigures a link.
+[Network]
+ManageForeignRoutes=no
+ManageForeignRoutingPolicyRules=no

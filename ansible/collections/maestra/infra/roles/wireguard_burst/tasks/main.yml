@@ -1,0 +1,25 @@
+---
+# Order: validate -> tunnel (keys, interface, peers) -> outputs -> metrics ->
+# [dedicated: sysctl, nftables, FRR]. The tunnel exists before FRR references
+# it, and the outputs exist before an embedded consumer templates its files.
+
+- name: Validate the inputs
+  ansible.builtin.import_tasks: validate.yml
+
+- name: WireGuard interface, keys and peers
+  ansible.builtin.import_tasks: wireguard.yml
+
+- name: Render the FRR and nftables fragments (embedded-mode outputs)
+  ansible.builtin.set_fact:
+    wireguard_burst_frr_static: "{{ lookup('ansible.builtin.template', 'frr-static.j2') }}"
+    wireguard_burst_frr_bfd: "{{ lookup('ansible.builtin.template', 'frr-bfd-profile.j2') }}"
+    wireguard_burst_nft_input: "{{ lookup('ansible.builtin.template', 'nft-input.j2') }}"
+    wireguard_burst_nft_forward: "{{ lookup('ansible.builtin.template', 'nft-forward.j2') }}"
+
+- name: Per-slot WireGuard metrics for node_exporter
+  ansible.builtin.import_tasks: metrics.yml
+  when: wireguard_burst_textfile_dir | length > 0
+
+- name: Dedicated gateway (sysctl, nftables, FRR)
+  ansible.builtin.import_tasks: dedicated.yml
+  when: wireguard_burst_mode == 'dedicated'

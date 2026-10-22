@@ -7,6 +7,17 @@ finding, and because the `os_update` contract is shared across four repos:
 anything that changes a variable name or a hook expectation has to be findable
 from one place.
 
+## 1.3.0
+
+- New role `wireguard_burst` ([issues-maestra#1444](https://github.com/maestra-io/issues-maestra/issues/1444)):
+  WireGuard termination for Kubernetes burst nodes with one BFD-tracked FRR
+  static `/32` per slot (300 ms x 3). Two modes: `embedded` (on a host that
+  owns its own nftables/FRR; the role exposes the lines to include) and
+  `dedicated` (owns nftables, FRR and sysctls, announces live slots to its
+  uplinks over eBGP with BFD). Gateway public-key assert, per-slot textfile
+  metrics. Contract: `roles/wireguard_burst/README.md`.
+- `os_update`: no change.
+
 ## 1.2.2
 
 - `os_update` role: `mode=undrain-only` posts the same post-run tail silences

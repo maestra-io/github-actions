@@ -1,0 +1,19 @@
+# {{ ansible_managed }}
+# Burst-node tunnel (maestra.infra.wireguard_burst). Peers are kept in sync
+# live with `wg set`; networkd reads this file only when it creates the device.
+[NetDev]
+Name={{ wireguard_burst_interface }}
+Kind=wireguard
+MTUBytes={{ wireguard_burst_mtu }}
+
+[WireGuard]
+PrivateKeyFile=/etc/wireguard/{{ wireguard_burst_interface }}.key
+ListenPort={{ wireguard_burst_port }}
+{% for s in wireguard_burst_slots %}
+
+# slot {{ s.name }}
+[WireGuardPeer]
+PublicKey={{ s.pubkey }}
+AllowedIPs={{ s.ip }}/32
+PersistentKeepalive={{ wireguard_burst_keepalive }}
+{% endfor %}

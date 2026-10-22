@@ -1,0 +1,61 @@
+#!/usr/sbin/nft -f
+# {{ ansible_managed }}
+# Dedicated burst gateway (maestra.infra.wireguard_burst, mode dedicated).
+# {{ wireguard_burst_lan_interface }} = LAN, {{ wireguard_burst_wan_interface }} = public (WireGuard only),
+# {{ wireguard_burst_interface }} = the burst-node tunnel.
+
+flush ruleset
+
+define private = { {{ wireguard_burst_private_ranges | join(', ') }} }
+
+table inet filter {
+  chain input {
+    type filter hook input priority 0; policy drop;
+
+    ct state established,related accept
+    iifname "lo" accept
+    ip protocol icmp accept
+
+    # WireGuard (untracked, see table raw) and BFD from the slots.
+{% for line in wireguard_burst_nft_input.splitlines() if line | trim | length > 0 %}
+    {{ line }}
+{% endfor %}
+
+    # LAN: BGP/BFD with the uplinks, scrapes, consul gossip.
+    iifname "{{ wireguard_burst_lan_interface }}" ip saddr $private accept
+  }
+
+  chain forward {
+    type filter hook forward priority 0; policy accept;
+
+    # Fail closed: this host routes between the tunnel and the LAN only.
+    # Nothing is forwarded to or from the public interface (an address no
+    # route covers would otherwise follow the default route out of it).
+    iifname "{{ wireguard_burst_wan_interface }}" drop
+    oifname "{{ wireguard_burst_wan_interface }}" drop
+
+    # The tunnel MTU is below the LAN's: clamp MSS to the route MTU both ways.
+    tcp flags syn tcp option maxseg size set rt mtu
+  }
+
+  chain output {
+    type filter hook output priority 0; policy accept;
+  }
+}
+
+# Private <-> private transit and the tunnel's own UDP are stateless: no
+# conntrack entry to expire or to fill up, and an asymmetric path (LAN -> VM
+# through the uplink, VM -> LAN straight onto the LAN) needs none.
+table inet raw {
+  chain prerouting {
+    type filter hook prerouting priority raw; policy accept;
+    ip saddr $private ip daddr $private notrack
+    iifname "{{ wireguard_burst_wan_interface }}" udp dport {{ wireguard_burst_port }} notrack
+  }
+
+  chain output {
+    type filter hook output priority raw; policy accept;
+    ip saddr $private ip daddr $private notrack
+    oifname "{{ wireguard_burst_wan_interface }}" udp sport {{ wireguard_burst_port }} notrack
+  }
+}

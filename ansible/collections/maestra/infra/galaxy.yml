@@ -1,7 +1,7 @@
 ---
 namespace: maestra
 name: infra
-version: 1.2.2
+version: 1.3.0
 readme: README.md
 authors:
   - Maestra Infrastructure
@@ -10,12 +10,14 @@ description: >-
   role: the generic half of the fleet OS-update workflow (plan, apt, reboot,
   Alertmanager silences, drain marker). The role-specific half (preflight /
   drain / verify / undrain) is implemented by each consumer repo as a task-file
-  contract — see docs/ansible-os-update.md.
+  contract — see docs/ansible-os-update.md. Also holds wireguard_burst:
+  WireGuard termination for burst nodes with BFD-tracked per-slot routes.
 license:
   - MIT
 tags:
   - infrastructure
   - patching
+  - networking
 repository: https://github.com/maestra-io/github-actions
 documentation: https://github.com/maestra-io/github-actions/blob/main/docs/ansible-os-update.md
 build_ignore:

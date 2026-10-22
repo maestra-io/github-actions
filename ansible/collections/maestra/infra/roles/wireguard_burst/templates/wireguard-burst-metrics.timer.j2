@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=WireGuard burst-slot metrics every {{ wireguard_burst_metrics_interval }}
+
+[Timer]
+OnBootSec={{ wireguard_burst_metrics_interval }}
+OnUnitActiveSec={{ wireguard_burst_metrics_interval }}
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
