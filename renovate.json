@@ -1,7 +1,8 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "config:recommended"
+    "config:recommended",
+    "github>maestra-io/renovate-config:externalImages"
   ],
   "timezone": "Europe/Lisbon",
   "semanticCommits": "enabled",
