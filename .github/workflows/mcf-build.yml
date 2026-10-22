@@ -3,12 +3,11 @@
 # (issues-maestra#1571). The static files reach the buckets at promotion, by the
 # upload Job of the MCF's own kustomization/, not from here.
 #
-#   version ─► install ─► codegen ─► checks, test, build ─► image ─► release ─► bake
-#                                                      │                     └─► sourcemaps
+#   version ─► install ─► codegen ─► checks, test, build ─► image ─► deps-image ─► release ─► bake
+#                                                      │                                   └─► sourcemaps
 #                                                      ├─► hot-test (pull_request)
 #                                                      ├─► e2e-stand (pull_request, tests/e2e/) ─► e2e (input e2e)
 #                                                      └─► functional (tests/functional/)
-#   version, install ─► deps-image ─► release
 #   version ─► tests-install ─► tests-checks (tests/package.json)
 #   pull_request: every job that ran ─► pr-gate (the required check)
 #
@@ -101,7 +100,8 @@
 #             functional passed. A skipped tests-checks/functional skips nothing after it:
 #             image, release, sourcemaps and bake guard on results, not on success().
 #   deps-image  node_modules + the sources -> ECR <image>-with-deps:<release> (uid 10001, no .git), the
-#             image the promote hook runs the schema check in; release waits for it.
+#             image the promote hook runs the schema check in. After image: ECR tags are immutable,
+#             so a push before checks and tests pass breaks "Re-run all jobs". release waits for it.
 #   release   git tag + GitHub Release <release>; a PR labelled `hotfix` also gets
 #             the marker tag hotfix/<release>.
 #   sourcemaps  the release's source maps -> Datadog US3 (service <mcf>, version <release>,
@@ -889,8 +889,8 @@ jobs:
           teleportToken: ${{ inputs.teleport-token }}
 
   deps-image:
-    needs: [version, install]
-    if: ${{ !cancelled() && needs.version.outputs.publish == 'true' && needs.install.result == 'success' }}
+    needs: [version, install, image]
+    if: ${{ !cancelled() && needs.version.outputs.publish == 'true' && needs.install.result == 'success' && needs.image.result == 'success' }}
     runs-on: runs-on=${{ github.run_id }}-deps-image/pool=small
     timeout-minutes: 15
     permissions:
