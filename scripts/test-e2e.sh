@@ -75,7 +75,7 @@ eq "$(awk '/^      e2e:$/ { on = 1; next } on && /default:/ { print $2; exit }' 
 grep -qF "      e2e: \${{ steps.tests.outputs.e2e }}" "$wf" || { echo "FAIL the e2e detection output depends on more than the files"; exit 1; }
 stand=$(jobtext e2e-stand); hot=$(jobtext hot-test)
 has "$stand" "      stand-prefix: e2e" "e2e-stand prefix"
-eq "$(grep -A20 '^    with:' <<<"$stand" | grep -v stand-prefix)" "$(grep -A20 '^    with:' <<<"$hot")" "e2e-stand passes the hot-test inputs"
+eq "$(grep -A20 '^    with:' <<<"$stand" | grep -v stand-prefix)" "$(grep -A20 '^    with:' <<<"$hot" | grep -v '^      pages:')" "e2e-stand passes the hot-test inputs but pages"
 eq "$(job e2e-stand uses)" "$(job hot-test uses)" "e2e-stand calls the same workflow as hot-test"
 echo "e2e-stand wiring: ok"
 
