@@ -93,6 +93,8 @@ jobs:
 
       - name: service-build image-targets parsing (workflow copy)
         run: bash scripts/test-service-build.sh
+      - name: ecr-push-check (tag absent / same digest / other digest)
+        run: bash scripts/test-ecr-push-check.sh
 
       - name: hot-test-publish stand names, manifest override, route wait, release bucket check, summary (workflow copy)
         run: bash scripts/test-hot-test-publish.sh

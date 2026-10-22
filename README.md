@@ -149,10 +149,50 @@ jobs:
   and read by nothing.
 - `awsOrganizationId`: AWS Organization ID for ECR policy (required)
 - `repositories`: Comma-separated list of repository names (required)
-- `localTag`: Tag of locally built images that must be pre-built (required)
+- `localTag`: Tag of locally built images (`local/<repository>:<localTag>`). Required with `push: true`.
 - `targetTag`: Target tag for all ECR repositories (required)
-- `awsRegionSecondary`: second ECR region every pushed image is mirrored to. Default `''` (mirror off) since phase 6 — `us-west-2` is the only push target. See [Dual-push to a second region](#dual-push-to-a-second-region) for the one direction a mirror can be re-enabled in.
-- `craneVersion`: crane CLI version used by the mirror step, no `v-` prefix. Default `0.22.0`.
+- `push`: `true` (default) tags and `docker push`es the local images; `false` stops after the login
+  and the repository creation, so the caller pushes from BuildKit (see [Push from BuildKit](#push-from-buildkit)).
+
+### Outputs
+
+- `registry`: the ECR registry host the action logged in to (`515260921971.dkr.ecr.us-west-2.amazonaws.com`).
+
+### Push from BuildKit
+
+A fresh runner's docker daemon (overlay2) holds no registry metadata for the layers BuildKit
+built, so `docker push` uploads every layer even when ECR already stores all but the changed
+ones (data-mesh-algs-413, 22.10.2026: 81 of 85 layers identical between releases, 2.3 GB
+uploaded for 3 MB of change, 100 s of `load: true` plus 3 min of push per release). BuildKit's
+own push asks the registry about every blob first and uploads only the missing ones. The shared
+workflows (`service-build.yml`, `dotnet-service-build.yml`, `mcf-build.yml`) build once with
+`outputs: type=image,push=false`, call this action with `push: false`, and push with a second,
+fully cached `docker/build-push-action` run (`push: true`, tag `${registry}/<repository>:<tag>`).
+`SOURCE_DATE_EPOCH` (the commit time) keeps the manifest digest reproducible, so a re-run finds
+its own image under the immutable tag and skips the push instead of failing on `TAG_INVALID`:
+
+```yaml
+- uses: docker/build-push-action@v7.4.0
+  id: build
+  env:
+    SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.value }}
+  with:
+    outputs: type=image,push=false
+    tags: local/my-service:${{ steps.v.outputs.release }}
+- uses: maestra-io/github-actions/push-to-aws-ecr-repository@v1
+  id: ecr
+  with:
+    awsRegion: us-west-2
+    repositories: my-service
+    targetTag: ${{ steps.v.outputs.release }}
+    push: false
+- uses: docker/build-push-action@v7.4.0
+  env:
+    SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.value }}
+  with:
+    push: true
+    tags: ${{ steps.ecr.outputs.registry }}/my-service:${{ steps.v.outputs.release }}
+```
 
 ### Prerequisites
 
@@ -197,41 +237,13 @@ If you have three services: `api`, `frontend`, and `worker`, you would:
 
 This will push all three images to their respective ECR repositories with the `v1.0.0` tag.
 
-### Dual-push to a second region
+### Second region
 
-Both `push-to-aws-ecr-repository` and `bake-oci-manifests` mirror everything they push to
-`us-west-2` — phase 3 of the ECR `eu-central-1` → `us-west-2` migration
-([issues-maestra#1354](https://github.com/maestra-io/issues-maestra/issues/1354)). Consumers need
-no change: they pin `@main`, and the mirror is on by default.
-
-The mirror never re-pushes. It reads the digest the **primary** region *stores* for the tag
-(`aws ecr describe-images` — the repository's own record), triggers the import in the secondary
-region **by digest**, waits until `describe-images` there confirms real storage, writes the tag with
-`crane tag`, and asserts the tag resolves to the same digest in both regions.
-
-That shape is not stylistic. `us-west-2` carries a registry-root pull-through-cache rule onto
-`eu-central-1`, so a registry *read* against the US host answers through the cache for content the
-US repository does not store: `crane copy` sees "destination already has it" and no-ops over a stale
-tag, and `crane digest` confirms content the job never wrote — while pinning that tag in the cache
-for 24 h. `crane tag` is the only primitive that rewrites the storage record unconditionally, and
-`describe-images` is the only honest "what is actually stored" question.
-
-Multi-arch images have their child manifests imported before the index — an index whose children
-have not landed fails with `MANIFEST_BLOB_UNKNOWN`. Single-manifest images have no children and skip
-that loop.
-
-**The off-switch is the default since phase 6**: `awsRegionSecondary` / `aws-region-secondary`
-default to `''`, the mirror steps are skipped entirely, and the actions push to `us-west-2` only —
-eu-central-1 is frozen. If a mirror ever needs to come back, the ONLY working direction is
-`awsRegion: eu-central-1` + `awsRegionSecondary: us-west-2` (for the bake action additionally the
-two matching registry-host inputs): the mirror is a cache prime + storage poll, and only us-west-2
-carries the registry-ROOT pull-through-cache rule. The inverse assignment would poll `describe-images`
-for 180 s per digest and fail the job.
-
-Workflows that push with their **own** `docker push` / `docker buildx build --push` /
-`docker/build-push-action` / `helm push` instead of going through either action get the same
-guarantee from [`mirror-to-secondary-ecr`](#mirror-an-ecr-tag-to-the-secondary-region) — one step
-after their push.
+The dual-push of the ECR eu-central-1 → us-west-2 migration
+([issues-maestra#1354](https://github.com/maestra-io/issues-maestra/issues/1354), phases 3–6) is
+gone from `push-to-aws-ecr-repository` and `bake-oci-manifests`: us-west-2 is the only registry.
+The standalone [`mirror-to-secondary-ecr`](#mirror-an-ecr-tag-to-the-secondary-region) action is
+a no-op with its default inputs and is removed once the last caller drops the step.
 
 ## Bake OCI manifests artifact
 
@@ -305,9 +317,6 @@ jobs:
 - `flux-version`: flux CLI version, no `v-` prefix. Default `2.8.6`.
 - `aws-region`: ECR region. Default `us-west-2` (phase 6 of [issues-maestra#1354](https://github.com/maestra-io/issues-maestra/issues/1354) — the eu-central-1 registry is frozen).
 - `ecr-registry`: ECR registry host. Default `515260921971.dkr.ecr.us-west-2.amazonaws.com`.
-- `aws-region-secondary`: second ECR region the baked artifact is mirrored to. Default `''` (mirror off) since phase 6. See [Dual-push to a second region](#dual-push-to-a-second-region) — re-enabling only works as `aws-region: eu-central-1` + `aws-region-secondary: us-west-2` (plus the matching two registry hosts), never the inverse.
-- `ecr-registry-secondary`: ECR registry host in that region. Default `515260921971.dkr.ecr.us-west-2.amazonaws.com`.
-- `crane-version`: crane CLI version used by the mirror step, no `v-` prefix. Default `0.22.0`.
 - `teleport-fqdn`: Teleport proxy. Default `teleport.maestra.io:443`.
 - `teleport-token`: Teleport GitHub join token of the image-push bot. Default `''` = `image-push-github-actions-<service>`; `dotnet-service-build.yml` passes the org-wide `image-push-github-actions-maestra-io`.
 - `aws-role-arn`: IAM role assumed via Teleport workload-identity. Default `arn:aws:iam::515260921971:role/teleport-image-push`.
@@ -325,6 +334,9 @@ jobs:
 4. GitLab CI has already pushed all images named in `images:` to ECR for the target tag — the action will refuse to proceed otherwise. See the [`create-gitlab-release.needs` recipe in microservice-deployment.md §3.1](https://github.com/maestra-io/fluxcd/blob/main/docs/microservice-deployment.md) for the gating that prevents this race.
 ## Mirror an ECR tag to the secondary region
 
+**Deprecated, no-op with the default inputs** (us-west-2 is the only registry since phase 6 of
+[issues-maestra#1354](https://github.com/maestra-io/issues-maestra/issues/1354)); callers drop the step, then the action goes.
+
 For workflows that push to ECR with their **own** `docker push` /
 `docker buildx build --push` / `docker/build-push-action` / `helm push oci://` instead of going
 through `push-to-aws-ecr-repository` or `bake-oci-manifests`. One step after the push and the tag
@@ -332,7 +344,7 @@ resolves to the same digest in `eu-central-1` and `us-west-2`
 ([issues-maestra#1354](https://github.com/maestra-io/issues-maestra/issues/1354), rake #8).
 
 The mirror body is the same doctrine documented in
-[Dual-push to a second region](#dual-push-to-a-second-region): reference digest from
+[Second region](#second-region): reference digest from
 `aws ecr describe-images` in the primary region, import **by digest** (children before the index for
 a multi-arch image), wait on `describe-images` in the secondary region for real storage, `crane tag`,
 assert both regions. It nowhere uses `crane copy` or `crane digest`.
