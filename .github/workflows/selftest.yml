@@ -104,6 +104,8 @@ jobs:
         run: bash scripts/test-hot-test-publish.sh
       - name: mcf-build static-prefix and manifest inputs (workflow copy)
         run: bash scripts/test-mcf-build-static.sh
+      - name: mcf-build localization-keys exit code (workflow copy)
+        run: bash scripts/test-mcf-build-localization-keys.sh
 
       - name: mcf-build tests/ detection, http-server wait, functional summary (workflow copy)
         run: bash scripts/test-functional.sh
