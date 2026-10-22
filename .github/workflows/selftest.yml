@@ -103,6 +103,8 @@ jobs:
         run: bash scripts/test-functional.sh
       - name: mcf-build e2e detection, e2e-stand and e2e wiring, credentials, e2e summary (workflow copy)
         run: bash scripts/test-e2e.sh
+      - name: mcf-build pr gate (needs, verdict; workflow copy)
+        run: bash scripts/test-mcf-build-pr-gate.sh
 
       - name: pr-checks check-encoding and kustomize entry points
         run: bash scripts/test-pr-checks.sh

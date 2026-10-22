@@ -9,6 +9,7 @@
 #                                                      ├─► e2e-stand (pull_request, tests/e2e/) ─► e2e (input e2e)
 #                                                      └─► functional (tests/functional/)
 #   version ─► tests-install ─► tests-checks (tests/package.json)
+#   pull_request: every job that ran ─► pr-gate (the required check)
 #
 # Warehouse refresh: no job here. The GitHub org webhook (workflow_run completed)
 # refreshes every Kargo Warehouse labelled maestra.io/source-repo=<lower-case repo name>
@@ -56,15 +57,15 @@
 #   packages-url        Package registry (default https://packages.maestra.io, nora).
 #   packages-audience   `aud` of the GitHub OIDC token nora accepts.
 #   functional-workers  Playwright workers of `functional` (default 4, as frontend-playwright).
-#   functional-required A red `functional` fails the run and holds the image and release
-#                       (default false: advisory, the summary still shows red). The default
+#   functional-required A red `functional` fails the run and `pr gate` and holds the image and
+#                       release (default false: advisory, the summary still shows red). The default
 #                       turns true once the MCFs are green (issues-maestra#1573).
 #   e2e                 Run `npm run e2e:ci` on the e2e stand (default false: opt-in per repo with
 #                       `e2e: true` in pr.yml until every repo is on, then the input goes away).
 #                       The e2e stand itself is published on every pull_request with tests/e2e/.
 #   e2e-workers         Playwright workers of `e2e` (default 4).
-#   e2e-required        A red `e2e` fails the run (default false: advisory). It never holds
-#                       the image or the release yet.
+#   e2e-required        A red `e2e` fails the run and `pr gate` (default false: advisory). It
+#                       never holds the image or the release yet.
 #   e2e-vault-role      Central Vault jwt-github role of `e2e` (default ci-e2e-autotests-eu).
 #   e2e-vault-secret    KV v2 secret with ADMINSITE_USERNAME and ADMINSITE_PASSWORD, as
 #                       vault-action reads it (default gitlab/data/ci-e2e/autotests-eu).
@@ -114,6 +115,10 @@
 #   e2e-stand  hot-test with stand-prefix e2e (tests/e2e/): fluxcd sends its API to the e2e tenant.
 #   e2e       `npm run e2e:ci` in tests/ on the e2e stand, login from Vault (input e2e); skipped
 #             without a route.
+#   pr-gate   pull_request only, the check a branch ruleset requires (`build / pr gate`): red when
+#             a PR job failed or was cancelled, skipped jobs pass; functional and e2e count only
+#             with functional-required / e2e-required. image, release, sourcemaps, bake never run
+#             on pull_request.
 #
 # Not ported from mcf@3: cyrillic (translation-checker, issues-maestra#1581),
 # the -e2e/-with-deps images (issues-maestra#1573),
@@ -1332,3 +1337,24 @@ jobs:
     with:
       check-encoding: false
       kustomize: true
+
+  pr-gate:
+    name: pr gate
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    needs: [changes, version, install, tests-install, codegen, checks, test, tests-checks, build, hot-test, e2e-stand, functional, e2e, pr-checks]
+    runs-on: runs-on=${{ github.run_id }}-pr-gate/pool=small
+    timeout-minutes: 5
+    steps:
+      - uses: runs-on/action@v2.5.0
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+          FUNCTIONAL_REQUIRED: ${{ inputs.functional-required }}
+          E2E_REQUIRED: ${{ inputs.e2e-required }}
+        run: |
+          # >>> pr-gate (scripts/test-mcf-build-pr-gate.sh runs this block)
+          echo "PR jobs: $(jq -c 'map_values(.result)' <<<"$NEEDS")"
+          red=$(jq -r --argjson fr "$FUNCTIONAL_REQUIRED" --argjson er "$E2E_REQUIRED" '
+            (if $fr then . else del(.functional) end) | (if $er then . else del(.e2e) end)
+            | to_entries | map(select(.value.result == "failure" or .value.result == "cancelled") | .key) | join(" ")' <<<"$NEEDS")
+          [ -z "$red" ] || { echo "::error::failed or cancelled: $red"; exit 1; }
+          # <<< pr-gate
