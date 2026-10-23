@@ -542,7 +542,7 @@ The port of mcf@3 e2e ([issues-maestra#1573](https://github.com/maestra-io/issue
 the Playwright tests of `tests/e2e/` (`@mindbox-cloud/frontend-playwright`) run on pull
 requests against a stand of the PR. Both jobs need `tests/e2e/playwright.config.ts` (with
 `tests/package.json`; not on `renovate/*` or `LocalizationPull`); the stand is published
-unconditionally, the tests run only with input `e2e`.
+unconditionally, the tests are switched off for now (input `e2e` is ignored).
 
 - **`e2e-stand`** (pull requests from this repository, the conditions of `hot-test` without
   its input): a second call of
@@ -555,9 +555,7 @@ unconditionally, the tests run only with input `e2e`.
 - **No route → skipped.** When fluxcd has no e2e provider for the repo, `e2e-stand` publishes the
   static, shows ⚠️ "not registered in fluxcd for e2e stands" and outputs `route: false`; `e2e` is
   then skipped, it never fails on the login.
-- **`e2e`** (input `e2e`, default `false`: the repo turns its tests on with `e2e: true` in its
-  `pr.yml`, and that PR is also its first e2e run; the input goes away once every repo is on;
-  `pool=build`, 60 min): the root and `tests/` caches as `functional`, Chromium of the
+- **`e2e`** (switched off for every repo for now, the input `e2e` is kept and ignored: the stands' static comes from the public r2.dev domain and parallel runs hit Cloudflare rate limits, 429; `pool=build`, 60 min): the root and `tests/` caches as `functional`, Chromium of the
   tests' Playwright, then `npm run e2e:ci` in `tests/` with `CI=true`,
   `BASE_URL=https://e2e-<repo>-pr-<N>.testing-env.omicron.maestra.io`, `ADMINSITE_USERNAME`,
   `ADMINSITE_PASSWORD`, `TEST_ENVIRONMENT=pull-request`, `RETRIES=2`, `WORKERS=<e2e-workers>`
