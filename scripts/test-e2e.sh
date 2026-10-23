@@ -3,7 +3,7 @@
 # Self-check for the e2e jobs of mcf-build.yml: the tests/e2e/ detection (only with
 # tests/package.json, not on excluded branches), the wiring of e2e-stand (the hot-test
 # conditions plus tests/e2e/, no input, stand-prefix e2e, the static artifact) and e2e (only
-# with input e2e on a stand with a route, advisory unless e2e-required, never holds the image), the
+# switched off for every repo, whatever the input e2e says; otherwise on a stand with a route, advisory unless e2e-required, never holds the image), the
 # Vault credentials (step outputs only, never printed) and the e2e step summary from
 # Playwright JUnit. Runs the inline blocks of the reusable workflow itself.
 set -euo pipefail
@@ -71,7 +71,7 @@ echo "e2e detect: ok"
 }
 eq "$(job e2e-stand needs)" "[version, build]" "e2e-stand needs"
 if grep -qE 'inputs\.e2e-stand|^      e2e-stand:$' "$wf"; then echo "FAIL e2e-stand is behind an input: the stand is unconditional"; exit 1; fi
-eq "$(awk '/^      e2e:$/ { on = 1; next } on && /default:/ { print $2; exit }' "$wf")" "false" "e2e is turned on per repo in pr.yml"
+eq "$(awk '/^      e2e:$/ { on = 1; next } on && /default:/ { print $2; exit }' "$wf")" "false" "the e2e input still exists, default false"
 grep -qF "      e2e: \${{ steps.tests.outputs.e2e }}" "$wf" || { echo "FAIL the e2e detection output depends on more than the files"; exit 1; }
 stand=$(jobtext e2e-stand); hot=$(jobtext hot-test)
 has "$stand" "      stand-prefix: e2e" "e2e-stand prefix"
@@ -84,11 +84,12 @@ eq "$(job e2e needs)" "[version, install, tests-install, e2e-stand]" "e2e needs"
 {
   eq "$(job e2e continue-on-error)" '${{ !inputs.e2e-required }}' "e2e failure is advisory only when not required"
   e2e_if=$(job e2e if)
-  for c in '!cancelled()' 'inputs.e2e &&' "needs.e2e-stand.result == 'success'" "needs.e2e-stand.outputs.route == 'true'" \
+  for c in '!cancelled()' 'false &&' "needs.e2e-stand.result == 'success'" "needs.e2e-stand.outputs.route == 'true'" \
     "needs.version.outputs.e2e == 'true'" "needs.install.result == 'success'" \
     "(needs.tests-install.result == 'success' || needs.tests-install.result == 'skipped')"; do
     has "$e2e_if" "$c" "e2e if"
   done
+  hasnt "$e2e_if" "inputs.e2e &&" "e2e if: the job is gated off regardless of the input"
 }
 eq "$(job e2e timeout-minutes)" "60" "e2e timeout"
 for j in image release sourcemaps bake; do

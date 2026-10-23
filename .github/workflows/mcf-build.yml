@@ -63,8 +63,8 @@
 #   functional-required A red `functional` fails the run and `pr gate` and holds the image and
 #                       release (default false: advisory, the summary still shows red). The default
 #                       turns true once the MCFs are green (issues-maestra#1573).
-#   e2e                 Run `npm run e2e:ci` on the e2e stand (default false: opt-in per repo with
-#                       `e2e: true` in pr.yml until every repo is on, then the input goes away).
+#   e2e                 Ignored: the `e2e` job is switched off for every repo, as the PR stands'
+#                       static hits Cloudflare rate limits (429) on the public r2.dev domain.
 #                       The e2e stand itself is published on every pull_request with tests/e2e/.
 #   e2e-workers         Playwright workers of `e2e` (default 4).
 #   e2e-required        A red `e2e` fails the run and `pr gate` (default false: advisory). It
@@ -120,8 +120,8 @@
 #             test-results/ (traces) as an artifact on failure. Advisory unless
 #             functional-required.
 #   e2e-stand  hot-test with stand-prefix e2e (tests/e2e/): fluxcd sends its API to the e2e tenant.
-#   e2e       `npm run e2e:ci` in tests/ on the e2e stand, login from Vault (input e2e); skipped
-#             without a route.
+#   e2e       `npm run e2e:ci` in tests/ on the e2e stand, login from Vault; switched off for
+#             every repo for now (Cloudflare 429 on the stands' r2.dev static); skipped without a route.
 #   pr-gate   pull_request only, the check a branch ruleset requires (`build / pr gate`): red when
 #             a PR job failed or was cancelled, skipped jobs pass; functional and e2e count only
 #             with functional-required / e2e-required. image, release, sourcemaps, bake never run
@@ -1281,7 +1281,7 @@ jobs:
 
   e2e:
     needs: [version, install, tests-install, e2e-stand]
-    if: ${{ !cancelled() && inputs.e2e && needs.version.outputs.e2e == 'true' && needs.e2e-stand.result == 'success' && needs.e2e-stand.outputs.route == 'true' && needs.install.result == 'success' && (needs.tests-install.result == 'success' || needs.tests-install.result == 'skipped') }}
+    if: ${{ !cancelled() && false && needs.version.outputs.e2e == 'true' && needs.e2e-stand.result == 'success' && needs.e2e-stand.outputs.route == 'true' && needs.install.result == 'success' && (needs.tests-install.result == 'success' || needs.tests-install.result == 'skipped') }}
     runs-on: runs-on=${{ github.run_id }}-e2e/pool=build
     timeout-minutes: 60
     continue-on-error: ${{ !inputs.e2e-required }}
