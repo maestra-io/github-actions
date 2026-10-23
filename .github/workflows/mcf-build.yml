@@ -456,7 +456,6 @@ jobs:
             echo "registry=${registry}"
             echo "@mindbox-cloud:registry=${registry}"
             echo "//${registry#https://}:_authToken=\${NPM_TOKEN}"
-            echo "replace-registry-host=npmjs"
           } > "$RUNNER_TEMP/npmrc"
           mv "$RUNNER_TEMP/npmrc" .npmrc
       - &mint-token
@@ -489,19 +488,14 @@ jobs:
           NPM_TOKEN: ${{ steps.token.outputs.token }}
           URL: ${{ inputs.packages-url }}
         run: |
-          # Same program as scripts/npm-lockfile-to-nora.sh (keep in sync; selftest covers the script).
+          # Same check as npm-package-publish.yml (selftest: scripts/test-npm-lockfile-to-nora.sh).
           nora="${URL%/}/npm/"
-          nora_re=$(printf '%s' "$nora" | sed 's/[.[\*^$/]/\\&/g')
-          locks=()
-          for f in package-lock.json npm-shrinkwrap.json; do [ -f "$f" ] && locks+=("$f"); done
-          for f in "${locks[@]}"; do
-            sed -i.bak -E \
-              -e "s#(\"resolved\": *\")https://artifactory\.mindbox\.ru/artifactory/api/npm/[^/\"]+/#\1${nora}#g" \
-              -e "s#(\"resolved\": *\"${nora_re}@[^/\"]+/[^/\"]+/-/)@[^/\"]+/#\1#g" \
-              -e "s#(\"resolved\": *\")https://registry\.npmjs\.org/#\1${nora}#g" \
-              "$f"
-            rm -f "$f.bak"
-          done
+          bad=$(grep -nE '"resolved": *"[a-z+]+://' package-lock.json npm-shrinkwrap.json 2>/dev/null | grep -vF "\"$nora" || true)
+          if [ -n "$bad" ]; then
+            printf '%s\n' "$bad" | head -20
+            echo "::error::lockfile has resolved URLs outside $nora: run scripts/npm-lockfile-to-nora.sh from maestra-io/github-actions and commit the lockfile"
+            exit 1
+          fi
           npm ci --prefer-offline --no-audit --no-fund
       - &npm-cache-save
         if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.npm-cache.outputs.cache-hit != 'true' }}
@@ -513,7 +507,6 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: *root-node-modules
-          # The lockfile is rewritten to nora by now: its hash is not the key the other jobs look up.
           key: ${{ steps.cache.outputs.cache-primary-key }}
 
   tests-install:

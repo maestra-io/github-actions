@@ -59,7 +59,7 @@ jobs:
       - name: dockerfile-from-fix (rewrite, keep, idempotence)
         run: bash scripts/test-dockerfile-from-fix.sh
 
-      - name: npm-lockfile-to-nora (rewrite, keep, idempotence, workflow copy)
+      - name: npm-lockfile-to-nora (rewrite, keep, idempotence, workflow lockfile check)
         run: bash scripts/test-npm-lockfile-to-nora.sh
 
       - name: nuget SDK set (TFM scan, override, workflow copy)
