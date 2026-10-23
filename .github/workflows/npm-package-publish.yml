@@ -137,6 +137,24 @@ jobs:
           node-version: ${{ inputs.node-version }}
           node-version-file: ${{ inputs.node-version == '' && inputs.node-version-file || '' }}
 
+      - name: check lockfile registry
+        env:
+          URL: ${{ inputs.packages-url }}
+        run: |
+          # Same check as mcf-build.yml (selftest: scripts/test-npm-lockfile-to-nora.sh).
+          nora="${URL%/}/npm/"
+          bad=""
+          for f in package-lock.json npm-shrinkwrap.json; do
+            [ -f "$f" ] || continue
+            out=$(jq -r --arg f "$f" --arg n "$nora" '.. | objects | .resolved | strings | select(test("^[a-z+]+://") and (startswith($n) | not)) | "\($f): \(.)"' "$f")
+            [ -z "$out" ] || bad+="$out"$'\n'
+          done
+          if [ -n "$bad" ]; then
+            printf '%s' "$bad" | head -20
+            echo "::error::lockfile has resolved URLs outside $nora: run scripts/npm-lockfile-to-nora.sh from maestra-io/github-actions and commit the lockfile"
+            exit 1
+          fi
+
       # node_modules from the last run with this lockfile: `npm ci` sends the GitHub OIDC
       # token, which expires mid-install on big packages (E401 after ~6 min), and 49
       # packages installing at once overload nora. Keyed on the lockfile, package.json
@@ -194,14 +212,6 @@ jobs:
           NPM_TOKEN: ${{ steps.token.outputs.token }}
           URL: ${{ inputs.packages-url }}
         run: |
-          # Same check as mcf-build.yml (selftest: scripts/test-npm-lockfile-to-nora.sh).
-          nora="${URL%/}/npm/"
-          bad=$(grep -nE '"resolved": *"[a-z+]+://' package-lock.json npm-shrinkwrap.json 2>/dev/null | grep -vF "\"$nora" || true)
-          if [ -n "$bad" ]; then
-            printf '%s\n' "$bad" | head -20
-            echo "::error::lockfile has resolved URLs outside $nora: run scripts/npm-lockfile-to-nora.sh from maestra-io/github-actions and commit the lockfile"
-            exit 1
-          fi
           npm ci --prefer-offline --ignore-scripts
 
       - if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.npm-cache.outputs.cache-hit != 'true' }}
