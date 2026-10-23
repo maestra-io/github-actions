@@ -70,6 +70,8 @@ job() { awk -v j="  $1:" -v k="    $2: " '$0 == j { on = 1; next } on && /^  [a-
 eq "$(job image needs)" "[version, checks, test, build, tests-checks, functional]" "image needs"
 eq "$(job image if)" "\${{ !cancelled() && needs.version.outputs.publish == 'true' && needs.checks.result == 'success' && needs.test.result == 'success' && needs.build.result == 'success' && (needs.version.outputs.tests != 'true' || needs.tests-checks.result == 'success') && (!inputs.functional-required || needs.version.outputs.functional != 'true' || needs.functional.result == 'success') }}" "image waits for tests-checks and a required functional"
 eq "$(job functional continue-on-error)" "\${{ !inputs.functional-required }}" "functional failure is advisory only when not required"
+grep -A2 '^      functional-required:$' "$wf" | grep -qx '        default: true' \
+  || { echo "FAIL functional-required does not default to true"; exit 1; }
 eq "$(job deps-image needs)" "[version, install, image]" "deps-image needs"
 eq "$(job deps-image if)" "\${{ !cancelled() && needs.version.outputs.publish == 'true' && needs.install.result == 'success' && needs.image.result == 'success' }}" "deps-image follows image: an unreleased tag is never pushed"
 eq "$(job release if)" "\${{ !cancelled() && needs.image.result == 'success' && needs.deps-image.result == 'success' }}" "release follows image and deps-image, not success() of skipped jobs"

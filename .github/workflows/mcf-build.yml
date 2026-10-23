@@ -61,8 +61,7 @@
 #   packages-audience   `aud` of the GitHub OIDC token nora accepts.
 #   functional-workers  Playwright workers of `functional` (default 4, as frontend-playwright).
 #   functional-required A red `functional` fails the run and `pr gate` and holds the image and
-#                       release (default false: advisory, the summary still shows red). The default
-#                       turns true once the MCFs are green (issues-maestra#1573).
+#                       release (default true; false: advisory, the summary still shows red).
 #   e2e                 Ignored: the `e2e` job is switched off for every repo, as the PR stands'
 #                       static hits Cloudflare rate limits (429) on the public r2.dev domain.
 #                       The e2e stand itself is published on every pull_request with tests/e2e/.
@@ -193,7 +192,7 @@ on:
         default: "4"
       functional-required:
         type: boolean
-        default: false
+        default: true
       e2e:
         type: boolean
         default: false
