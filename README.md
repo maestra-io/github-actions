@@ -521,11 +521,10 @@ changes in the MCF repo: the jobs switch on by files.
   Chromium of the Playwright the tests resolve; `~/.cache/ms-playwright` is cached by that
   version. frontend-playwright prefers `/usr/bin/google-chrome` with `--no-sandbox`
   when the file exists, so on a runner image with Chrome the tests run in that Chrome.
-- **Advisory first.** The job has `continue-on-error: ${{ !inputs.functional-required }}`:
-  a red run shows ❌ and "not blocking: functional-required is false" in its step
-  summary but does not fail the workflow or hold the release. A repo opts in to blocking with
-  `functional-required: true`: a red run then fails the workflow and the `image` (and so
-  `release`, `bake`) does not run. The default turns `true` once the MCFs are green.
+- **Blocking.** `functional-required` defaults to `true`: a red run fails the workflow and
+  `pr gate`, and the `image` (and so `release`, `bake`) does not run. A repo opts out with
+  `functional-required: false`: the job gets `continue-on-error`, a red run shows ❌ and
+  "not blocking: functional-required is false" in its step summary but holds nothing.
 - **Results.** Step summary from the JUnit (tests, passed, failed = `failures` + `errors`,
   flaky, skipped, duration, every failed test by name). Artifacts:
   `functional-junit-<attempt>` (`tests/functional/test-results/results.xml`, 7 days, always)
