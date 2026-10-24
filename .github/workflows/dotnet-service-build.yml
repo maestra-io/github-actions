@@ -205,7 +205,8 @@
 # (auth-jwt-terraform terraform/omega/clients.tf, no permissions) accepts only job_workflow_ref
 # maestra-io/github-actions/.github/workflows/dotnet-service-build.yml@refs/heads/main: a caller
 # pinned to a tag or SHA gets HTTP 403. The audience, URL and client are constants, not inputs:
-# a caller must not redirect the token.
+# a caller must not redirect the token. The schema hosts are the repo's own choice (its
+# .graphqlrc.json files), limited to *.maestra.io.
 
 name: dotnet-service-build
 
@@ -480,7 +481,7 @@ jobs:
       DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: "false"
     permissions:
       contents: read
-      id-token: write # nora OIDC token
+      id-token: write # nora OIDC token; graphql-schemas: the auth-jwt login
       packages: read  # only for a private-packages-token: GITHUB_TOKEN override (GitHub Packages)
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
