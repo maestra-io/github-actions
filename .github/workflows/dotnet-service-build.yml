@@ -108,6 +108,19 @@
 #                       an export/import. Default true since 13.10.2026 (api-mimic canary:
 #                       images legs 385-455 s -> 55-62 s warm, 271-317 s cold); false
 #                       falls back to pool=build (eu-central-1) with the type=gha layer cache.
+#   graphql-schemas     true = download the GraphQL schemas the StrawberryShake clients generate
+#                       from (not kept in git), one per `**/.graphqlrc.json` with
+#                       extensions.strawberryShake (bin/obj/node_modules skipped): its `url`, on
+#                       https://*.maestra.io, into <rc dir>/<its `schema`>, which must lie inside the
+#                       build context of at least one image-targets entry. `test` downloads them once
+#                       before anything builds (StrawberryShake.Tools `dotnet graphql download`, an
+#                       omega JWT from auth-jwt client github-dotnet-graphql-schema) and hands them to
+#                       every `images` leg as an artifact kept 1 day: "Re-run failed jobs" of an images
+#                       leg works only within 24 h of the run. No such .graphqlrc.json, a 401, a login
+#                       page or no SDL fails the job. The caller needs `id-token: write` and must call
+#                       this workflow at `@main` (a tag or SHA gets HTTP 403 from auth-jwt, see GraphQL
+#                       schemas below). Cannot be combined with the private-packages-token secret (the
+#                       tool comes from nora). Default false.
 # Secrets:
 #   private-packages-token  Optional. Overrides the nora OIDC token passed as the
 #                       PRIVATE_PACKAGES_TOKEN build secret and used for restore
@@ -187,6 +200,13 @@
 #
 # AWS: a fresh RunsOn instance can lack its instance-role credentials for a few seconds
 # (NoCredentials); `test` and `images` wait up to ~40 s for them before any AWS call.
+#
+# GraphQL schemas: auth-jwt client github-dotnet-graphql-schema at https://auth-jwt.maestra.io
+# (auth-jwt-terraform terraform/omega/clients.tf, no permissions) accepts only job_workflow_ref
+# maestra-io/github-actions/.github/workflows/dotnet-service-build.yml@refs/heads/main: a caller
+# pinned to a tag or SHA gets HTTP 403. The audience, URL and client are constants, not inputs:
+# a caller must not redirect the token. The schema hosts are the repo's own choice (its
+# .graphqlrc.json files), limited to *.maestra.io.
 
 name: dotnet-service-build
 
@@ -262,6 +282,9 @@ on:
       sticky-buildkit:
         type: boolean
         default: true
+      graphql-schemas:
+        type: boolean
+        default: false
     secrets:
       private-packages-token:
         required: false
@@ -448,6 +471,8 @@ jobs:
     needs: version
     runs-on: runs-on=${{ github.run_id }}-test/pool=build
     timeout-minutes: ${{ inputs.test-timeout-minutes }}
+    outputs:
+      graphql-schemas-artifact: ${{ (github.event_name != 'pull_request' || inputs.pr-images) && steps.graphql.outputs.artifact || '' }}
     # The RunsOn image exports DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 although
     # libicu is installed; the GitLab sdk images ran with ICU. Invariant mode turns
     # satellite-resource locales into NETSDK1188 (an error under /warnaserror) and
@@ -456,7 +481,7 @@ jobs:
       DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: "false"
     permissions:
       contents: read
-      id-token: write # nora OIDC token
+      id-token: write # nora OIDC token; graphql-schemas: the auth-jwt login
       packages: read  # only for a private-packages-token: GITHUB_TOKEN override (GitHub Packages)
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
@@ -617,6 +642,105 @@ jobs:
           # not masked (no workflow commands after the step): never print a secret in a RUN.
           ( while sleep 60; do t=$(mint) && [ -n "$t" ] && write "$t"; done ) </dev/null >/dev/null 2>&1 &
           # <<< token-files
+      # graphql-schemas: StrawberryShake.Tools 15.1.3 ships net8.0 and net9.0 and runs on the
+      # runner image's own dotnet (DOTNET_ROLL_FORWARD=Major): no extra SDK is installed.
+      - name: graphql schemas
+        id: graphql
+        if: ${{ inputs.graphql-schemas }}
+        env:
+          MATRIX: ${{ needs.version.outputs.matrix }}
+          HAS_TOKEN_OVERRIDE: ${{ secrets.private-packages-token != '' }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          PACKAGES_URL: ${{ inputs.packages-url }}
+          AUTH_JWT_URL: https://auth-jwt.maestra.io
+          AUTH_JWT_CLIENT: github-dotnet-graphql-schema
+          TOOL_VERSION: 15.1.3
+        run: |
+          # >>> graphql-schemas (scripts/test-dotnet-service-build-graphql.sh runs this block)
+          # One schema per StrawberryShake .graphqlrc.json: extensions.strawberryShake.url ->
+          # <rc dir>/<schema>. The JWT goes to Maestra hosts only; each file must land inside
+          # the build context of an images leg, or no docker build sees it.
+          if [ "$HAS_TOKEN_OVERRIDE" = true ]; then
+            echo "::error::graphql-schemas cannot be combined with the private-packages-token secret: StrawberryShake.Tools comes from nora with the nora OIDC token"; exit 1
+          fi
+          contexts=$(jq -r '.[].context' <<<"$MATRIX" | sed -E 's#^\./##; s#/\./#/#g; s#/\.$##; s#/+$##; s#^$#.#' | sort -u)
+          pairs=()
+          while IFS= read -r rc; do
+            rc="${rc#./}"; dir=$(dirname "$rc")
+            ss=$(jq -r '.extensions.strawberryShake != null' "$rc" 2>/dev/null) \
+              || { echo "::error file=$rc::graphql-schemas: $rc is not valid JSON"; exit 1; }
+            if [ "$ss" != true ]; then echo "::notice file=$rc::no extensions.strawberryShake, skipped"; continue; fi
+            uri=$(jq -er '.extensions.strawberryShake.url | strings' "$rc") \
+              || { echo "::error file=$rc::graphql-schemas: $rc has no extensions.strawberryShake.url"; exit 1; }
+            schema=$(jq -er '.schema | strings' "$rc") \
+              || { echo "::error file=$rc::graphql-schemas: $rc has no schema file"; exit 1; }
+            path="$schema"; [ "$dir" = . ] || path="$dir/$schema"
+            [[ "$uri" =~ ^https://([A-Za-z0-9-]+\.)+maestra\.io(/[^[:space:]]*)?$ ]] \
+              || { echo "::error file=$rc::graphql-schemas: '$uri' is not an https://*.maestra.io URL"; exit 1; }
+            for p in "$schema" "$path"; do
+              case "/$p/" in //*|*/../*) echo "::error file=$rc::graphql-schemas: '$p' must be relative, without '..'"; exit 1 ;; esac
+            done
+            inside=false
+            while IFS= read -r ctx; do
+              if [ "$ctx" = . ] || [[ "$path" == "$ctx"/* ]]; then inside=true; break; fi
+            done <<<"$contexts"
+            $inside || { echo "::error file=$rc::graphql-schemas: '$path' is outside every images build context: $(tr '\n' ' ' <<<"$contexts")"; exit 1; }
+            pairs+=("$uri" "$path")
+          done < <(find . \( -name .git -o -name bin -o -name obj -o -name node_modules \) -prune -o -name .graphqlrc.json -type f -print | sort)
+          [ "${#pairs[@]}" -gt 0 ] || { echo "::error::graphql-schemas: no .graphqlrc.json with extensions.strawberryShake in the repo"; exit 1; }
+          id_token=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUTH_JWT_URL" | jq -r '.value // empty')
+          [ -n "$id_token" ] || { echo "::error::no GitHub OIDC token"; exit 1; }
+          echo "::add-mask::$id_token"
+          trap 'rm -f "$RUNNER_TEMP/jwt.json"' EXIT
+          code=$(jq -cn --arg c "$AUTH_JWT_CLIENT" '{clientId: $c, policy: "default"}' \
+            | curl -sS --connect-timeout 10 --max-time 60 -o "$RUNNER_TEMP/jwt.json" -w '%{http_code}' -X POST "$AUTH_JWT_URL/token" \
+                -H "Authorization: Bearer $id_token" -H "Content-Type: application/json" --data-binary @-) || code=000
+          [ "$code" = 200 ] || { echo "::error::auth-jwt $AUTH_JWT_URL/token as $AUTH_JWT_CLIENT: HTTP $code"; exit 1; }
+          JWT_TOKEN=$(jq -r '.token // .jwt // empty' "$RUNNER_TEMP/jwt.json" 2>/dev/null) || JWT_TOKEN=""
+          rm -f "$RUNNER_TEMP/jwt.json"
+          [ -n "$JWT_TOKEN" ] || { echo "::error::auth-jwt response has no token"; exit 1; }
+          echo "::add-mask::$JWT_TOKEN"
+          # The tool comes from nora like every package (packages token files above).
+          tool="$RUNNER_TEMP/graphql-tool"
+          printf '<configuration><packageSources><clear /><add key="private" value="%s/nuget/v3/index.json" /></packageSources></configuration>\n' \
+            "$PACKAGES_URL" > "$RUNNER_TEMP/graphql-tool.nuget.config"
+          (cd "$RUNNER_TEMP" && NuGetPackageSourceCredentials_private="$(cat "$RUNNER_TEMP/packages-token/NUGET_CREDENTIALS")" \
+            dotnet tool install StrawberryShake.Tools --version "$TOOL_VERSION" --tool-path "$tool" \
+              --configfile "$RUNNER_TEMP/graphql-tool.nuget.config")
+          # The tool's apphost finds the runtime through DOTNET_ROOT, not PATH.
+          dotnet_root="${DOTNET_ROOT:-$(dirname "$(readlink -f "$(command -v dotnet)")")}"
+          files=()
+          for ((i = 0; i < ${#pairs[@]}; i += 2)); do
+            uri="${pairs[i]}"; path="${pairs[i+1]}"
+            # The tool's own exit code is not trusted to catch a 401 or an HTML login page.
+            code=$(curl -sS -g --connect-timeout 10 --max-time 60 -o "$RUNNER_TEMP/introspection.json" -w '%{http_code}' -X POST "$uri" \
+              -H "Authorization: Bearer $JWT_TOKEN" -H "Content-Type: application/json" \
+              --data '{"query":"{ __schema { queryType { name } } }"}') || code=000
+            if [ "$code" != 200 ] || ! jq -e '.data.__schema.queryType.name' "$RUNNER_TEMP/introspection.json" >/dev/null 2>&1; then
+              echo "::error::$uri: HTTP $code, not a GraphQL introspection result: $(head -c 300 "$RUNNER_TEMP/introspection.json" | tr '\n' ' ')"; exit 1
+            fi
+            rm -f "$path"; mkdir -p "$(dirname "$path")"
+            DOTNET_ROLL_FORWARD=Major DOTNET_ROOT="$dotnet_root" "$tool/dotnet-graphql" download "$uri" -f "$PWD/$path" --token "$JWT_TOKEN"
+            grep -qE '^(schema|type|directive|scalar|interface|enum|input|union|extend) ' "$path" 2>/dev/null \
+              || { echo "::error::$uri: dotnet graphql download wrote no SDL to $path"; exit 1; }
+            echo "$path: $(wc -l < "$path" | tr -d ' ') lines from $uri"
+            files+=("./$path")
+          done
+          rm -f "$RUNNER_TEMP/introspection.json"
+          # Unpacked at the repo root by every images leg. An artifact name cannot repeat in a run,
+          # and one run can call this workflow several times (service-build-selftest.yml) and
+          # re-run `test` (RUN_ATTEMPT): attempt + timestamp keep the name unique.
+          tar -czf "$RUNNER_TEMP/graphql-schemas.tgz" "${files[@]}"
+          echo "artifact=graphql-schemas-${RUN_ATTEMPT}-$(date +%s%N)" >> "$GITHUB_OUTPUT"
+          # <<< graphql-schemas
+      # Only when `images` runs (its own `if`).
+      - if: ${{ steps.graphql.outputs.artifact != '' && (github.event_name != 'pull_request' || inputs.pr-images) }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.graphql.outputs.artifact }}
+          path: ${{ runner.temp }}/graphql-schemas.tgz
+          retention-days: 1
       # NuGet cache mount (id=nuget) of the docker-test-target build on the Magic Cache, like
       # ~/.nuget/packages of the host path below: this runner's builder is new, its mount
       # starts empty and gha never exports it, so every run re-downloaded every package
@@ -922,7 +1046,8 @@ jobs:
     # siblings, so "re-run failed jobs" rebuilds only that leg instead of legs that
     # may already have pushed their immutable tag. `images` still ends `failure`
     # when any leg fails: `release` (and the bake after it) stays skipped and
-    # `pr gate` red, exactly as before.
+    # `pr gate` red, exactly as before. With graphql-schemas the re-run works only
+    # within 24 h of the run: the schemas artifact from `test` is kept 1 day.
     strategy:
       fail-fast: false
       matrix:
@@ -1068,6 +1193,15 @@ jobs:
           # not masked (no workflow commands after the step): never print a secret in a RUN.
           ( while sleep 60; do t=$(mint) && [ -n "$t" ] && write "$t"; done ) </dev/null >/dev/null 2>&1 &
           # <<< token-files
+      # graphql-schemas: the files `test` downloaded, unpacked at the repo root before any build.
+      - if: ${{ inputs.graphql-schemas && needs.test.outputs.graphql-schemas-artifact != '' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.test.outputs.graphql-schemas-artifact }}
+          path: ${{ runner.temp }}
+      - name: graphql schemas
+        if: ${{ inputs.graphql-schemas }}
+        run: tar -xzvf "$RUNNER_TEMP/graphql-schemas.tgz"
 
       # base-image: an OCI layout from the cache `test` filled, handed to the build
       # as the named context the Dockerfile's FROM refers to.
