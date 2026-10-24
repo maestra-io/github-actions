@@ -115,9 +115,12 @@
 #                       build context of at least one image-targets entry. `test` downloads them once
 #                       before anything builds (StrawberryShake.Tools `dotnet graphql download`, an
 #                       omega JWT from auth-jwt client github-dotnet-graphql-schema) and hands them to
-#                       every `images` leg as an artifact. No such .graphqlrc.json, a 401, a login page
-#                       or no SDL fails the job. The caller needs `id-token: write`. Cannot be combined
-#                       with the private-packages-token secret (the tool comes from nora). Default false.
+#                       every `images` leg as an artifact kept 1 day: "Re-run failed jobs" of an images
+#                       leg works only within 24 h of the run. No such .graphqlrc.json, a 401, a login
+#                       page or no SDL fails the job. The caller needs `id-token: write` and must call
+#                       this workflow at `@main` (a tag or SHA gets HTTP 403 from auth-jwt, see GraphQL
+#                       schemas below). Cannot be combined with the private-packages-token secret (the
+#                       tool comes from nora). Default false.
 # Secrets:
 #   private-packages-token  Optional. Overrides the nora OIDC token passed as the
 #                       PRIVATE_PACKAGES_TOKEN build secret and used for restore
@@ -200,8 +203,9 @@
 #
 # GraphQL schemas: auth-jwt client github-dotnet-graphql-schema at https://auth-jwt.maestra.io
 # (auth-jwt-terraform terraform/omega/clients.tf, no permissions) accepts only job_workflow_ref
-# maestra-io/github-actions/.github/workflows/dotnet-service-build.yml@refs/heads/main, so the
-# audience, URL and client are constants, not inputs: a caller must not redirect the token.
+# maestra-io/github-actions/.github/workflows/dotnet-service-build.yml@refs/heads/main: a caller
+# pinned to a tag or SHA gets HTTP 403. The audience, URL and client are constants, not inputs:
+# a caller must not redirect the token.
 
 name: dotnet-service-build
 
@@ -467,7 +471,7 @@ jobs:
     runs-on: runs-on=${{ github.run_id }}-test/pool=build
     timeout-minutes: ${{ inputs.test-timeout-minutes }}
     outputs:
-      graphql-schemas-artifact: ${{ steps.graphql.outputs.artifact }}
+      graphql-schemas-artifact: ${{ (github.event_name != 'pull_request' || inputs.pr-images) && steps.graphql.outputs.artifact || '' }}
     # The RunsOn image exports DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 although
     # libicu is installed; the GitLab sdk images ran with ICU. Invariant mode turns
     # satellite-resource locales into NETSDK1188 (an error under /warnaserror) and
@@ -638,18 +642,7 @@ jobs:
           ( while sleep 60; do t=$(mint) && [ -n "$t" ] && write "$t"; done ) </dev/null >/dev/null 2>&1 &
           # <<< token-files
       # graphql-schemas: StrawberryShake.Tools 15.1.3 ships net8.0 and net9.0 and runs on the
-      # runner's dotnet (DOTNET_ROLL_FORWARD=Major). Only a runner without dotnet gets an SDK,
-      # installed outside the repo's SDK directory: the setup-dotnet below still wins.
-      - name: dotnet for graphql-schemas?
-        id: graphql-dotnet
-        if: ${{ inputs.graphql-schemas }}
-        run: command -v dotnet >/dev/null || echo "install=true" >> "$GITHUB_OUTPUT"
-      - if: ${{ steps.graphql-dotnet.outputs.install == 'true' }}
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
-        env:
-          DOTNET_INSTALL_DIR: ${{ runner.temp }}/graphql-dotnet
-        with:
-          dotnet-version: 9.0.x
+      # runner image's own dotnet (DOTNET_ROLL_FORWARD=Major): no extra SDK is installed.
       - name: graphql schemas
         id: graphql
         if: ${{ inputs.graphql-schemas }}
@@ -669,7 +662,7 @@ jobs:
           if [ "$HAS_TOKEN_OVERRIDE" = true ]; then
             echo "::error::graphql-schemas cannot be combined with the private-packages-token secret: StrawberryShake.Tools comes from nora with the nora OIDC token"; exit 1
           fi
-          contexts=$(jq -r '.[].context' <<<"$MATRIX" | sed -E 's#^\./##; s#/+$##; s#^$#.#' | sort -u)
+          contexts=$(jq -r '.[].context' <<<"$MATRIX" | sed -E 's#^\./##; s#/\./#/#g; s#/\.$##; s#/+$##; s#^$#.#' | sort -u)
           pairs=()
           while IFS= read -r rc; do
             rc="${rc#./}"; dir=$(dirname "$rc")
@@ -701,9 +694,9 @@ jobs:
           trap 'rm -f "$RUNNER_TEMP/jwt.json"' EXIT
           code=$(jq -cn --arg c "$AUTH_JWT_CLIENT" '{clientId: $c, policy: "default"}' \
             | curl -sS --connect-timeout 10 --max-time 60 -o "$RUNNER_TEMP/jwt.json" -w '%{http_code}' -X POST "$AUTH_JWT_URL/token" \
-                -H "Authorization: Bearer $id_token" -H "Content-Type: application/json" --data-binary @-)
+                -H "Authorization: Bearer $id_token" -H "Content-Type: application/json" --data-binary @-) || code=000
           [ "$code" = 200 ] || { echo "::error::auth-jwt $AUTH_JWT_URL/token as $AUTH_JWT_CLIENT: HTTP $code"; exit 1; }
-          JWT_TOKEN=$(jq -r '.token // .jwt // empty' "$RUNNER_TEMP/jwt.json")
+          JWT_TOKEN=$(jq -r '.token // .jwt // empty' "$RUNNER_TEMP/jwt.json" 2>/dev/null) || JWT_TOKEN=""
           rm -f "$RUNNER_TEMP/jwt.json"
           [ -n "$JWT_TOKEN" ] || { echo "::error::auth-jwt response has no token"; exit 1; }
           echo "::add-mask::$JWT_TOKEN"
@@ -720,9 +713,9 @@ jobs:
           for ((i = 0; i < ${#pairs[@]}; i += 2)); do
             uri="${pairs[i]}"; path="${pairs[i+1]}"
             # The tool's own exit code is not trusted to catch a 401 or an HTML login page.
-            code=$(curl -sS --connect-timeout 10 --max-time 60 -o "$RUNNER_TEMP/introspection.json" -w '%{http_code}' -X POST "$uri" \
+            code=$(curl -sS -g --connect-timeout 10 --max-time 60 -o "$RUNNER_TEMP/introspection.json" -w '%{http_code}' -X POST "$uri" \
               -H "Authorization: Bearer $JWT_TOKEN" -H "Content-Type: application/json" \
-              --data '{"query":"{ __schema { queryType { name } } }"}')
+              --data '{"query":"{ __schema { queryType { name } } }"}') || code=000
             if [ "$code" != 200 ] || ! jq -e '.data.__schema.queryType.name' "$RUNNER_TEMP/introspection.json" >/dev/null 2>&1; then
               echo "::error::$uri: HTTP $code, not a GraphQL introspection result: $(head -c 300 "$RUNNER_TEMP/introspection.json" | tr '\n' ' ')"; exit 1
             fi
@@ -734,12 +727,14 @@ jobs:
             files+=("./$path")
           done
           rm -f "$RUNNER_TEMP/introspection.json"
-          # Unpacked at the repo root by every images leg. github.job is the same for every call
-          # of this workflow in one run and an artifact name cannot repeat: a unique suffix.
+          # Unpacked at the repo root by every images leg. An artifact name cannot repeat in a run,
+          # and one run can call this workflow several times (service-build-selftest.yml) and
+          # re-run `test` (RUN_ATTEMPT): attempt + timestamp keep the name unique.
           tar -czf "$RUNNER_TEMP/graphql-schemas.tgz" "${files[@]}"
           echo "artifact=graphql-schemas-${RUN_ATTEMPT}-$(date +%s%N)" >> "$GITHUB_OUTPUT"
           # <<< graphql-schemas
-      - if: ${{ steps.graphql.outputs.artifact != '' }}
+      # Only when `images` runs (its own `if`).
+      - if: ${{ steps.graphql.outputs.artifact != '' && (github.event_name != 'pull_request' || inputs.pr-images) }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ steps.graphql.outputs.artifact }}
@@ -1050,7 +1045,8 @@ jobs:
     # siblings, so "re-run failed jobs" rebuilds only that leg instead of legs that
     # may already have pushed their immutable tag. `images` still ends `failure`
     # when any leg fails: `release` (and the bake after it) stays skipped and
-    # `pr gate` red, exactly as before.
+    # `pr gate` red, exactly as before. With graphql-schemas the re-run works only
+    # within 24 h of the run: the schemas artifact from `test` is kept 1 day.
     strategy:
       fail-fast: false
       matrix:

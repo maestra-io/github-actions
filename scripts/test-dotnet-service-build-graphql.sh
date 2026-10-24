@@ -3,7 +3,7 @@
 # Self-check for dotnet-service-build.yml `graphql-schemas`: the .graphqlrc.json
 # discovery, the *.maestra.io host, path and build-context guards, the
 # private-packages-token conflict, and the loud failures on a missing OIDC token,
-# an auth-jwt error, a 401, an HTML login page or a download without SDL. Runs the
+# an auth-jwt error, a curl transport error, a 401, an HTML login page or a download without SDL. Runs the
 # workflow's own block (`test` job, the only copy) against stub curl and dotnet.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -33,12 +33,14 @@ case "$url" in
   "$ACTIONS_ID_TOKEN_REQUEST_URL"*) if [ "$AUTH" = oidc-empty ]; then echo '{}'; else echo '{"value":"oidc"}'; fi ;;
   https://auth-jwt.maestra.io/token) case "$AUTH" in
        jwt-403) echo '{"error":"forbidden"}' > "$out"; printf 403 ;;
+       jwt-transport) printf 000; exit 7 ;;
        jwt-notoken) echo '{}' > "$out"; printf 200 ;;
        *) echo '{"token":"jwt"}' > "$out"; printf 200 ;;
      esac ;;
   *) case "$INTROSPECTION" in
        ok) echo '{"data":{"__schema":{"queryType":{"name":"Q"}}}}' > "$out"; printf 200 ;;
        401) : > "$out"; printf 401 ;;
+       transport) printf 000; exit 28 ;;
        html) echo '<html>login</html>' > "$out"; printf 200 ;;
      esac ;;
 esac
@@ -114,6 +116,8 @@ grep -qE '^artifact=graphql-schemas-1-.+' "$work/tmp/output" || { cat "$work/tmp
 fresh; rc email https://x.maestra.io/graphql
 ok '[{"context":"./email/"},{"context":"api"}]'
 ok '[{"context":"api"},{"context":"."}]'
+ok '[{"context":"email/."}]'
+ok '[{"context":"./email/./"}]'
 fresh; rc src https://x.maestra.io/graphql
 rejects "'src/schema.graphql' is outside every images build context: api email" '[{"context":"email"},{"context":"api"}]'
 fresh; rc emailer https://x.maestra.io/graphql
@@ -144,6 +148,8 @@ fails "auth-jwt https://auth-jwt.maestra.io/token as github-dotnet-graphql-schem
 fails "auth-jwt response has no token" "" ok sdl jwt-notoken
 ! grep -q '^dotnet' "$work/calls" || { echo "FAIL: tool installed without a JWT"; exit 1; }
 fails "HTTP 401" "" 401
+fails "auth-jwt https://auth-jwt.maestra.io/token as github-dotnet-graphql-schema: HTTP 000" "" ok sdl jwt-transport
+fails "https://x.maestra.io/graphql: HTTP 000, not a GraphQL introspection result" "" transport
 fails "not a GraphQL introspection result: <html>" "" html
 fails "wrote no SDL" "" ok html
 echo "dotnet-service-build graphql-schemas: OK"
