@@ -94,6 +94,8 @@ jobs:
       # accepts only the current token; the GitLab-era Dockerfile must reproduce it.
       - name: dotnet-service-build packages token (layer cache, token files, expired-token e2e; workflow copy)
         run: bash scripts/test-dotnet-service-build-cache.sh
+      - name: dotnet-service-build graphql-schemas (lines, hosts, build context, 401/HTML/no SDL; stub curl/dotnet; workflow copy)
+        run: bash scripts/test-dotnet-service-build-graphql.sh
 
       - name: service-build image-targets parsing (workflow copy)
         run: bash scripts/test-service-build.sh
