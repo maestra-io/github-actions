@@ -155,7 +155,9 @@ fails "auth-jwt response has no token" "" ok sdl jwt-html
 ! grep -q '^dotnet' "$work/calls" || { echo "FAIL: tool installed without a JWT"; exit 1; }
 fails "HTTP 401" "" 401
 fails "auth-jwt https://auth-jwt.maestra.io/token as github-dotnet-graphql-schema: HTTP 000" "" ok sdl jwt-transport
+echo STALE > "$work/tmp/introspection.json"
 fails "https://x.maestra.io/graphql: HTTP 000, not a GraphQL introspection result" "" transport
+! grep -qF STALE "$work/out" || { cat "$work/out"; echo "FAIL: stale introspection body printed"; exit 1; }
 fails "not a GraphQL introspection result: <html>" "" html
 fails "wrote no SDL" "" ok html
 echo "dotnet-service-build graphql-schemas: OK"
