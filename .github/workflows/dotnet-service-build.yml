@@ -118,7 +118,7 @@
 #                       every `images` leg as an artifact kept 1 day: "Re-run failed jobs" of an images
 #                       leg works only within 24 h of the run. No such .graphqlrc.json, a 401, a login
 #                       page or no SDL fails the job. The caller needs `id-token: write` and must call
-#                       this workflow at `@main` (a tag or SHA gets HTTP 403 from auth-jwt, see GraphQL
+#                       this workflow at `@main` (a tag or SHA is rejected by auth-jwt, see GraphQL
 #                       schemas below). Cannot be combined with the private-packages-token secret (the
 #                       tool comes from nora). Default false.
 # Secrets:
@@ -204,7 +204,7 @@
 # GraphQL schemas: auth-jwt client github-dotnet-graphql-schema at https://auth-jwt.maestra.io
 # (auth-jwt-terraform terraform/omega/clients.tf, no permissions) accepts only job_workflow_ref
 # maestra-io/github-actions/.github/workflows/dotnet-service-build.yml@refs/heads/main: a caller
-# pinned to a tag or SHA gets HTTP 403. The audience, URL and client are constants, not inputs:
+# pinned to a tag or SHA is rejected by auth-jwt. The audience, URL and client are constants, not inputs:
 # a caller must not redirect the token. The schema hosts are the repo's own choice (its
 # .graphqlrc.json files), limited to *.maestra.io.
 
@@ -472,7 +472,7 @@ jobs:
     runs-on: runs-on=${{ github.run_id }}-test/pool=build
     timeout-minutes: ${{ inputs.test-timeout-minutes }}
     outputs:
-      graphql-schemas-artifact: ${{ (github.event_name != 'pull_request' || inputs.pr-images) && steps.graphql.outputs.artifact || '' }}
+      graphql-schemas-artifact: ${{ steps.graphql.outputs.artifact }}
     # The RunsOn image exports DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 although
     # libicu is installed; the GitLab sdk images ran with ICU. Invariant mode turns
     # satellite-resource locales into NETSDK1188 (an error under /warnaserror) and
@@ -663,7 +663,7 @@ jobs:
           if [ "$HAS_TOKEN_OVERRIDE" = true ]; then
             echo "::error::graphql-schemas cannot be combined with the private-packages-token secret: StrawberryShake.Tools comes from nora with the nora OIDC token"; exit 1
           fi
-          contexts=$(jq -r '.[].context' <<<"$MATRIX" | sed -E 's#^\./##; s#/\./#/#g; s#/\.$##; s#/+$##; s#^$#.#' | sort -u)
+          contexts=$(jq -r '.[].context' <<<"$MATRIX" | sed -E -e 's#^(\./)+##' -e ':a' -e 's#/\./#/#' -e 'ta' -e 's#/\.$##; s#/+$##; s#^$#.#' | sort -u)
           pairs=()
           while IFS= read -r rc; do
             rc="${rc#./}"; dir=$(dirname "$rc")
@@ -713,6 +713,7 @@ jobs:
           files=()
           for ((i = 0; i < ${#pairs[@]}; i += 2)); do
             uri="${pairs[i]}"; path="${pairs[i+1]}"
+            rm -f "$RUNNER_TEMP/introspection.json"
             # The tool's own exit code is not trusted to catch a 401 or an HTML login page.
             code=$(curl -sS -g --connect-timeout 10 --max-time 60 -o "$RUNNER_TEMP/introspection.json" -w '%{http_code}' -X POST "$uri" \
               -H "Authorization: Bearer $JWT_TOKEN" -H "Content-Type: application/json" \

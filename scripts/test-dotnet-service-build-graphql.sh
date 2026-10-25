@@ -35,6 +35,7 @@ case "$url" in
        jwt-403) echo '{"error":"forbidden"}' > "$out"; printf 403 ;;
        jwt-transport) printf 000; exit 7 ;;
        jwt-notoken) echo '{}' > "$out"; printf 200 ;;
+       jwt-html) echo '<html/>' > "$out"; printf 200 ;;
        *) echo '{"token":"jwt"}' > "$out"; printf 200 ;;
      esac ;;
   *) case "$INTROSPECTION" in
@@ -118,6 +119,10 @@ ok '[{"context":"./email/"},{"context":"api"}]'
 ok '[{"context":"api"},{"context":"."}]'
 ok '[{"context":"email/."}]'
 ok '[{"context":"./email/./"}]'
+ok '[{"context":"././email"}]'
+ok '[{"context":"./email/././"}]'
+fresh; rc a/b https://x.maestra.io/graphql
+ok '[{"context":"a/././b"}]'
 fresh; rc src https://x.maestra.io/graphql
 rejects "'src/schema.graphql' is outside every images build context: api email" '[{"context":"email"},{"context":"api"}]'
 fresh; rc emailer https://x.maestra.io/graphql
@@ -146,6 +151,7 @@ fails "no GitHub OIDC token" "" ok sdl oidc-empty
 fails "auth-jwt https://auth-jwt.maestra.io/token as github-dotnet-graphql-schema: HTTP 403" "" ok sdl jwt-403
 [ ! -e "$work/tmp/jwt.json" ] || { echo "FAIL: jwt.json left behind after an auth-jwt error"; exit 1; }
 fails "auth-jwt response has no token" "" ok sdl jwt-notoken
+fails "auth-jwt response has no token" "" ok sdl jwt-html
 ! grep -q '^dotnet' "$work/calls" || { echo "FAIL: tool installed without a JWT"; exit 1; }
 fails "HTTP 401" "" 401
 fails "auth-jwt https://auth-jwt.maestra.io/token as github-dotnet-graphql-schema: HTTP 000" "" ok sdl jwt-transport
