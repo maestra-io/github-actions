@@ -110,7 +110,7 @@
 #                       falls back to pool=build (eu-central-1) with the type=gha layer cache.
 #   graphql-schemas     true = download the GraphQL schemas the StrawberryShake clients generate
 #                       from (not kept in git), one per `**/.graphqlrc.json` with
-#                       extensions.strawberryShake (bin/obj/node_modules skipped): its `url`, on
+#                       extensions.strawberryShake (.git/bin/obj/node_modules skipped): its `url`, on
 #                       https://*.maestra.io, into <rc dir>/<its `schema`>, which must lie inside the
 #                       build context of at least one image-targets entry. `test` downloads them once
 #                       before anything builds (StrawberryShake.Tools `dotnet graphql download`, an

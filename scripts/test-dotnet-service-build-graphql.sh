@@ -78,7 +78,7 @@ run() {
     PACKAGES_URL=https://packages.maestra.io AUTH_JWT_URL=https://auth-jwt.maestra.io \
     AUTH_JWT_CLIENT=github-dotnet-graphql-schema TOOL_VERSION=15.1.3 \
     ACTIONS_ID_TOKEN_REQUEST_URL='https://oidc.example/t?x=1' ACTIONS_ID_TOKEN_REQUEST_TOKEN=req \
-    bash -c "set -eo pipefail; $prog") >"$work/out" 2>&1 || rc=$?
+    bash -c "set -e; $prog")>"$work/out" 2>&1 || rc=$?
   echo "$rc"
 }
 ok() { [ "$(run "$@")" = 0 ] || { cat "$work/out"; echo "FAIL: rejected (${1:-default matrix})"; exit 1; }; }
