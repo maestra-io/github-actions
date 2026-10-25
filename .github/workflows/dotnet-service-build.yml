@@ -663,7 +663,7 @@ jobs:
           if [ "$HAS_TOKEN_OVERRIDE" = true ]; then
             echo "::error::graphql-schemas cannot be combined with the private-packages-token secret: StrawberryShake.Tools comes from nora with the nora OIDC token"; exit 1
           fi
-          contexts=$(jq -r '.[].context' <<<"$MATRIX" | sed -E -e 's#^(\./)+##' -e ':a' -e 's#/\./#/#' -e 'ta' -e 's#/\.$##; s#/+$##; s#^$#.#' | sort -u)
+          contexts=$(jq -r '.[].context' <<<"$MATRIX" | sed -E -e 's#/+#/#g' -e 's#^(\./)+##' -e ':a' -e 's#/\./#/#' -e 'ta' -e 's#/\.$##; s#/+$##; s#^$#.#' | sort -u)
           pairs=()
           while IFS= read -r rc; do
             rc="${rc#./}"; dir=$(dirname "$rc")

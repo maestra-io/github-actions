@@ -123,6 +123,10 @@ ok '[{"context":"././email"}]'
 ok '[{"context":"./email/././"}]'
 fresh; rc a/b https://x.maestra.io/graphql
 ok '[{"context":"a/././b"}]'
+fresh; rc email https://x.maestra.io/graphql
+ok '[{"context":".//email"}]'
+fresh; rc email/x https://x.maestra.io/graphql
+ok '[{"context":"email//./x"}]'
 fresh; rc src https://x.maestra.io/graphql
 rejects "'src/schema.graphql' is outside every images build context: api email" '[{"context":"email"},{"context":"api"}]'
 fresh; rc emailer https://x.maestra.io/graphql
