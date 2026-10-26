@@ -457,7 +457,7 @@ jobs:
           lookup-only: true
       - &setup-node-on-miss
         if: ${{ steps.cache.outputs.cache-hit != 'true' }}
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ inputs.node-version }}
       - &write-npmrc
@@ -566,7 +566,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ inputs.node-version }}
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -598,7 +598,7 @@ jobs:
           find src \( -path src/generated -o -name __generated__ \) -type d -prune -print0 \
             | tar -czf "$RUNNER_TEMP/codegen.tgz" --null -T -
           echo "generated: $(tar -tzf "$RUNNER_TEMP/codegen.tgz" | wc -l) entries"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codegen
           path: ${{ runner.temp }}/codegen.tgz
@@ -613,7 +613,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ inputs.node-version }}
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -621,7 +621,7 @@ jobs:
           path: *root-node-modules
           key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
           fail-on-cache-miss: true
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: codegen
           path: ${{ runner.temp }}
@@ -686,7 +686,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ inputs.node-version }}
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -694,7 +694,7 @@ jobs:
           path: *root-node-modules
           key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
           fail-on-cache-miss: true
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: codegen
           path: ${{ runner.temp }}
@@ -757,7 +757,7 @@ jobs:
               await github.rest.issues.createComment({ owner, repo, issue_number, body: body.join('\n') });
             }
       - if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-results-vitest-${{ github.run_attempt }}
           path: reports/
@@ -766,7 +766,7 @@ jobs:
       - name: ingest test results
         if: ${{ always() }}
         continue-on-error: true
-        uses: maestra-io/github-actions/test-results-ingest@4810e33793d010b8ff485d52a0798d48fc7df5a6 # v1.46.1
+        uses: maestra-io/github-actions/test-results-ingest@2450cdaaf4688887cb65579fc45ab5304cb81967 # v1.46.2
         with:
           path: reports
 
@@ -782,7 +782,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ inputs.node-version }}
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -796,7 +796,7 @@ jobs:
           path: tests/node_modules
           key: mcf-tests-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('tests/package-lock.json') }}
           fail-on-cache-miss: true
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: codegen
           path: ${{ runner.temp }}
@@ -828,7 +828,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ inputs.node-version }}
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -836,7 +836,7 @@ jobs:
           path: *root-node-modules
           key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
           fail-on-cache-miss: true
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: codegen
           path: ${{ runner.temp }}
@@ -861,13 +861,13 @@ jobs:
           tar -czf "$RUNNER_TEMP/static.tgz" -C build "$top"
           du -sh "$out"
       - if: ${{ needs.version.outputs.publish == 'true' || needs.version.outputs.hot-test == 'true' || needs.version.outputs.e2e-stand == 'true' || needs.version.outputs.functional == 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: static
           path: ${{ runner.temp }}/static.tgz
           retention-days: 1
       - if: ${{ needs.version.outputs.publish == 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sourcemaps
           path: ${{ runner.temp }}/sourcemaps.tgz
@@ -883,7 +883,7 @@ jobs:
       id-token: write # Teleport join
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: static
           path: ${{ runner.temp }}
@@ -897,7 +897,7 @@ jobs:
       # re-uploaded them every release).
       - name: ecr login
         id: ecr
-        uses: maestra-io/github-actions/push-to-aws-ecr-repository@4810e33793d010b8ff485d52a0798d48fc7df5a6 # v1.46.1
+        uses: maestra-io/github-actions/push-to-aws-ecr-repository@2450cdaaf4688887cb65579fc45ab5304cb81967 # v1.46.2
         with:
           awsRegion: us-west-2
           repositories: ${{ needs.version.outputs.image }}
@@ -993,11 +993,11 @@ jobs:
       id-token: write # central Vault (jwt-github), nora
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: sourcemaps
           path: ${{ runner.temp }}
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ inputs.node-version }}
       - uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
@@ -1050,7 +1050,7 @@ jobs:
       id-token: write # Teleport join + cosign keyless
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: maestra-io/github-actions/bake-oci-manifests@4810e33793d010b8ff485d52a0798d48fc7df5a6 # v1.46.1
+      - uses: maestra-io/github-actions/bake-oci-manifests@2450cdaaf4688887cb65579fc45ab5304cb81967 # v1.46.2
         with:
           service: ${{ needs.version.outputs.service }}
           images: ${{ needs.version.outputs.image }}
@@ -1106,7 +1106,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ inputs.node-version }}
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -1120,7 +1120,7 @@ jobs:
           path: tests/node_modules
           key: mcf-tests-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('tests/package-lock.json') }}
           fail-on-cache-miss: true
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: static
           path: ${{ runner.temp }}
@@ -1262,14 +1262,14 @@ jobs:
           PY
           # <<< functional-summary
       - if: ${{ failure() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: functional-test-results-${{ github.run_attempt }}
           path: tests/functional/test-results
           retention-days: 3
           if-no-files-found: ignore
       - if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: functional-junit-${{ github.run_attempt }}
           path: tests/functional/test-results/results.xml
@@ -1278,7 +1278,7 @@ jobs:
       - name: ingest test results
         if: ${{ always() }}
         continue-on-error: true
-        uses: maestra-io/github-actions/test-results-ingest@4810e33793d010b8ff485d52a0798d48fc7df5a6 # v1.46.1
+        uses: maestra-io/github-actions/test-results-ingest@2450cdaaf4688887cb65579fc45ab5304cb81967 # v1.46.2
         with:
           path: tests/functional/test-results/results.xml
 
@@ -1296,7 +1296,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ inputs.node-version }}
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -1417,14 +1417,14 @@ jobs:
           PY
           # <<< e2e-summary
       - if: ${{ failure() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-test-results-${{ github.run_attempt }}
           path: tests/e2e/test-results
           retention-days: 3
           if-no-files-found: ignore
       - if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-junit-${{ github.run_attempt }}
           path: tests/e2e/test-results/results.xml
@@ -1433,7 +1433,7 @@ jobs:
       - name: ingest test results
         if: ${{ always() }}
         continue-on-error: true
-        uses: maestra-io/github-actions/test-results-ingest@4810e33793d010b8ff485d52a0798d48fc7df5a6 # v1.46.1
+        uses: maestra-io/github-actions/test-results-ingest@2450cdaaf4688887cb65579fc45ab5304cb81967 # v1.46.2
         with:
           path: tests/e2e/test-results/results.xml
 
