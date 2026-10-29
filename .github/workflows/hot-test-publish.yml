@@ -169,7 +169,7 @@ on:
         default: admin-hot-test-static-omicron
       base-static-url:
         type: string
-        default: https://admin-static-omega.maestra-static.io
+        default: https://admin-static-omega-wnam.maestra-static.io
       teleport-token:
         type: string
         default: github-actions-hot-test-static-publish
