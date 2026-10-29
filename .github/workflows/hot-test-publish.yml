@@ -75,7 +75,7 @@
 #                    environment <stand-prefix>-<name> with the url <stand url><path>, e.g.
 #                    `standard-blocks /email-editor/common-block-templates-preview?standardFlexBlocks=true`.
 #   hot-test-domain  Domain of the stands (default testing-env.omicron.maestra.io).
-#   bucket           R2 bucket of the stands (default admin-hot-test-static-omicron).
+#   bucket           R2 bucket of the stands (default admin-hot-test-static-omicron-wnam).
 #   base-static-url  Released static the entry is built from: its entry/mcf-manifests.json,
 #                    v2_static/core and transaction-manager (default admin-static-omega).
 #                    Must be the cluster's baseStaticDomain (fluxcd, component
@@ -166,7 +166,7 @@ on:
         default: testing-env.omicron.maestra.io
       bucket:
         type: string
-        default: admin-hot-test-static-omicron
+        default: admin-hot-test-static-omicron-wnam
       base-static-url:
         type: string
         default: https://admin-static-omega-wnam.maestra-static.io
