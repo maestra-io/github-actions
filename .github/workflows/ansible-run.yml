@@ -203,6 +203,15 @@ on:
         required: false
         type: string
         default: "runs-on=${{ github.run_id }}/runner=t3a-small"
+      vault_soft_fail:
+        description: >-
+          Let the primary Vault fetch FAIL SOFTLY (continue-on-error on that step).
+          Only for a caller whose every vault_secrets entry is optional and whose
+          play copes with the env missing — ansible-os-update's apply leg fetching
+          a Slack token. Everyone else keeps a fatal fetch.
+        required: false
+        type: boolean
+        default: false
       vault_export_token:
         description: "Also export the Vault token of the primary fetch as VAULT_TOKEN (and vault_addr as VAULT_ADDR) to the Execute step, for plays that write to Vault themselves (active-directory-maestra kerberos auth config, issues-maestra#1432). The token lives as long as the role's token_ttl; size that in vault-server values."
         required: false
@@ -691,6 +700,7 @@ jobs:
       # --- Vault: fetch secrets (public OR tunnel) -----------------------
       - name: Retrieve secrets from Vault
         if: ${{ inputs.vault_mode != 'none' && inputs.vault_secrets != '' }}
+        continue-on-error: ${{ inputs.vault_soft_fail }}
         uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
         with:
           url: ${{ inputs.vault_addr }}

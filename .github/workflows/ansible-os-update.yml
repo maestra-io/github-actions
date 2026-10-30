@@ -400,9 +400,21 @@ jobs:
     if: ${{ !cancelled() && inputs.slack_channel != '' && inputs.mode == 'apply' && needs.enumerate.result == 'success' && needs.plan.result == 'success' }}
     runs-on: ${{ inputs.runs_on }}
     outputs:
+      # Both validated here, and the apply leg reads THESE, never the raw inputs:
+      # they end up inside extra_run_args, which ansible-run evaluates as shell.
       thread_ts: ${{ steps.post.outputs.thread_ts }}
+      channel: ${{ steps.post.outputs.channel }}
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - name: The channel and thread must look like Slack IDs
+        env:
+          CHANNEL: ${{ inputs.slack_channel }}
+          THREAD_TS: ${{ inputs.slack_thread_ts }}
+        run: |
+          set -euo pipefail
+          [[ "${CHANNEL}" =~ ^[CG][A-Z0-9]{8,}$ ]] || { echo "::error::slack_channel '${CHANNEL}' is not a Slack channel ID"; exit 1; }
+          [[ -z "${THREAD_TS}" || "${THREAD_TS}" =~ ^[0-9]+\.[0-9]+$ ]] || { echo "::error::slack_thread_ts '${THREAD_TS}' is not a Slack message ts"; exit 1; }
+
       - name: Mint the Slack bot token from Vault
         id: slack-token
         continue-on-error: true
@@ -433,15 +445,16 @@ jobs:
             echo "::warning::Slack progress thread SKIPPED — the Vault token mint FAILED (jwt-github role os-update-slack, infrastructure/os-update/slack on vault.maestra.io; see the mint step's log). The run continues without Slack."
             exit 0
           fi
-          post() {  # post <text> [thread_ts] -> prints the message ts
+          post() {  # post <text> [thread_ts] -> prints the message ts; "" on failure
             jq -cn --arg c "${CHANNEL}" --arg t "$1" --arg ts "${2:-}" \
               '{channel: $c, text: $t, unfurl_links: false} + (if $ts == "" then {} else {thread_ts: $ts} end)' \
-            | curl -sS --fail-with-body -X POST https://slack.com/api/chat.postMessage \
+            | curl -sS --connect-timeout 5 --max-time 20 --fail-with-body -X POST https://slack.com/api/chat.postMessage \
                 -H "Authorization: Bearer ${SLACK_TOKEN}" -H 'Content-Type: application/json' -d @- \
-            | jq -re 'if .ok then .ts else error(.error) end'
+            | jq -r 'if .ok then .ts else ("::warning::Slack chat.postMessage failed: " + (.error // "unknown")) | stderr | "" end' \
+            || true
           }
           # Public channels need the bot to be a member; joining twice is a no-op.
-          curl -sS -X POST https://slack.com/api/conversations.join \
+          curl -sS --connect-timeout 5 --max-time 20 -X POST https://slack.com/api/conversations.join \
             -H "Authorization: Bearer ${SLACK_TOKEN}" -H 'Content-Type: application/json' \
             -d "{\"channel\":\"${CHANNEL}\"}" >/dev/null || true
           N="$(printf '%s' "${HOSTS}" | jq -r 'length')"
@@ -449,8 +462,14 @@ jobs:
           if [ -z "${THREAD_TS}" ]; then
             THREAD_TS="$(post ":arrows_counterclockwise: OS update — *${CONTOUR}* — rolling apt + kernel patching, one host at a time, each drained first. Per-host status in this thread. <${RUN_URL}|run>")"
           fi
+          if [ -z "${THREAD_TS}" ]; then
+            # No thread = nothing for the hosts to reply into; the run goes on without Slack.
+            echo "::warning::Slack progress thread SKIPPED — could not open it (see above). The run continues without Slack."
+            exit 0
+          fi
           post ":pushpin: tier *${TIER:-all}* — ${N} host(s): ${LIST}" "${THREAD_TS}" >/dev/null
           echo "thread_ts=${THREAD_TS}" >> "$GITHUB_OUTPUT"
+          echo "channel=${CHANNEL}" >> "$GITHUB_OUTPUT"
 
   apply:
     needs: [enumerate, plan, notify-start]
@@ -507,7 +526,7 @@ jobs:
         -e os_update_reboot_timeout=${{ inputs.reboot_timeout }}
         -e os_update_post_reboot_delay=${{ inputs.post_reboot_delay }}
         -e os_update_run_url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        -e os_update_slack_channel=${{ inputs.slack_channel }}
+        -e os_update_slack_channel=${{ needs.notify-start.outputs.channel }}
         -e os_update_slack_thread_ts=${{ needs.notify-start.outputs.thread_ts }}
         ${{ inputs.extra_run_args }}
       # run_attempt: the failed attempt already uploaded os-update-<host>-<N> (the
@@ -526,6 +545,10 @@ jobs:
       vault_mode: ${{ needs.notify-start.outputs.thread_ts != '' && 'public' || 'none' }}
       vault_role: os-update-slack
       vault_secrets: ${{ needs.notify-start.outputs.thread_ts != '' && 'infrastructure/data/os-update/slack bot_token | OS_UPDATE_SLACK_TOKEN' || '' }}
+      # The one secret this leg fetches is a courtesy: a Vault hiccup here must
+      # not fail a host that is about to be patched. The role posts nothing
+      # when the env is empty.
+      vault_soft_fail: true
 
   # Close the loop. The fleet is not "patched" because `uname -r` changed — it is
   # patched when the vulnerability scanner AGREES. So re-scan exactly the hosts we
@@ -650,7 +673,7 @@ jobs:
       - name: Post the tier summary
         env:
           SLACK_TOKEN: ${{ steps.slack-token.outputs.SLACK_TOKEN }}
-          CHANNEL: ${{ inputs.slack_channel }}
+          CHANNEL: ${{ needs.notify-start.outputs.channel }}
           THREAD_TS: ${{ needs.notify-start.outputs.thread_ts }}
           TIER: ${{ inputs.inventory_group_suffix }}
           APPLY: ${{ needs.apply.result }}
@@ -673,6 +696,7 @@ jobs:
           esac
           jq -cn --arg c "${CHANNEL}" --arg ts "${THREAD_TS}" --arg t "${TEXT} · <${RUN_URL}|run>" \
             '{channel: $c, thread_ts: $ts, text: $t, unfurl_links: false}' \
-          | curl -sS --fail-with-body -X POST https://slack.com/api/chat.postMessage \
+          | curl -sS --connect-timeout 5 --max-time 20 --fail-with-body -X POST https://slack.com/api/chat.postMessage \
               -H "Authorization: Bearer ${SLACK_TOKEN}" -H 'Content-Type: application/json' -d @- \
-          | jq -re 'if .ok then "posted " + .ts else error(.error) end'
+          | jq -r 'if .ok then "posted " + .ts else "::warning::Slack tier summary failed: " + (.error // "unknown") end' \
+          || echo "::warning::Slack tier summary failed (curl/jq, see above)"
