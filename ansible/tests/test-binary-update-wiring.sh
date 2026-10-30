@@ -119,7 +119,7 @@ have "$WF" "binary-update)" \
 grep -A40 "^  plan:" "$WF" | grep -q "inputs.mode != 'binary-update'" \
   && ok "the plan job is skipped for binary-update" \
   || bad "the plan job still runs for binary-update"
-grep -A20 "needs: \[enumerate, plan\]" "$WF" | grep -q "inputs.mode == 'binary-update'" \
+grep -A20 "needs: \[enumerate, plan[],]" "$WF" | grep -q "inputs.mode == 'binary-update'" \
   && ok "the apply job runs for binary-update without requiring plan" \
   || bad "the apply job's if does not include binary-update"
 

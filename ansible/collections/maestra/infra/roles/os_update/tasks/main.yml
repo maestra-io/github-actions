@@ -132,6 +132,22 @@
     - os_update_mode == 'stage'
     - not os_update_needed
 
+- name: Slack — this host starts (apply only; the thread shows every host, touched or not)
+  ansible.builtin.include_tasks: slack.yml
+  when: os_update_mode == 'apply'
+  vars:
+    os_update_slack_text: >-
+      {% if (os_update_needed | bool) or (os_update_reboot_needed | bool) or (os_update_resuming | bool) %}
+      :arrow_forward: `{{ inventory_hostname }}` — kernel {{ ansible_facts.kernel }} → {{ os_update_newest_kernel }},
+      {{ os_update_pending | length }} pkgs, reboot: {{ 'yes' if (os_update_reboot_needed | bool) else 'no' }}{{ ', resuming an earlier drain' if (os_update_resuming | bool) else '' }}
+      {% else %}
+      :white_small_square: `{{ inventory_hostname }}` — {{ ansible_facts.kernel }}, already current, untouched
+      {% endif %}
+
+- name: Remember when this host started (the Slack summary reports the per-host duration)
+  ansible.builtin.set_fact:
+    os_update_started_epoch: "{{ lookup('ansible.builtin.pipe', 'date +%s') }}"
+
 - name: STAGE — install the upgrade, activate nothing
   # Deliberately NOT a drain-less copy of APPLY. The whole block is one apt
   # transaction plus the hold discipline around it, because that is the entire
@@ -404,6 +420,22 @@
         - name: Could not expire the silences — the dead-man endsAt still covers us
           ansible.builtin.debug:
             msg: "WARNING: could not expire the maintenance silences; they expire on their own in <= {{ os_update_silence_minutes }} min."
+
+    - name: Slack — this host is done
+      ansible.builtin.include_tasks: slack.yml
+      vars:
+        os_update_slack_mins: "{{ ((lookup('ansible.builtin.pipe', 'date +%s') | int) - (os_update_started_epoch | default(lookup('ansible.builtin.pipe', 'date +%s')) | int)) // 60 }}"
+        os_update_slack_text: >-
+          {% if os_update_undrain_failed | default(false) %}
+          :x: `{{ inventory_hostname }}` — FAILED after {{ os_update_slack_mins }} min and is STILL OUT OF ROTATION;
+          the drain marker is left for a human (mode=undrain-only). No further host is touched. <{{ os_update_run_url }}|run>
+          {% elif os_update_failed | default(false) %}
+          :x: `{{ inventory_hostname }}` — FAILED after {{ os_update_slack_mins }} min, un-drained and back in rotation. No further host is touched. <{{ os_update_run_url }}|run>
+          {% else %}
+          :white_check_mark: `{{ inventory_hostname }}` —
+          {{ 'booted ' ~ ansible_facts.kernel if (os_update_rebooted | default(false)) else 'patched, no reboot' }},
+          back in rotation ({{ os_update_slack_mins }} min)
+          {% endif %}
 
     - name: Fail the job
       ansible.builtin.fail:

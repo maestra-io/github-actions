@@ -108,7 +108,7 @@ echo "== stage must not be gated by the plan job"
 grep -A40 "^  plan:" "$WF" | grep -q "inputs.mode != 'stage'" \
   && ok "the plan job is skipped for stage" \
   || bad "the plan job still runs for stage — its preflight will refuse under a wave"
-grep -A20 "needs: \[enumerate, plan\]" "$WF" | grep -q "inputs.mode == 'stage'" \
+grep -A20 "needs: \[enumerate, plan[],]" "$WF" | grep -q "inputs.mode == 'stage'" \
   && ok "the apply job does not require plan success for stage" \
   || bad "the apply job still requires plan success for stage"
 

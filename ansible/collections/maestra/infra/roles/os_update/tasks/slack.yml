@@ -1,0 +1,37 @@
+---
+# One reply in the run's Slack progress thread (chat.postMessage). Caller sets
+# `os_update_slack_text`. Off unless the workflow handed over a channel AND a
+# thread AND the bot token (env OS_UPDATE_SLACK_TOKEN, minted from Vault by
+# ansible-os-update.yml). Never fails the run: a Slack hiccup must not strand a
+# half-patched host, so the whole thing is rescued into one warning line.
+- name: Slack — reply in the progress thread
+  when:
+    - (os_update_slack_channel | default('')) | length > 0
+    - (os_update_slack_thread_ts | default('')) | length > 0
+    - lookup('ansible.builtin.env', 'OS_UPDATE_SLACK_TOKEN') | length > 0
+  block:
+    - name: Post
+      ansible.builtin.uri:
+        url: https://slack.com/api/chat.postMessage
+        method: POST
+        headers:
+          Authorization: "Bearer {{ lookup('ansible.builtin.env', 'OS_UPDATE_SLACK_TOKEN') }}"
+        body_format: json
+        body:
+          channel: "{{ os_update_slack_channel }}"
+          thread_ts: "{{ os_update_slack_thread_ts }}"
+          text: "{{ os_update_slack_text | trim }}"
+        status_code: 200
+        timeout: 15
+      register: os_update_slack_post
+      failed_when: not (os_update_slack_post.json.ok | default(false))
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      no_log: true
+  rescue:
+    - name: Slack post failed — carry on, the run does not depend on it
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: could not post to the Slack thread
+          ({{ os_update_slack_post.json.error | default(os_update_slack_post.msg | default('unknown error')) }}).

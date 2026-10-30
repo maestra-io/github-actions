@@ -148,3 +148,9 @@ os_update_stage_gc_enabled: true
 # what apt.yml has always passed to apt-get. On a Deckhouse node bashible runs
 # apt transactions of its own, so the lock is genuinely contended.
 os_update_dpkg_lock_timeout: 300
+
+# Slack progress thread, set by ansible-os-update.yml when its caller passes
+# `slack_channel`: one reply per host as it starts and as it finishes. The bot
+# token travels separately, as env OS_UPDATE_SLACK_TOKEN. Empty = silent.
+os_update_slack_channel: ""
+os_update_slack_thread_ts: ""

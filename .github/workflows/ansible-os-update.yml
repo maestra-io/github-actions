@@ -125,6 +125,27 @@ on:
         required: false
         type: string
         default: "runs-on=${{ github.run_id }}/runner=t3a-small"
+      slack_channel:
+        description: >-
+          Slack channel ID for a progress thread: one parent message per run,
+          one reply per host as it starts and as it finishes, one summary per
+          tier. Empty (default) posts nothing. The bot token comes from
+          vault.maestra.io infrastructure/os-update/slack (jwt-github role
+          os-update-slack); a failed mint only skips the thread, never the run.
+        required: false
+        type: string
+        default: ""
+      slack_thread_ts:
+        description: >-
+          Reply into this existing thread instead of opening one — a multi-tier
+          sweep passes the first tier's `slack_thread_ts` output to the next.
+        required: false
+        type: string
+        default: ""
+    outputs:
+      slack_thread_ts:
+        description: "The Slack thread this run reported into (empty when Slack is off or the token mint failed)."
+        value: ${{ jobs.notify-start.outputs.thread_ts }}
     secrets:
       VECTOR_SIEM_BASIC_AUTH_USER:
         required: false
@@ -367,8 +388,72 @@ jobs:
       # and "Re-run failed jobs" — the documented resume button — reuses run_number.
       artifact_name: os-update-plan-${{ inputs.region }}-${{ inputs.environment }}-${{ inputs.site }}${{ inputs.inventory_group_suffix }}-${{ github.run_number }}-${{ github.run_attempt }}
 
-  apply:
+  # The Slack progress thread. Opened here, after the plan, so a run that dies
+  # in preflight never announces hosts it will not touch. Every per-host line
+  # is posted by the role itself (tasks/slack.yml) from inside the apply job,
+  # which is the only place that knows the kernel it booted and how long it took.
+  #
+  # The mint fails SOFT: Slack is a courtesy, patching is the job. With no
+  # token this job outputs nothing, and `apply` then does not even ask Vault.
+  notify-start:
     needs: [enumerate, plan]
+    if: ${{ !cancelled() && inputs.slack_channel != '' && inputs.mode == 'apply' && needs.enumerate.result == 'success' && needs.plan.result == 'success' }}
+    runs-on: ${{ inputs.runs_on }}
+    outputs:
+      thread_ts: ${{ steps.post.outputs.thread_ts }}
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - name: Mint the Slack bot token from Vault
+        id: slack-token
+        continue-on-error: true
+        uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
+        with:
+          url: https://vault.maestra.io
+          method: jwt
+          path: jwt-github
+          role: os-update-slack
+          jwtGithubAudience: https://github.com/maestra-io
+          exportEnv: false
+          secrets: |
+            infrastructure/data/os-update/slack bot_token | SLACK_TOKEN
+
+      - name: Open the progress thread (or announce this tier in the one handed over)
+        id: post
+        env:
+          SLACK_TOKEN: ${{ steps.slack-token.outputs.SLACK_TOKEN }}
+          CHANNEL: ${{ inputs.slack_channel }}
+          THREAD_TS: ${{ inputs.slack_thread_ts }}
+          HOSTS: ${{ needs.enumerate.outputs.hosts }}
+          CONTOUR: ${{ inputs.region }}-${{ inputs.environment }}-${{ inputs.site }}
+          TIER: ${{ inputs.inventory_group_suffix }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SLACK_TOKEN}" ]; then
+            echo "::warning::Slack progress thread SKIPPED — the Vault token mint FAILED (jwt-github role os-update-slack, infrastructure/os-update/slack on vault.maestra.io; see the mint step's log). The run continues without Slack."
+            exit 0
+          fi
+          post() {  # post <text> [thread_ts] -> prints the message ts
+            jq -cn --arg c "${CHANNEL}" --arg t "$1" --arg ts "${2:-}" \
+              '{channel: $c, text: $t, unfurl_links: false} + (if $ts == "" then {} else {thread_ts: $ts} end)' \
+            | curl -sS --fail-with-body -X POST https://slack.com/api/chat.postMessage \
+                -H "Authorization: Bearer ${SLACK_TOKEN}" -H 'Content-Type: application/json' -d @- \
+            | jq -re 'if .ok then .ts else error(.error) end'
+          }
+          # Public channels need the bot to be a member; joining twice is a no-op.
+          curl -sS -X POST https://slack.com/api/conversations.join \
+            -H "Authorization: Bearer ${SLACK_TOKEN}" -H 'Content-Type: application/json' \
+            -d "{\"channel\":\"${CHANNEL}\"}" >/dev/null || true
+          N="$(printf '%s' "${HOSTS}" | jq -r 'length')"
+          LIST="$(printf '%s' "${HOSTS}" | jq -r 'map("`" + . + "`") | join(", ")')"
+          if [ -z "${THREAD_TS}" ]; then
+            THREAD_TS="$(post ":arrows_counterclockwise: OS update — *${CONTOUR}* — rolling apt + kernel patching, one host at a time, each drained first. Per-host status in this thread. <${RUN_URL}|run>")"
+          fi
+          post ":pushpin: tier *${TIER:-all}* — ${N} host(s): ${LIST}" "${THREAD_TS}" >/dev/null
+          echo "thread_ts=${THREAD_TS}" >> "$GITHUB_OUTPUT"
+
+  apply:
+    needs: [enumerate, plan, notify-start]
     # `!cancelled()` because in undrain-only, stage and binary-update the plan job
     # is SKIPPED (see above) and the default `success()` would skip this job too.
     # plan success is still required for mode=apply. binary-update drains as well,
@@ -422,6 +507,8 @@ jobs:
         -e os_update_reboot_timeout=${{ inputs.reboot_timeout }}
         -e os_update_post_reboot_delay=${{ inputs.post_reboot_delay }}
         -e os_update_run_url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        -e os_update_slack_channel=${{ inputs.slack_channel }}
+        -e os_update_slack_thread_ts=${{ needs.notify-start.outputs.thread_ts }}
         ${{ inputs.extra_run_args }}
       # run_attempt: the failed attempt already uploaded os-update-<host>-<N> (the
       # upload step is if: always()), and upload-artifact v4 409s on a duplicate
@@ -432,6 +519,13 @@ jobs:
       # omicron is not. Never invent an environment name for omicron — GitHub would
       # silently create it WITHOUT protection rules, which reads like a gate and isn't one.
       gh_environment: ${{ inputs.environment == 'omega' && format('{0}-{1}-{2}', inputs.region, inputs.environment, inputs.site) || '' }}
+      # Slack progress thread: the role posts its own per-host lines, so the bot
+      # token has to reach the play — fetched here, as env OS_UPDATE_SLACK_TOKEN,
+      # and only when notify-start already proved the mint works (an empty
+      # thread_ts leaves vault_mode at none, exactly as before).
+      vault_mode: ${{ needs.notify-start.outputs.thread_ts != '' && 'public' || 'none' }}
+      vault_role: os-update-slack
+      vault_secrets: ${{ needs.notify-start.outputs.thread_ts != '' && 'infrastructure/data/os-update/slack bot_token | OS_UPDATE_SLACK_TOKEN' || '' }}
 
   # Close the loop. The fleet is not "patched" because `uname -r` changed — it is
   # patched when the vulnerability scanner AGREES. So re-scan exactly the hosts we
@@ -529,3 +623,56 @@ jobs:
             echo ""
             echo "<https://github.com/maestra-io/soc/actions/workflows/vuln-scan.yaml>"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Closes the tier in the thread. Per-host lines already said what happened to
+  # each host; this is the one line a reader scans for: did the tier finish, and
+  # did the SOC re-scan go out.
+  notify-done:
+    needs: [notify-start, apply, soc-rescan]
+    if: ${{ !cancelled() && needs.notify-start.outputs.thread_ts != '' }}
+    runs-on: ${{ inputs.runs_on }}
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - name: Mint the Slack bot token from Vault
+        id: slack-token
+        continue-on-error: true
+        uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
+        with:
+          url: https://vault.maestra.io
+          method: jwt
+          path: jwt-github
+          role: os-update-slack
+          jwtGithubAudience: https://github.com/maestra-io
+          exportEnv: false
+          secrets: |
+            infrastructure/data/os-update/slack bot_token | SLACK_TOKEN
+
+      - name: Post the tier summary
+        env:
+          SLACK_TOKEN: ${{ steps.slack-token.outputs.SLACK_TOKEN }}
+          CHANNEL: ${{ inputs.slack_channel }}
+          THREAD_TS: ${{ needs.notify-start.outputs.thread_ts }}
+          TIER: ${{ inputs.inventory_group_suffix }}
+          APPLY: ${{ needs.apply.result }}
+          RESCAN: ${{ needs.soc-rescan.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SLACK_TOKEN}" ]; then
+            echo "::warning::Slack tier summary SKIPPED — the Vault token mint FAILED (see the mint step's log)."
+            exit 0
+          fi
+          case "${APPLY}" in
+            success) TEXT=":white_check_mark: tier *${TIER:-all}* finished — every host patched and back in rotation" ;;
+            *)       TEXT=":x: tier *${TIER:-all}* STOPPED — apply=${APPLY}; the failed host is named above, the rest were not touched (fail-fast)" ;;
+          esac
+          case "${RESCAN}" in
+            success) TEXT="${TEXT}; SOC re-scan dispatched" ;;
+            skipped) ;;
+            *)       TEXT="${TEXT}; SOC re-scan ${RESCAN} — board may be stale" ;;
+          esac
+          jq -cn --arg c "${CHANNEL}" --arg ts "${THREAD_TS}" --arg t "${TEXT} · <${RUN_URL}|run>" \
+            '{channel: $c, thread_ts: $ts, text: $t, unfurl_links: false}' \
+          | curl -sS --fail-with-body -X POST https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer ${SLACK_TOKEN}" -H 'Content-Type: application/json' -d @- \
+          | jq -re 'if .ok then "posted " + .ts else error(.error) end'
