@@ -77,7 +77,8 @@
 #   hot-test-domain  Domain of the stands (default testing-env.omicron.maestra.io).
 #   bucket           R2 bucket of the stands (default admin-hot-test-static-omicron-wnam).
 #   base-static-url  Released static the entry is built from: its entry/mcf-manifests.json,
-#                    v2_static/core and transaction-manager (default admin-static-omega).
+#                    v2_static/core and transaction-manager (default
+#                    admin-static.omicron-maestra-static.io).
 #                    Must be the cluster's baseStaticDomain (fluxcd, component
 #                    base/microfrontend/hot-test; checked, see below).
 #   teleport-token   Teleport GitHub join token (default github-actions-hot-test-static-publish:
@@ -169,7 +170,7 @@ on:
         default: admin-hot-test-static-omicron-wnam
       base-static-url:
         type: string
-        default: https://admin-static-omega-wnam.maestra-static.io
+        default: https://admin-static.omicron-maestra-static.io
       teleport-token:
         type: string
         default: github-actions-hot-test-static-publish
