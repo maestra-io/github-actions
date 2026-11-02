@@ -107,7 +107,9 @@
 #             functional passed. A skipped tests-checks/functional skips nothing after it:
 #             image, release, sourcemaps and bake guard on results, not on success().
 #   deps-image  node_modules + the sources -> ECR <image>-with-deps:<release> (uid 10001, no .git);
-#             chart mcf-schema-check runs its schema check from this image at promotion. After image: ECR tags are immutable,
+#             chart mcf-schema-check runs its schema check from this image at promotion. Pushed from
+#             BuildKit with a gha layer cache (scope mcf-deps-<image>): the node_modules layer is reused
+#             while package-lock.json is unchanged, a release uploads the sources layer. After image: ECR tags are immutable,
 #             so a push before checks and tests pass breaks "Re-run all jobs". release waits for it.
 #   release   git tag + GitHub Release <release>; a PR labelled `hotfix` also gets
 #             the marker tag hotfix/<release>.
@@ -992,25 +994,45 @@ jobs:
           path: *root-node-modules
           key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
           fail-on-cache-miss: true
-      - name: build ${{ needs.version.outputs.image }}-with-deps:${{ needs.version.outputs.release }}
+      # Three layers, not one: the lockfile and node_modules (restored from the cache above,
+      # identical while package-lock.json is) are a layer the gha cache keeps between
+      # releases, so a release re-pushes only the sources layer. The old single
+      # `COPY . .` + `docker build` + `docker push` re-uploaded the whole node_modules every time.
+      - name: Dockerfile
         env:
           NODE_VERSION: ${{ inputs.node-version }}
-          IMAGE: ${{ needs.version.outputs.image }}
-          RELEASE: ${{ needs.version.outputs.release }}
         run: |
           printf '.git\n' > .dockerignore
-          printf 'FROM docker.io/library/node:%s-slim\nWORKDIR /app\nRUN chown 10001:10001 /app\nCOPY --chown=10001:10001 . .\n' "$NODE_VERSION" > "$RUNNER_TEMP/Dockerfile.deps"
-          docker build -f "$RUNNER_TEMP/Dockerfile.deps" . -t "local/$IMAGE-with-deps:$RELEASE" \
-            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
-            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
-            --label "org.opencontainers.image.version=$RELEASE"
-      - uses: maestra-io/github-actions/push-to-aws-ecr-repository@0b488dd7ca11b7bd0d5147b4b4887452a9b9f486 # v1.50.1
+          {
+            printf 'FROM docker.io/library/node:%s-slim\nWORKDIR /app\nRUN chown 10001:10001 /app\n' "$NODE_VERSION"
+            printf 'COPY --chown=10001:10001 package.json package-lock.json ./\nCOPY --chown=10001:10001 node_modules node_modules\n'
+            [ ! -d tests/node_modules ] || printf 'COPY --chown=10001:10001 tests/node_modules tests/node_modules\n'
+            printf 'COPY --chown=10001:10001 . .\n'
+          } > "$RUNNER_TEMP/Dockerfile.deps"
+      - name: ecr login
+        id: ecr
+        uses: maestra-io/github-actions/push-to-aws-ecr-repository@0b488dd7ca11b7bd0d5147b4b4887452a9b9f486 # v1.50.1
         with:
           awsRegion: us-west-2
           repositories: ${{ needs.version.outputs.image }}-with-deps
-          localTag: ${{ needs.version.outputs.release }}
           targetTag: ${{ needs.version.outputs.release }}
           teleportToken: ${{ inputs.teleport-token }}
+          push: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: build and push ${{ needs.version.outputs.image }}-with-deps:${{ needs.version.outputs.release }}
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ${{ runner.temp }}/Dockerfile.deps
+          provenance: false
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ needs.version.outputs.image }}-with-deps:${{ needs.version.outputs.release }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.version.outputs.release }}
+          cache-from: type=gha,scope=mcf-deps-${{ needs.version.outputs.image }}
+          cache-to: type=gha,mode=max,scope=mcf-deps-${{ needs.version.outputs.image }}
 
   # Git tag + GitHub Release BEFORE the bake: bake-oci-manifests checks out the release tag.
   release:
