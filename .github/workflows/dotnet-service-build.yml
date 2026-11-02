@@ -616,7 +616,7 @@ jobs:
           else
             scopes=$(printf '%s\n' "$SCOPES" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . || true)
             from=$(awk '{print "type=gha,scope=" $0}' <<<"$scopes")
-            to="type=gha,mode=max,scope=$(head -n1 <<<"$scopes")"
+            to="type=gha,mode=max,ignore-error=true,scope=$(head -n1 <<<"$scopes")"
           fi
           { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; echo "nocache=$nocache"; echo "nocachefilter=$nocachefilter"; } >> "$GITHUB_OUTPUT"
           # <<< layer-cache
@@ -1006,7 +1006,7 @@ jobs:
           else
             scopes=$(printf '%s\n' "$SCOPES" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . || true)
             from=$(awk '{print "type=gha,scope=" $0}' <<<"$scopes")
-            to="type=gha,mode=max,scope=$(head -n1 <<<"$scopes")"
+            to="type=gha,mode=max,ignore-error=true,scope=$(head -n1 <<<"$scopes")"
           fi
           { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; echo "nocache=$nocache"; echo "nocachefilter=$nocachefilter"; } >> "$GITHUB_OUTPUT"
           # <<< layer-cache
@@ -1169,7 +1169,7 @@ jobs:
           else
             scopes=$(printf '%s\n' "$SCOPES" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . || true)
             from=$(awk '{print "type=gha,scope=" $0}' <<<"$scopes")
-            to="type=gha,mode=max,scope=$(head -n1 <<<"$scopes")"
+            to="type=gha,mode=max,ignore-error=true,scope=$(head -n1 <<<"$scopes")"
           fi
           { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; echo "nocache=$nocache"; echo "nocachefilter=$nocachefilter"; } >> "$GITHUB_OUTPUT"
           # <<< layer-cache
@@ -1287,7 +1287,7 @@ jobs:
           else
             scopes=$(printf '%s\n' "$SCOPES" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . || true)
             from=$(awk '{print "type=gha,scope=" $0}' <<<"$scopes")
-            to="type=gha,mode=max,scope=$(head -n1 <<<"$scopes")"
+            to="type=gha,mode=max,ignore-error=true,scope=$(head -n1 <<<"$scopes")"
           fi
           { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; echo "nocache=$nocache"; echo "nocachefilter=$nocachefilter"; } >> "$GITHUB_OUTPUT"
           # <<< layer-cache
