@@ -30,6 +30,7 @@ on:
       - "push-helm-chart-to-aws-ecr/**"
       - "tbot-join/**"
       - "terraform-nora/**"
+      - "nora-image-prewarm/**"
       - ".github/workflows/pr-checks.yml"
       - "pr-checks/**"
       - ".github/workflows/gitleaks.yml"
@@ -76,6 +77,9 @@ jobs:
 
       - name: terraform-nora CLI config and credentials helper (stub curl)
         run: bash scripts/test-terraform-nora.sh
+
+      - name: nora-image-prewarm image mapping, flate diff, OIDC round trip (stub)
+        run: python3 nora-image-prewarm/prewarm.py --self-test
 
       - name: nuget build SDK pin (highest TFM, global.json kept/restored, workflow copy)
         run: bash scripts/test-nuget-sdk-pin.sh
