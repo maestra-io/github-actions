@@ -504,6 +504,13 @@ the PyPI token: packages go to nora with the GitHub OIDC token, images to ECR
 through the Teleport image-push bot. Inputs, jobs and auth are documented at the
 top of each file.
 
+Layer cache freshness: a Dockerfile stage that installs from apt/apk or the network
+without a pin declares `ARG BASE_REFRESH` directly before its first such `RUN`;
+`dotnet-service-build.yml` and `service-build.yml` pass the ISO week (`2026-W45`) as that
+build-arg, so the stage is rebuilt on the first build of a new week instead of being served
+from the layer cache (sticky disk, `type=gha`) for as long as it lives. A Dockerfile without
+the ARG only gets BuildKit's "build-arg not consumed" warning.
+
 | workflow | does | GitLab original |
 | --- | --- | --- |
 | [`dotnet-service-build.yml`](.github/workflows/dotnet-service-build.yml) | `version` → `test` → `images` (matrix) → `release` → `bake`; input `graphql-schemas: true` downloads the StrawberryShake schemas named by the repo's `.graphqlrc.json` files once in `test` and hands them to `images` (GitHub OIDC → auth-jwt omega JWT, client `github-dotnet-graphql-schema`, bound to this workflow at `@refs/heads/main`: call it at `@main`, a tag or SHA is rejected by auth-jwt) | dotnet-service-cicd-components release-template, create-release-number, docker-push-to-all, maestra-bake-oci-manifests |
