@@ -1,6 +1,6 @@
 # Reusable GraphQL codegen job for a frontend whose pipeline is its own (the legacy
-# admin, maestra-io/frontend; issues-maestra#1539, #1571). The same job is the
-# `codegen` job of mcf-build.yml.
+# admin, maestra-io/frontend; issues-maestra#1539, #1571). The same steps are the
+# codegen of the `install` job of mcf-build.yml.
 #
 # Why it is a workflow and not a job in the caller: the auth-jwt client below enforces
 # an exact job_workflow_ref, and a reusable workflow called at @main presents a constant
