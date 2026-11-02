@@ -79,6 +79,9 @@
 #             under the lockfile hash and `npm ci` runs only on a miss; every other job
 #             restores it and never reaches nora. On a miss npm's tarball store
 #             (~/.npm/_cacache) is restored by key prefix, so only changed packages hit nora.
+#             Before the restore the lockfile must match every package.json it covers: a
+#             manifest changed without its lockfile fails here instead of going green on the
+#             cached node_modules (tests-install checks tests/ the same way).
 #             Then codegen in the same job: GitHub OIDC -> auth-jwt JWT (masked) ->
 #             `npm run graphql-codegen`; the generated code goes to the other jobs as the
 #             artifact `codegen`. One job, not two: a runner boot and a node_modules restore
@@ -434,7 +437,7 @@ jobs:
         with:
           persist-credentials: false
       - &lockfile-check
-        name: check lockfile registry
+        name: check lockfile (registry, in sync with package.json)
         env:
           URL: ${{ inputs.packages-url }}
         run: |
@@ -450,6 +453,37 @@ jobs:
             printf '%s' "$bad" | head -20
             echo "::error::lockfile has resolved URLs outside $nora: run scripts/npm-lockfile-to-nora.sh from maestra-io/github-actions and commit the lockfile"
             exit 1
+          fi
+          # The node_modules cache below is keyed on package-lock.json alone and a hit skips
+          # `npm ci`: a package.json changed without its lockfile (a Renovate PR whose lockfile
+          # update failed) would restore the old node_modules and go green on dependencies it
+          # never installs, until the next lockfile change breaks `npm ci` for everyone.
+          # >>> lockfile-sync
+          # Prints one line per dependency whose spec in a package.json (the root and every npm workspace
+          # in the lockfile) differs from the spec package-lock.json recorded for it: what `npm ci`
+          # rejects. Nothing printed = in sync.
+          lockfile_drift() {
+            local k pj
+            while IFS= read -r k; do
+              pj=${k:-.}/package.json
+              [ -f "$pj" ] || continue
+              jq -r --arg k "$k" --slurpfile p "$pj" '
+                .packages[$k] as $l
+                | ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies") as $f
+                | ((($p[0][$f] // {}) | keys) + (($l[$f] // {}) | keys) | unique[]) as $n
+                | select($p[0][$f][$n] != $l[$f][$n])
+                | "\(if $k == "" then "." else $k end) \($f) \($n): package.json \($p[0][$f][$n] // "-"), lockfile \($l[$f][$n] // "-")"
+              ' package-lock.json
+            done < <(jq -r '.packages // {} | keys[] | select(test("(^|/)node_modules/") | not)' package-lock.json)
+          }
+          # <<< lockfile-sync
+          if [ -f package-lock.json ]; then
+            drift=$(lockfile_drift)
+            if [ -n "$drift" ]; then
+              printf '%s\n' "$drift" | head -30
+              echo "::error::package.json and package-lock.json are out of sync ($(wc -l <<<"$drift" | tr -d ' ') specs): run \`npm install\` and commit the lockfile"
+              exit 1
+            fi
           fi
       - id: cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
