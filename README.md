@@ -404,6 +404,29 @@ lock picks the newest older one; a `.terraform.lock.hcl` that pins a younger ver
 matures (`host packages.maestra.io rejected the given authentication credentials` is that 403).
 Test: `scripts/test-terraform-nora.sh` (selftest).
 
+## Prewarm external images in nora (`nora-image-prewarm`)
+
+nora holds every image digest it sees for the first time for 3 days (issues-maestra#1649). This
+action asks `packages.maestra.io` once for each external image a PR brings in, so that clock starts
+when the PR opens, not when a cluster first pulls the merged image. One manifest GET per image:
+nora dates everything the manifest names (platform manifests, config, layers) at that first sight.
+Images come from `images` (one per line) and/or `flate-diff`, a `flate diff ... -o json` file (the
+images a changed object's `new` has and its `old` lacks). Hosts are mapped to nora prefixes as in
+fluxcd `base/kyverno-nora-pull-through`; our ECR and other hosts are skipped. It never fails the
+job: an unreachable image is a warning and a row in the step summary. Needs `id-token: write`:
+
+```yaml
+permissions:
+  id-token: write
+steps:
+  - uses: maestra-io/github-actions/nora-image-prewarm@<40-hex sha> # vX.Y.Z
+    with:
+      images: |
+        ghcr.io/cloudnative-pg/cloudnative-pg:1.30.1
+```
+
+Test: `python3 nora-image-prewarm/prewarm.py --self-test` (selftest).
+
 ## Gitleaks on pull requests (`gitleaks.yml`)
 
 The reusable workflow [`gitleaks.yml`](.github/workflows/gitleaks.yml) runs the official

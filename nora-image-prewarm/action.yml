@@ -1,0 +1,40 @@
+name: "Prewarm external images in nora"
+description: >-
+  Ask packages.maestra.io (nora) once for each external image a change brings in,
+  so nora's first-seen quarantine (3 days, issues-maestra#1649) starts when the PR
+  opens instead of when a cluster first pulls the merged image. One manifest GET per
+  image: nora dates everything the manifest names (platform manifests, config,
+  layers) at that first sight (nora 1.4.1-maestra.14). Images come from `images`
+  and/or the objects a `flate diff -o json` adds or changes. Never fails the job:
+  an image nora cannot reach is a warning in the step summary. Needs
+  `permissions: id-token: write` (GitHub OIDC, nora read role).
+
+inputs:
+  images:
+    description: "Image references, one per line (docker.io/x:tag@sha256:..., ghcr.io/..., nginx:1.27)."
+    required: false
+    default: ""
+  flate-diff:
+    description: "Path to `flate diff ... -o json` output: images in changed objects' `new` that their `old` lacks."
+    required: false
+    default: ""
+  url:
+    description: "nora base URL."
+    required: false
+    default: "https://packages.maestra.io"
+  audience:
+    description: "`aud` of the GitHub OIDC token nora accepts."
+    required: false
+    default: "packages.maestra.io"
+
+runs:
+  using: composite
+  steps:
+    - name: Prewarm images in nora
+      shell: bash
+      env:
+        IMAGES: ${{ inputs.images }}
+        FLATE_DIFF: ${{ inputs.flate-diff }}
+        NORA_URL: ${{ inputs.url }}
+        NORA_AUDIENCE: ${{ inputs.audience }}
+      run: python3 "${GITHUB_ACTION_PATH}/prewarm.py"
