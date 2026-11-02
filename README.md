@@ -410,6 +410,9 @@ nora holds every image digest it sees for the first time for 3 days (issues-maes
 action asks `packages.maestra.io` once for each external image a PR brings in, so that clock starts
 when the PR opens, not when a cluster first pulls the merged image. One manifest GET per image:
 nora dates everything the manifest names (platform manifests, config, layers) at that first sight.
+A `tag@sha256` reference is asked by its tag first, then by its digest: with `trust_upstream_dates`
+nora dates a tag pull from Docker Hub or quay by the registry's own push date, so an image older
+than the quarantine passes at once, and a digest alone carries no tag to look up.
 Images come from `images` (one per line) and/or `flate-diff`, a `flate diff ... -o json` file (the
 images a changed object's `new` has and its `old` lacks). Hosts are mapped to nora prefixes as in
 fluxcd `base/kyverno-nora-pull-through`; our ECR and other hosts are skipped. nora or the token

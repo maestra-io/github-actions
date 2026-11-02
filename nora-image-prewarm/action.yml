@@ -4,7 +4,9 @@ description: >-
   so nora's first-seen quarantine (3 days, issues-maestra#1649) starts when the PR
   opens instead of when a cluster first pulls the merged image. One manifest GET per
   image: nora dates everything the manifest names (platform manifests, config,
-  layers) at that first sight (nora 1.4.1-maestra.14). Images come from `images`
+  layers) at that first sight (nora 1.4.1-maestra.14). A `tag@sha256` reference is
+  asked by its tag first, so nora can date it by the registry's push date
+  (`trust_upstream_dates`, Docker Hub and quay), then by its digest. Images come from `images`
   and/or the objects a `flate diff -o json` adds or changes. nora or the token
   service being unreachable is a warning; only a caller error (no id-token
   permission, an unreadable flate-diff) fails the step. Needs
