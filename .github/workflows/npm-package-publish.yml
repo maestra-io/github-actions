@@ -33,6 +33,8 @@
 #   checks            npm scripts run after install, space-separated, each only if
 #                     the package has it (default: the lib@3 merge-request jobs
 #                     graphql-codegen check-types check-scripts check-styles test).
+#                     check-scripts gets eslint --concurrency=auto when it is a single
+#                     eslint command on ESLint >= 9.34.
 #                     All of them run even after one fails; the failed ones are
 #                     listed in the job summary and fail the step at the end.
 #   test-script       Legacy single script (default test). Any other value runs
@@ -238,6 +240,22 @@ jobs:
         run: |
           summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
           printf '### npm checks\n\n| script | result |\n|---|---|\n' >> "$summary"
+          # >>> eslint-concurrency
+          # ESLint >= 9.34 lints files in worker threads with --concurrency (auto: half the CPUs,
+          # one thread for a small file set): a type-aware lint of a large MCF takes ~2.5x less.
+          # Printed only when script $1 of ./package.json is a single eslint command (args appended
+          # by `npm run -- …` land on eslint) that sets no concurrency itself, and the installed
+          # ESLint knows the flag; otherwise nothing, and the script runs as written.
+          eslint_concurrency() {
+            local cmd v major minor sep='[;&|]' word='(^|[[:space:]])eslint([[:space:]]|$)'
+            cmd=$(jq -r --arg s "$1" '.scripts[$s] // ""' package.json)
+            [[ "$cmd" =~ $word && ! "$cmd" =~ $sep && "$cmd" != *--concurrency* ]] || return 0
+            v=$(jq -r '.version // ""' node_modules/eslint/package.json 2>/dev/null) || return 0
+            IFS=. read -r major minor _ <<< "$v"
+            [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] || return 0
+            if (( major > 9 || (major == 9 && minor >= 34) )); then echo --concurrency=auto; fi
+          }
+          # <<< eslint-concurrency
           failed=""
           for s in $CHECKS; do
             if ! jq -e --arg s "$s" '.scripts[$s]' package.json > /dev/null; then
@@ -247,6 +265,7 @@ jobs:
             set --
             case "$s" in
               check-styles) set -- --allow-empty-input ;;
+              check-scripts) c=$(eslint_concurrency "$s"); [ -z "$c" ] || set -- "$c" ;;
               test) [ "$COVERAGE" != true ] || set -- --coverage --coverage.reportsDirectory=coverage \
                       --coverage.reporter=json-summary --coverage.reporter=text-summary --coverage.reporter=lcov ;;
             esac
