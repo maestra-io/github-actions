@@ -40,11 +40,14 @@ ACCEPT = ", ".join([
 ])
 
 
-def nora_path(image):
-    """`<prefix>/<repo>/manifests/<tag|digest>` for an external image, else None."""
+def nora_paths(image):
+    """`<prefix>/<repo>/manifests/<ref>` for an external image, else []. A `tag@digest`
+    asks for the tag first: nora dates a tag pull by the registry's own push date
+    (`trust_upstream_dates`: Docker Hub, quay), which a digest pull cannot carry, and the
+    digest pull after it finds the digest already dated."""
     image = image.strip()
     if not image or "$" in image or any(image.startswith(e) for e in EXCLUDED):
-        return None
+        return []
     name, _, digest = image.partition("@")
     slash, colon = name.rfind("/"), name.rfind(":")
     tag = name[colon + 1:] if colon > slash else ""
@@ -59,10 +62,11 @@ def nora_path(image):
     else:
         prefix = PREFIXES.get(host)
     if not prefix or not repo:
-        return None
+        return []
     if prefix == "docker-hub" and "/" not in repo:
         repo = f"library/{repo}"
-    return f"{prefix}/{repo}/manifests/{digest or tag or 'latest'}"
+    refs = [tag, digest] if tag and digest else [digest or tag or "latest"]
+    return [f"{prefix}/{repo}/manifests/{ref}" for ref in refs]
 
 
 def images_in(obj, out):
@@ -120,7 +124,7 @@ def main():
     if os.environ.get("FLATE_DIFF"):
         with open(os.environ["FLATE_DIFF"]) as f:
             images |= new_images(json.load(f))
-    paths = sorted({p for p in map(nora_path, images) if p})
+    paths = list(dict.fromkeys(p for image in sorted(images) for p in nora_paths(image)))
     if not paths:
         print("no external images to prewarm")
         return
@@ -146,23 +150,27 @@ def main():
 
 def self_test():
     cases = {
-        "nginx:1.27": "docker-hub/library/nginx/manifests/1.27",
-        "timberio/vector:0.61.0-distroless-libc@sha256:1a34": "docker-hub/timberio/vector/manifests/sha256:1a34",
-        "docker.io/library/alpine": "docker-hub/library/alpine/manifests/latest",
-        "mirror.gcr.io/library/node:24-alpine": "docker-hub/library/node/manifests/24-alpine",
-        "ghcr.io/cloudnative-pg/cloudnative-pg:1.30.1": "ghcr/cloudnative-pg/cloudnative-pg/manifests/1.30.1",
-        "registry.k8s.io/pause:3.10": "k8s/pause/manifests/3.10",
-        "packages.maestra.io/quay/strimzi/operator:0.51.0": "quay/strimzi/operator/manifests/0.51.0",
-        "public.ecr.aws/gravitational/teleport-distroless:18.11.4": "ecr-public/gravitational/teleport-distroless/manifests/18.11.4",
-        "public.ecr.aws/g5f9s8a4/eventrouter:v1.0.28": None,
-        "515260921971.dkr.ecr.us-west-2.amazonaws.com/x:1": None,
-        "registry.deckhouse.io/deckhouse/ce:v1": None,
-        "localhost:5000/x:1": None,
-        "${IMAGE}": None,
-        "": None,
+        "nginx:1.27": ["docker-hub/library/nginx/manifests/1.27"],
+        "timberio/vector:0.61.0-distroless-libc@sha256:1a34": [
+            "docker-hub/timberio/vector/manifests/0.61.0-distroless-libc",
+            "docker-hub/timberio/vector/manifests/sha256:1a34",
+        ],
+        "busybox@sha256:1a34": ["docker-hub/library/busybox/manifests/sha256:1a34"],
+        "docker.io/library/alpine": ["docker-hub/library/alpine/manifests/latest"],
+        "mirror.gcr.io/library/node:24-alpine": ["docker-hub/library/node/manifests/24-alpine"],
+        "ghcr.io/cloudnative-pg/cloudnative-pg:1.30.1": ["ghcr/cloudnative-pg/cloudnative-pg/manifests/1.30.1"],
+        "registry.k8s.io/pause:3.10": ["k8s/pause/manifests/3.10"],
+        "packages.maestra.io/quay/strimzi/operator:0.51.0": ["quay/strimzi/operator/manifests/0.51.0"],
+        "public.ecr.aws/gravitational/teleport-distroless:18.11.4": ["ecr-public/gravitational/teleport-distroless/manifests/18.11.4"],
+        "public.ecr.aws/g5f9s8a4/eventrouter:v1.0.28": [],
+        "515260921971.dkr.ecr.us-west-2.amazonaws.com/x:1": [],
+        "registry.deckhouse.io/deckhouse/ce:v1": [],
+        "localhost:5000/x:1": [],
+        "${IMAGE}": [],
+        "": [],
     }
     for image, want in cases.items():
-        got = nora_path(image)
+        got = nora_paths(image)
         assert got == want, f"{image!r}: {got!r} != {want!r}"
     diff = {"changes": [
         {"old": {"spec": {"template": {"spec": {"containers": [{"image": "a:1"}, {"image": "b:1"}]}}}},
@@ -199,7 +207,7 @@ def self_test():
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{srv.server_port}"
     os.environ.update({
-        "IMAGES": "nginx:1.27\nghcr.io/x/held:v1\nregistry.deckhouse.io/skip:1",
+        "IMAGES": "nginx:1.27\nghcr.io/x/held:v1\nregistry.deckhouse.io/skip:1\nquay.io/a/b:v2@sha256:0f",
         "FLATE_DIFF": "", "NORA_URL": base, "NORA_AUDIENCE": "packages.maestra.io",
         "ACTIONS_ID_TOKEN_REQUEST_URL": f"{base}/token?api-version=2.0",
         "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "req-token", "GITHUB_STEP_SUMMARY": "",
@@ -208,8 +216,11 @@ def self_test():
     srv.shutdown()
     assert seen == [
         ("/token?api-version=2.0&audience=packages.maestra.io", "bearer req-token"),
-        ("/v2/docker-hub/library/nginx/manifests/1.27", "Bearer eyJ.stub.jwt"),
         ("/v2/ghcr/x/held/manifests/v1", "Bearer eyJ.stub.jwt"),
+        ("/v2/docker-hub/library/nginx/manifests/1.27", "Bearer eyJ.stub.jwt"),
+        # tag@digest: the tag first, so nora can date it by the registry's push date
+        ("/v2/quay/a/b/manifests/v2", "Bearer eyJ.stub.jwt"),
+        ("/v2/quay/a/b/manifests/sha256:0f", "Bearer eyJ.stub.jwt"),
     ], seen
     print("self-test ok")
 
