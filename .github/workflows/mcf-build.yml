@@ -3,11 +3,11 @@
 # (issues-maestra#1571). The static files reach the buckets at promotion, by the
 # upload Job of the MCF's own kustomization/, not from here.
 #
-#   version ─► install ─► codegen ─► checks, test, build ─► image ─► deps-image ─► release ─► bake
-#                                                      │                                   └─► sourcemaps
-#                                                      ├─► hot-test (pull_request)
-#                                                      ├─► e2e-stand (pull_request, tests/e2e/) ─► e2e (input e2e)
-#                                                      └─► functional (tests/functional/)
+#   version, install (+ codegen) ─► checks, test, build ─► image ─► deps-image ─► release ─► bake
+#                                                    │                                   └─► sourcemaps
+#                                                    ├─► hot-test (pull_request)
+#                                                    ├─► e2e-stand (pull_request, tests/e2e/) ─► e2e (input e2e)
+#                                                    └─► functional (tests/functional/)
 #   version ─► tests-install ─► tests-checks (tests/package.json)
 #   pull_request: every job that ran ─► pr-gate (the required check)
 #
@@ -79,14 +79,16 @@
 #             under the lockfile hash and `npm ci` runs only on a miss; every other job
 #             restores it and never reaches nora. On a miss npm's tarball store
 #             (~/.npm/_cacache) is restored by key prefix, so only changed packages hit nora.
+#             Then codegen in the same job: GitHub OIDC -> auth-jwt JWT (masked) ->
+#             `npm run graphql-codegen`; the generated code goes to the other jobs as the
+#             artifact `codegen`. One job, not two: a runner boot and a node_modules restore
+#             less before checks, test and build start.
 #   tests-install  tests/ with its own tests/package-lock.json: `npm ci` there, the same
 #             nora setup as `install`, cached under that lockfile's hash. A `tests` npm
 #             workspace of the root (no tests/package-lock.json) comes from `install`.
 #   tests-checks  tests/package.json: check-types and check-scripts in tests/ (mcf@3
 #             unified-tests-types, unified-tests-lint) with codegen output. Fails the run,
 #             holds the image.
-#   codegen   GitHub OIDC -> auth-jwt JWT (masked) -> `npm run graphql-codegen`; the
-#             generated code goes to the other jobs as an artifact.
 #   checks    check-types, check-scripts, check-styles, entries in parallel (check-scripts
 #             gets eslint --concurrency=auto on ESLint >= 9.34, as does tests-checks); on
 #             pull_request also check-unused-code and the localization keys report,
@@ -416,14 +418,16 @@ jobs:
           { echo "last-hotfix=$last_hotfix"; echo "is-hotfix=$is_hotfix"; } >> "$GITHUB_OUTPUT"
           echo "LAST_HOTFIX=${last_hotfix:-<none>} hotfix=$is_hotfix"
 
+  # install + codegen in one job (one runner boot and one node_modules restore less on the
+  # critical path). The job id stays `install`: the npm-cacache key carries github.job.
   install:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: runs-on=${{ github.run_id }}-install/pool=small
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: read
-      id-token: write # nora OIDC token
+      id-token: write # nora OIDC token, auth-jwt login
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -455,10 +459,8 @@ jobs:
             node_modules
             tests/node_modules
           key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
-          lookup-only: true
-      - &setup-node-on-miss
-        if: ${{ steps.cache.outputs.cache-hit != 'true' }}
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      # Node for codegen too: on a hit as well.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ inputs.node-version }}
       - &write-npmrc
@@ -519,62 +521,10 @@ jobs:
         with:
           path: *root-node-modules
           key: ${{ steps.cache.outputs.cache-primary-key }}
-
-  tests-install:
-    needs: version
-    if: ${{ needs.version.outputs.tests-layout == 'lockfile' }}
-    runs-on: runs-on=${{ github.run_id }}-tests-install/pool=small
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      id-token: write # nora OIDC token
-    defaults:
-      run:
-        working-directory: tests
-    steps:
-      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - *lockfile-check
-      - id: cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: tests/node_modules
-          key: mcf-tests-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('tests/package-lock.json') }}
-          lookup-only: true
-      - *setup-node-on-miss
-      - *write-npmrc
-      - *mint-token
-      - *npm-cache-restore
-      - *npm-ci
-      - *npm-cache-save
+      # codegen runs on the repo's own .npmrc, as on a fresh checkout.
       - if: ${{ steps.cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: tests/node_modules
-          key: ${{ steps.cache.outputs.cache-primary-key }}
-
-  codegen:
-    needs: install
-    runs-on: runs-on=${{ github.run_id }}-codegen/pool=small
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      id-token: write # auth-jwt login
-    steps:
-      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: ${{ inputs.node-version }}
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: *root-node-modules
-          key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
-          fail-on-cache-miss: true
+        name: restore .npmrc
+        run: git checkout -- .npmrc 2>/dev/null || rm -f .npmrc
       - name: graphql-codegen
         env:
           AUTH_JWT_URL: ${{ inputs.auth-jwt-url }}
@@ -605,8 +555,46 @@ jobs:
           path: ${{ runner.temp }}/codegen.tgz
           retention-days: 1
 
+  tests-install:
+    needs: version
+    if: ${{ needs.version.outputs.tests-layout == 'lockfile' }}
+    runs-on: runs-on=${{ github.run_id }}-tests-install/pool=small
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write # nora OIDC token
+    defaults:
+      run:
+        working-directory: tests
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - *lockfile-check
+      - id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: tests/node_modules
+          key: mcf-tests-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('tests/package-lock.json') }}
+          lookup-only: true
+      - if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.node-version }}
+      - *write-npmrc
+      - *mint-token
+      - *npm-cache-restore
+      - *npm-ci
+      - *npm-cache-save
+      - if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: tests/node_modules
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
   checks:
-    needs: codegen
+    needs: install
     runs-on: runs-on=${{ github.run_id }}-checks/pool=build
     timeout-minutes: 30
     steps:
@@ -692,7 +680,7 @@ jobs:
           # <<< checks-verdict
 
   test:
-    needs: codegen
+    needs: install
     runs-on: runs-on=${{ github.run_id }}-test/${{ inputs.test-runner }}
     timeout-minutes: ${{ inputs.test-timeout-minutes }}
     permissions:
@@ -789,8 +777,8 @@ jobs:
           path: reports
 
   tests-checks:
-    needs: [version, install, tests-install, codegen]
-    if: ${{ !cancelled() && needs.version.outputs.tests == 'true' && needs.install.result == 'success' && needs.codegen.result == 'success' && (needs.tests-install.result == 'success' || needs.tests-install.result == 'skipped') }}
+    needs: [version, install, tests-install]
+    if: ${{ !cancelled() && needs.version.outputs.tests == 'true' && needs.install.result == 'success' && (needs.tests-install.result == 'success' || needs.tests-install.result == 'skipped') }}
     runs-on: runs-on=${{ github.run_id }}-tests-checks/pool=small
     timeout-minutes: 15
     permissions:
@@ -855,7 +843,7 @@ jobs:
           [ -z "$failed" ] || { echo "::error::tests/ checks failed:$failed"; exit 1; }
 
   build:
-    needs: [version, codegen]
+    needs: [version, install]
     runs-on: runs-on=${{ github.run_id }}-build/pool=build
     timeout-minutes: 30
     steps:
@@ -1487,7 +1475,7 @@ jobs:
   pr-gate:
     name: pr gate
     if: ${{ always() && github.event_name == 'pull_request' }}
-    needs: [changes, version, install, tests-install, codegen, checks, test, tests-checks, build, hot-test, e2e-stand, functional, e2e, pr-checks]
+    needs: [changes, version, install, tests-install, checks, test, tests-checks, build, hot-test, e2e-stand, functional, e2e, pr-checks]
     runs-on: runs-on=${{ github.run_id }}-pr-gate/pool=small
     timeout-minutes: 5
     steps:
