@@ -51,7 +51,10 @@
 #                       The token expires within minutes: run `packages-token` (on PATH)
 #                       for a fresh one before each later install, e.g.
 #                       `poetry config http-basic.maestra token "$(packages-token)"`.
-#                       Docker is available (Testcontainers / docker compose).
+#                       Docker is available (Testcontainers / docker compose), and a
+#                       BuildKit builder with the type=gha cache env: an image it builds
+#                       is cached with `docker buildx build --load --cache-from/--cache-to
+#                       type=gha,scope=<x>` (mindbox-airflow Dockerfile_test).
 #   docker-test-target  Dockerfile stage that runs the tests instead (built with the
 #                       build secrets, then `docker run`). Both empty = no tests.
 #   test-shards         Run the tests as N parallel `test (i/N)` jobs (default 1, a
@@ -524,6 +527,20 @@ jobs:
           chmod +x "$RUNNER_TEMP/bin/packages-token"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           echo "PACKAGES_AUDIENCE=$AUDIENCE" >> "$GITHUB_ENV"
+      # A test-command that builds an image can cache its layers like the images job:
+      # `docker buildx build --load --cache-from type=gha,scope=<x> --cache-to type=gha,mode=max,scope=<x>`.
+      # That needs a BuildKit builder (plain `docker build` keeps using the default one) and the
+      # Actions runtime env buildx reads for type=gha, which a run step does not see on its own.
+      - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            for (const k of ['ACTIONS_RUNTIME_TOKEN', 'ACTIONS_RUNTIME_URL', 'ACTIONS_CACHE_URL', 'ACTIONS_RESULTS_URL', 'ACTIONS_CACHE_SERVICE_V2']) {
+              if (process.env[k]) core.exportVariable(k, process.env[k]);
+            }
+            core.setSecret(process.env.ACTIONS_RUNTIME_TOKEN);
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
         env:
           PACKAGES_TOKEN: ${{ steps.token.outputs.token }}
