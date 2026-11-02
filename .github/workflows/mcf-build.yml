@@ -87,7 +87,8 @@
 #             holds the image.
 #   codegen   GitHub OIDC -> auth-jwt JWT (masked) -> `npm run graphql-codegen`; the
 #             generated code goes to the other jobs as an artifact.
-#   checks    check-types, check-scripts, check-styles, entries in parallel; on
+#   checks    check-types, check-scripts, check-styles, entries in parallel (check-scripts
+#             gets eslint --concurrency=auto on ESLint >= 9.34, as does tests-checks); on
 #             pull_request also check-unused-code and the localization keys report,
 #             which never fail the job (mcf@3 allow_failure).
 #   test      vitest with coverage, fails under min-lines-coverage. JUnit comes from the
@@ -631,13 +632,30 @@ jobs:
           PR: ${{ github.event_name == 'pull_request' }}
         run: |
           logs="$RUNNER_TEMP/checks"; mkdir -p "$logs"
+          # >>> eslint-concurrency
+          # ESLint >= 9.34 lints files in worker threads with --concurrency (auto: half the CPUs,
+          # one thread for a small file set): a type-aware lint of a large MCF takes ~2.5x less.
+          # Printed only when script $1 of ./package.json is a single eslint command (args appended
+          # by `npm run -- …` land on eslint) that sets no concurrency itself, and the installed
+          # ESLint knows the flag; otherwise nothing, and the script runs as written.
+          eslint_concurrency() {
+            local cmd v major minor sep='[;&|]' word='(^|[[:space:]])eslint([[:space:]]|$)'
+            cmd=$(jq -r --arg s "$1" '.scripts[$s] // ""' package.json)
+            [[ "$cmd" =~ $word && ! "$cmd" =~ $sep && "$cmd" != *--concurrency* ]] || return 0
+            v=$(jq -r '.version // ""' node_modules/eslint/package.json 2>/dev/null) || return 0
+            IFS=. read -r major minor _ <<< "$v"
+            [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] || return 0
+            if (( major > 9 || (major == 9 && minor >= 34) )); then echo --concurrency=auto; fi
+          }
+          # <<< eslint-concurrency
           # >>> checks-start
           names=(); advisory=" unused-code localization-keys "
           start() { local n=$1; shift; names+=("$n"); ( rc=0; "$@" > "$logs/$n.log" 2>&1 || rc=$?; echo "$rc" > "$logs/$n.rc" ) & }
           # <<< checks-start
           has() { jq -e --arg s "$1" '.scripts[$s]' package.json > /dev/null; }
           has check-types && start types npm run check-types
-          has check-scripts && start lint npm run check-scripts
+          lint_args=$(eslint_concurrency check-scripts)
+          has check-scripts && start lint npm run check-scripts ${lint_args:+-- "$lint_args"}
           has check-styles && start stylelint npm run check-styles
           shopt -s globstar nullglob
           entries=(src/entries/**/*.ts)
@@ -806,13 +824,30 @@ jobs:
         run: |
           printf '### tests/ checks\n\n| check | result |\n|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
           failed=""
+          # >>> eslint-concurrency
+          # ESLint >= 9.34 lints files in worker threads with --concurrency (auto: half the CPUs,
+          # one thread for a small file set): a type-aware lint of a large MCF takes ~2.5x less.
+          # Printed only when script $1 of ./package.json is a single eslint command (args appended
+          # by `npm run -- …` land on eslint) that sets no concurrency itself, and the installed
+          # ESLint knows the flag; otherwise nothing, and the script runs as written.
+          eslint_concurrency() {
+            local cmd v major minor sep='[;&|]' word='(^|[[:space:]])eslint([[:space:]]|$)'
+            cmd=$(jq -r --arg s "$1" '.scripts[$s] // ""' package.json)
+            [[ "$cmd" =~ $word && ! "$cmd" =~ $sep && "$cmd" != *--concurrency* ]] || return 0
+            v=$(jq -r '.version // ""' node_modules/eslint/package.json 2>/dev/null) || return 0
+            IFS=. read -r major minor _ <<< "$v"
+            [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] || return 0
+            if (( major > 9 || (major == 9 && minor >= 34) )); then echo --concurrency=auto; fi
+          }
+          # <<< eslint-concurrency
           for s in check-types check-scripts; do
             if ! jq -e --arg s "$s" '.scripts[$s]' package.json > /dev/null; then
               echo "| \`$s\` | no script |" >> "$GITHUB_STEP_SUMMARY"; continue
             fi
             rc=0
             echo "::group::npm run $s"
-            npm run "$s" --if-present || rc=$?
+            args=""; [ "$s" != check-scripts ] || args=$(eslint_concurrency "$s")
+            npm run "$s" --if-present ${args:+-- "$args"} || rc=$?
             echo "::endgroup::"
             if [ "$rc" = 0 ]; then r=passed; else r="failed (exit $rc)"; failed="$failed $s"; fi
             echo "| \`$s\` | $r |" >> "$GITHUB_STEP_SUMMARY"
