@@ -506,7 +506,7 @@ top of each file.
 
 Layer cache freshness: a Dockerfile stage that installs from apt/apk or the network
 without a pin declares `ARG BASE_REFRESH` directly before its first such `RUN`;
-`dotnet-service-build.yml` and `service-build.yml` pass the ISO week (`2026-W45`) as that
+`dotnet-service-build.yml` and `service-build.yml` pass the ISO week (`YYYY-Www`, e.g. `2026-W45`) as that
 build-arg, so the stage is rebuilt on the first build of a new week instead of being served
 from the layer cache (sticky disk, `type=gha`) for as long as it lives. A Dockerfile without
 the ARG only gets BuildKit's "build-arg not consumed" warning.

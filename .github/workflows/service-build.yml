@@ -495,8 +495,8 @@ jobs:
           load: true
           tags: local/${{ inputs.docker-test-target }}:latest
           build-args: |
-            BASE_REFRESH=${{ steps.week.outputs.week }}
             ${{ inputs.build-args }}
+            BASE_REFRESH=${{ steps.week.outputs.week }}
           secrets: ${{ steps.secrets.outputs.value }}
           cache-from: ${{ steps.cache.outputs.from }}
           cache-to: ${{ steps.cache.outputs.to }}
@@ -727,8 +727,8 @@ jobs:
           build-args: |
             revision=${{ needs.version.outputs.release }} (${{ github.sha }})
             release=${{ needs.version.outputs.release }} (${{ github.sha }})
-            BASE_REFRESH=${{ steps.week.outputs.week }}
             ${{ inputs.build-args }}
+            BASE_REFRESH=${{ steps.week.outputs.week }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
@@ -788,8 +788,8 @@ jobs:
           build-args: |
             revision=${{ needs.version.outputs.release }} (${{ github.sha }})
             release=${{ needs.version.outputs.release }} (${{ github.sha }})
-            BASE_REFRESH=${{ steps.week.outputs.week }}
             ${{ inputs.build-args }}
+            BASE_REFRESH=${{ steps.week.outputs.week }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
