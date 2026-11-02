@@ -412,8 +412,10 @@ when the PR opens, not when a cluster first pulls the merged image. One manifest
 nora dates everything the manifest names (platform manifests, config, layers) at that first sight.
 Images come from `images` (one per line) and/or `flate-diff`, a `flate diff ... -o json` file (the
 images a changed object's `new` has and its `old` lacks). Hosts are mapped to nora prefixes as in
-fluxcd `base/kyverno-nora-pull-through`; our ECR and other hosts are skipped. It never fails the
-job: an unreachable image is a warning and a row in the step summary. Needs `id-token: write`:
+fluxcd `base/kyverno-nora-pull-through`; our ECR and other hosts are skipped. nora or the token
+service being unreachable is a warning, never a failure (an unreachable image is also a row in the
+step summary). It does fail on a caller error: no `id-token: write` permission, or a `flate-diff`
+file that is missing or not JSON (fluxcd calls it with `continue-on-error`). Needs `id-token: write`:
 
 ```yaml
 permissions:

@@ -125,7 +125,11 @@ def main():
         print("no external images to prewarm")
         return
     base = os.environ.get("NORA_URL", f"https://{NORA_HOST}").rstrip("/")
-    token = oidc_token(os.environ.get("NORA_AUDIENCE", NORA_HOST))
+    try:
+        token = oidc_token(os.environ.get("NORA_AUDIENCE", NORA_HOST))
+    except (urllib.error.URLError, TimeoutError, KeyError, ValueError) as e:
+        print(f"::warning::nora prewarm: no GitHub OIDC token ({e}); {len(paths)} image(s) not prewarmed")
+        return
     rows = []
     for path in paths:
         status, note = prewarm(base, token, path)

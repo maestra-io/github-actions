@@ -5,8 +5,9 @@ description: >-
   opens instead of when a cluster first pulls the merged image. One manifest GET per
   image: nora dates everything the manifest names (platform manifests, config,
   layers) at that first sight (nora 1.4.1-maestra.14). Images come from `images`
-  and/or the objects a `flate diff -o json` adds or changes. Never fails the job:
-  an image nora cannot reach is a warning in the step summary. Needs
+  and/or the objects a `flate diff -o json` adds or changes. nora or the token
+  service being unreachable is a warning; only a caller error (no id-token
+  permission, an unreadable flate-diff) fails the step. Needs
   `permissions: id-token: write` (GitHub OIDC, nora read role).
 
 inputs:
