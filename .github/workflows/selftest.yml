@@ -110,6 +110,8 @@ jobs:
         run: bash scripts/test-mcf-build-localization-keys.sh
       - name: mcf-build / npm-package-publish eslint --concurrency (workflow copies)
         run: bash scripts/test-eslint-concurrency.sh
+      - name: mcf-build lockfile in sync with package.json (workflow copy)
+        run: bash scripts/test-lockfile-sync.sh
 
       - name: mcf-build tests/ detection, http-server wait, functional summary (workflow copy)
         run: bash scripts/test-functional.sh
