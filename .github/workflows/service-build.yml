@@ -416,6 +416,10 @@ jobs:
               | docker login --username AWS --password-stdin "$ECR_REGISTRY"
           fi
 
+      # ISO week for a Dockerfile's `ARG BASE_REFRESH` (README, layer cache): a new value
+      # rebuilds the apt/apk stages the cache would otherwise serve forever.
+      - id: week
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
       # ── Dockerfile stage (GitLab .run-docker-test) ───────────────────────
       - if: ${{ inputs.docker-test-target != '' }}
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -490,7 +494,9 @@ jobs:
           target: ${{ inputs.docker-test-target }}
           load: true
           tags: local/${{ inputs.docker-test-target }}:latest
-          build-args: ${{ inputs.build-args }}
+          build-args: |
+            ${{ inputs.build-args }}
+            BASE_REFRESH=${{ steps.week.outputs.week }}
           secrets: ${{ steps.secrets.outputs.value }}
           cache-from: ${{ steps.cache.outputs.from }}
           cache-to: ${{ steps.cache.outputs.to }}
@@ -701,6 +707,11 @@ jobs:
       - name: source date epoch
         id: epoch
         run: echo "value=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
+      # ISO week for a Dockerfile's `ARG BASE_REFRESH` (README, layer cache): a new value
+      # rebuilds the apt/apk stages the cache would otherwise serve forever. One value per
+      # job: the push build below must hit the cache of the first build.
+      - id: week
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
       - name: build ${{ matrix.image }} (${{ matrix.target }})
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -717,6 +728,7 @@ jobs:
             revision=${{ needs.version.outputs.release }} (${{ github.sha }})
             release=${{ needs.version.outputs.release }} (${{ github.sha }})
             ${{ inputs.build-args }}
+            BASE_REFRESH=${{ steps.week.outputs.week }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
@@ -777,6 +789,7 @@ jobs:
             revision=${{ needs.version.outputs.release }} (${{ github.sha }})
             release=${{ needs.version.outputs.release }} (${{ github.sha }})
             ${{ inputs.build-args }}
+            BASE_REFRESH=${{ steps.week.outputs.week }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}

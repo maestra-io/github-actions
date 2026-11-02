@@ -546,6 +546,10 @@ jobs:
               | docker login --username AWS --password-stdin "$ECR_REGISTRY"
           fi
 
+      # ISO week for a Dockerfile's `ARG BASE_REFRESH` (README, layer cache): a new value
+      # rebuilds the apt/apk stages the cache would otherwise serve forever.
+      - id: week
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
       # ── Dockerfile stage (GitLab .run-docker-test) ───────────────────────
       - if: ${{ inputs.docker-test-target != '' }}
         id: buildx
@@ -786,6 +790,7 @@ jobs:
           target: ${{ inputs.docker-test-target }}
           load: true
           tags: local/${{ inputs.docker-test-target }}:latest
+          build-args: BASE_REFRESH=${{ steps.week.outputs.week }}
           secret-files: |
             PRIVATE_PACKAGES_TOKEN=${{ runner.temp }}/packages-token/PRIVATE_PACKAGES_TOKEN
             NUGET_CREDENTIALS=${{ runner.temp }}/packages-token/NUGET_CREDENTIALS
@@ -1014,6 +1019,7 @@ jobs:
           context: .
           file: ${{ needs.version.outputs.base-dockerfile }}
           target: ${{ needs.version.outputs.base-target }}
+          build-args: BASE_REFRESH=${{ steps.week.outputs.week }}
           outputs: type=cacheonly
           secret-files: |
             PRIVATE_PACKAGES_TOKEN=${{ runner.temp }}/packages-token/PRIVATE_PACKAGES_TOKEN
@@ -1204,6 +1210,11 @@ jobs:
         if: ${{ inputs.graphql-schemas }}
         run: tar -xzvf "$RUNNER_TEMP/graphql-schemas.tgz"
 
+      # ISO week for a Dockerfile's `ARG BASE_REFRESH` (README, layer cache): a new value
+      # rebuilds the apt/apk stages the cache would otherwise serve forever. One value per
+      # job: the push build below must hit the cache of the first build.
+      - id: week
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
       # base-image: an OCI layout from the cache `test` filled, handed to the build
       # as the named context the Dockerfile's FROM refers to.
       - name: uses ${{ needs.version.outputs.base-name }}?
@@ -1287,6 +1298,7 @@ jobs:
           context: .
           file: ${{ needs.version.outputs.base-dockerfile }}
           target: ${{ needs.version.outputs.base-target }}
+          build-args: BASE_REFRESH=${{ steps.week.outputs.week }}
           outputs: type=oci,dest=${{ runner.temp }}/base-image,tar=false
           builder: ${{ steps.runs-on.outputs.buildkit-builder }}
           no-cache: ${{ steps.cache-base.outputs.nocache == 'true' }}
@@ -1329,6 +1341,7 @@ jobs:
           build-args: |
             revision=${{ needs.version.outputs.release }} (${{ github.sha }})
             release=${{ needs.version.outputs.release }} (${{ github.sha }})
+            BASE_REFRESH=${{ steps.week.outputs.week }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
@@ -1395,6 +1408,7 @@ jobs:
           build-args: |
             revision=${{ needs.version.outputs.release }} (${{ github.sha }})
             release=${{ needs.version.outputs.release }} (${{ github.sha }})
+            BASE_REFRESH=${{ steps.week.outputs.week }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
