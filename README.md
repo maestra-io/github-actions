@@ -251,6 +251,31 @@ If you have three services: `api`, `frontend`, and `worker`, you would:
 
 This will push all three images to their respective ECR repositories with the `v1.0.0` tag.
 
+### Sign and attest the pushed image
+
+[`sign-image`](sign-image/action.yml) runs after the push: cosign 3 keyless-signs the digest
+(GitHub OIDC -> Fulcio, Rekor) and attests a CycloneDX SBOM of it (syft), both stored next to the
+image as OCI referrers (`aws ecr list-image-referrers`, artifactType
+`application/vnd.dev.sigstore.bundle.v0.3+json`, annotation `dev.sigstore.bundle.predicateType`
+`https://sigstore.dev/cosign/sign/v1` or `https://cyclonedx.org/bom`). No tags are written, so the
+immutable repositories need no `sha256-*` exclusion for it. The job needs `id-token: write` and the
+registry login above. Best-effort: a Fulcio/Rekor/syft failure is a warning and the `status` output
+(`sbom+signature` / `signature` / `none`) says what landed
+([issues-maestra#1648](https://github.com/maestra-io/issues-maestra/issues/1648)).
+
+```yaml
+- uses: maestra-io/github-actions/sign-image@<sha> # vX.Y.Z
+  with:
+    image: ${{ steps.ecr.outputs.registry }}/my-service
+    digest: ${{ steps.push.outputs.digest }}
+```
+
+A job that pushes several images passes `refs:` instead, one `<image>@sha256:<digest>` per line.
+
+Verify: `cosign verify --certificate-oidc-issuer https://token.actions.githubusercontent.com
+--certificate-identity-regexp '^https://github\.com/maestra-io/' <image>@<digest>`
+(`verify-attestation --type cyclonedx` for the SBOM).
+
 ### Second region
 
 The dual-push of the ECR eu-central-1 → us-west-2 migration
