@@ -16,6 +16,7 @@ on:
       - ".github/workflows/ecr-push-selftest.yml"
       - ".github/workflows/service-build.yml"
       - "push-to-aws-ecr-repository/**"
+      - "sign-image/**"
 jobs:
   push:
     runs-on: runs-on=${{ github.run_id }}-ecr-push/pool=build
@@ -95,6 +96,25 @@ jobs:
           stored=$(aws ecr describe-images --repository-name "$REPOSITORY" --image-ids imageTag="$TAG" --query 'imageDetails[0].imageDigest' --output text)
           [ "$stored" = "$BUILT" ] || { echo "::error::ECR stores $stored for $REPOSITORY:$TAG, built $BUILT"; exit 1; }
           echo "$REPOSITORY:$TAG @ $stored"
+      # sign-image on the pushed digest: keyless signature + CycloneDX attestation
+      # as OCI referrers, then read both back the way an admission policy would.
+      - name: sign + attest a
+        id: sign
+        uses: ./sign-image
+        with:
+          image: ${{ steps.ecr.outputs.registry }}/${{ env.REPOSITORY }}
+          digest: ${{ steps.push.outputs.digest }}
+      - name: signature and SBOM attestation verify
+        env:
+          STATUS: ${{ steps.sign.outputs.status }}
+          REF: ${{ steps.ecr.outputs.registry }}/${{ env.REPOSITORY }}@${{ steps.push.outputs.digest }}
+        run: |
+          [ "$STATUS" = sbom+signature ] || { echo "::error::sign-image status '$STATUS', expected sbom+signature"; exit 1; }
+          id=(--certificate-oidc-issuer https://token.actions.githubusercontent.com
+              --certificate-identity-regexp '^https://github\.com/maestra-io/github-actions/')
+          cosign verify "${id[@]}" "$REF" > /dev/null
+          cosign verify-attestation "${id[@]}" --type cyclonedx "$REF" \
+            | jq -se '.[0].payload | @base64d | fromjson | .predicate.bomFormat == "CycloneDX"'
       - name: re-run of a (expect skip)
         env:
           IMAGE: ${{ env.REPOSITORY }}
