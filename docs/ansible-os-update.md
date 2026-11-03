@@ -288,7 +288,7 @@ A cancelled runner never executes `always`. Three layers, of which only the firs
 3. **`OsUpdateHostStrandedDrain`** fires on the marker's metric outliving the silence
    (`silence_minutes` < the alert's `for: 45m`, mirrored in the role as
    `os_update_stranded_drain_for_minutes` and asserted in `silence.yml`, so the safety net can
-   never be silenced by the run that stranded the host). The kube consumer passes 40.
+   never be silenced by the run that stranded the host).
 
 Escape hatch: `mode: undrain-only` (optionally `host_limit: <host>`). It skips preflight on
 purpose — the peer gates there are exactly what fails in the scenario the hatch exists for.
