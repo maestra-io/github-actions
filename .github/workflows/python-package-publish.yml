@@ -115,7 +115,7 @@ jobs:
           set -euo pipefail
           [ "${1:-}" = get ] || exit 0
           server=$(cat) # docker sends it without a newline
-          t=$(curl -sSf --retry 3 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          t=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$NORA_AUDIENCE" | jq -r '.value // empty')
           [ -n "$t" ]
           jq -cn --arg s "$server" --arg t "$t" '{ServerURL: $s, Username: "token", Secret: $t}'
