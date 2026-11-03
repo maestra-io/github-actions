@@ -125,8 +125,8 @@ HOME="$n/home" RUNNER_TEMP="$n/tmp" GITHUB_PATH="$n/path" GITHUB_ENV="$n/env" \
 eq "$(jq -c '{a: (.auths|keys), h: .credHelpers}' "$n/home/.docker/config.json")" \
   '{"a":["515260921971.dkr.ecr.us-west-2.amazonaws.com"],"h":{"packages.maestra.io":"nora"}}' "nora config keeps auths"
 helper="$(cat "$n/path")/docker-credential-nora"
-out=$(echo packages.maestra.io | ACTIONS_ID_TOKEN_REQUEST_TOKEN=x ACTIONS_ID_TOKEN_REQUEST_URL="https://t/?v=1" PATH="$n/bin:$PATH" NORA_AUDIENCE=packages.maestra.io "$helper" get)
+out=$(printf %s packages.maestra.io | ACTIONS_ID_TOKEN_REQUEST_TOKEN=x ACTIONS_ID_TOKEN_REQUEST_URL="https://t/?v=1" PATH="$n/bin:$PATH" NORA_AUDIENCE=packages.maestra.io "$helper" get)
 eq "$(jq -r '.ServerURL + " " + .Username + " " + (.Secret|test("^tok-")|tostring)' <<<"$out")" "packages.maestra.io token true" "nora helper get"
 eq "$(cat "$n/env")" "NORA_AUDIENCE=packages.maestra.io" "nora audience env"
-if echo packages.maestra.io | ACTIONS_ID_TOKEN_REQUEST_TOKEN=x ACTIONS_ID_TOKEN_REQUEST_URL="https://t/?v=1" PATH="$n/bin:$PATH" NORA_AUDIENCE=wrong "$helper" get >/dev/null 2>&1; then echo "FAIL nora helper: empty token accepted"; exit 1; fi
+if printf %s packages.maestra.io | ACTIONS_ID_TOKEN_REQUEST_TOKEN=x ACTIONS_ID_TOKEN_REQUEST_URL="https://t/?v=1" PATH="$n/bin:$PATH" NORA_AUDIENCE=wrong "$helper" get >/dev/null 2>&1; then echo "FAIL nora helper: empty token accepted"; exit 1; fi
 echo "dotnet-service-build nora-cred-helper: OK"

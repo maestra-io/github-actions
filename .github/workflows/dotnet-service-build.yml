@@ -560,7 +560,7 @@ jobs:
           #!/usr/bin/env bash
           set -euo pipefail
           [ "${1:-}" = get ] || exit 0
-          read -r server
+          server=$(cat) # docker sends it without a newline
           t=$(curl -sSf --retry 3 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$NORA_AUDIENCE" | jq -r '.value // empty')
           [ -n "$t" ]
