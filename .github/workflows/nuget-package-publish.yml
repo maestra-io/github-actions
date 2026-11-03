@@ -131,6 +131,35 @@ jobs:
       # (W2, Mindbox.Tenants PR #2). Scope: the solution's directory tree plus
       # Directory.Build.* in its parent directories (all of the repo when
       # solution-file is empty). selftest.yml runs this program (scripts/test-nuget-sdk-set.sh).
+      # Testcontainers, docker compose and BuildKit pull packages.maestra.io images (the
+      # nora pull-through, issues-maestra#1649) with ~/.docker/config.json. nora takes the
+      # OIDC token, which lives minutes: a credential helper mints a fresh one per pull.
+      - name: nora docker credentials
+        env:
+          AUDIENCE: ${{ inputs.packages-audience }}
+          PACKAGES_URL: ${{ inputs.packages-url }}
+        run: |
+          # >>> nora-cred-helper (scripts/test-dotnet-service-build.sh runs this block; all copies equal)
+          bin="$RUNNER_TEMP/nora-bin"; mkdir -p "$bin"
+          cat > "$bin/docker-credential-nora" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          [ "${1:-}" = get ] || exit 0
+          server=$(cat) # docker sends it without a newline
+          t=$(curl -sSf --retry 3 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$NORA_AUDIENCE" | jq -r '.value // empty')
+          [ -n "$t" ]
+          jq -cn --arg s "$server" --arg t "$t" '{ServerURL: $s, Username: "token", Secret: $t}'
+          EOF
+          chmod 755 "$bin/docker-credential-nora"
+          echo "$bin" >> "$GITHUB_PATH"
+          echo "NORA_AUDIENCE=$AUDIENCE" >> "$GITHUB_ENV"
+          host="${PACKAGES_URL#*://}"; host="${host%%/*}"
+          cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"; mkdir -p "$(dirname "$cfg")"
+          [ -s "$cfg" ] || echo '{}' > "$cfg"
+          jq --arg h "$host" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+          # <<< nora-cred-helper
+
       - name: pick .NET SDKs
         id: sdk
         env:

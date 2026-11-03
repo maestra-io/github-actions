@@ -110,8 +110,15 @@ grep -q '::warning::no AWS credentials' "$work/out" || { cat "$work/out"; echo "
 echo "dotnet-service-build aws-credentials: OK"
 
 # ── nora-cred-helper: a fresh OIDC token per docker pull ───────────────────────
-cred=$(sed -n '/# >>> nora-cred-helper/,/# <<< nora-cred-helper/p' "$wf" | sed 's/^          //')
+cred=$(awk 'index($0,"# >>> nora-cred-helper"){n++} n==1{print} n==1&&index($0,"# <<< nora-cred-helper"){exit}' "$wf" | sed 's/^          //')
 [ -n "$cred" ] || { echo "nora-cred-helper block not found in $wf"; exit 1; }
+# Every job that pulls through nora carries the same copy (reusable workflows cannot share a file).
+for f in dotnet-service-build:2 service-build:2 mcf-build:2 nuget-package-publish:1 python-package-publish:1; do
+  w="$here/../.github/workflows/${f%%:*}.yml"
+  got=$(sed -n '/# >>> nora-cred-helper/,/# <<< nora-cred-helper/p' "$w" | sed 's/^          //')
+  want=$(for _ in $(seq "${f##*:}"); do printf '%s\n' "$cred"; done)
+  [ "$got" = "${want%$'\n'}" ] || { echo "FAIL nora-cred-helper: ${f%%:*}.yml copies differ or are missing"; exit 1; }
+done
 n="$work/nora"; mkdir -p "$n/bin" "$n/home/.docker" "$n/tmp"
 cat > "$n/bin/curl" <<'C'
 #!/usr/bin/env bash
