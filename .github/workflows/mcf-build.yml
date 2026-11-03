@@ -983,7 +983,7 @@ jobs:
       - name: sign ${{ needs.version.outputs.image }}:${{ needs.version.outputs.release }}
         continue-on-error: true
         timeout-minutes: 10
-        uses: maestra-io/github-actions/sign-image@a0e5143b4ba2e0119de2bf32b55ee79e68b71c06 # v1.61.2
+        uses: maestra-io/github-actions/sign-image@bdfea43a7d47149012fa1a488c91e5d6a49b2744 # v1.62.2
         with:
           image: ${{ steps.ecr.outputs.registry }}/${{ needs.version.outputs.image }}
           digest: ${{ steps.push.outputs.digest }}
@@ -1053,7 +1053,7 @@ jobs:
       - name: sign ${{ needs.version.outputs.image }}-with-deps:${{ needs.version.outputs.release }}
         continue-on-error: true
         timeout-minutes: 10
-        uses: maestra-io/github-actions/sign-image@a0e5143b4ba2e0119de2bf32b55ee79e68b71c06 # v1.61.2
+        uses: maestra-io/github-actions/sign-image@bdfea43a7d47149012fa1a488c91e5d6a49b2744 # v1.62.2
         with:
           image: ${{ steps.ecr.outputs.registry }}/${{ needs.version.outputs.image }}-with-deps
           digest: ${{ steps.push.outputs.digest }}
