@@ -108,6 +108,7 @@ jobs:
         env:
           STATUS: ${{ steps.sign.outputs.status }}
           REF: ${{ steps.ecr.outputs.registry }}/${{ env.REPOSITORY }}@${{ steps.push.outputs.digest }}
+          DIGEST: ${{ steps.push.outputs.digest }}
         run: |
           [ "$STATUS" = sbom+signature ] || { echo "::error::sign-image status '$STATUS', expected sbom+signature"; exit 1; }
           id=(--certificate-oidc-issuer https://token.actions.githubusercontent.com
@@ -115,6 +116,14 @@ jobs:
           cosign verify "${id[@]}" "$REF" > /dev/null
           cosign verify-attestation "${id[@]}" --type cyclonedx "$REF" \
             | jq -se '.[0].payload | @base64d | fromjson | .predicate.bomFormat == "CycloneDX"'
+          # ECR's referrer annotations are what SOC reads (registry:no-provenance / no-sbom):
+          # one signature and one CycloneDX attestation must be told apart there.
+          types=$(aws ecr list-image-referrers --region us-west-2 --repository-name "$REPOSITORY" \
+            --subject-id imageDigest="$DIGEST" \
+            --query 'referrers[].annotations."dev.sigstore.bundle.predicateType"' --output text)
+          echo "referrer predicateTypes: $types"
+          grep -qw 'https://sigstore.dev/cosign/sign/v1' <<<"$types" || { echo "::error::no cosign signature referrer"; exit 1; }
+          grep -qF 'https://cyclonedx.org/bom' <<<"$types" || { echo "::error::no referrer annotated https://cyclonedx.org/bom"; exit 1; }
       - name: re-run of a (expect skip)
         env:
           IMAGE: ${{ env.REPOSITORY }}

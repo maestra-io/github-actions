@@ -37,6 +37,11 @@ runs:
     - id: install
       continue-on-error: true
       uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      with:
+        # The installer default (v3.0.6) annotates a `cosign attest` referrer with
+        # predicateType https://sigstore.dev/cosign/sign/v1; 3.1.4 writes the real
+        # https://cyclonedx.org/bom that SOC registry:no-sbom keys on (issues-maestra#1648).
+        cosign-release: v3.1.4
     - if: ${{ steps.install.outcome == 'failure' }}
       shell: bash
       run: sleep 20
@@ -44,6 +49,8 @@ runs:
       if: ${{ steps.install.outcome == 'failure' }}
       continue-on-error: true
       uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      with:
+        cosign-release: v3.1.4
     - if: ${{ steps.install.outcome != 'success' && steps.install-retry.outcome != 'success' }}
       shell: bash
       run: |
