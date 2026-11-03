@@ -9,7 +9,8 @@ url="${NORA_URL%/}"
 dir="${RUNNER_TEMP}/go-nora"
 mkdir -p "$dir"
 
-# GOAUTH command: run by every `go` process before its first fetch, and again with
+# GOAUTH helper (GOAUTH holds its path; `command` in `go help goauth` is a placeholder):
+# run by every `go` process before its first fetch, and again with
 # the URL as argument after a 4xx (an expired token): each run mints a new token.
 helper="$dir/goauth"
 cat > "$helper" <<SH
@@ -29,7 +30,7 @@ echo "::add-mask::$token"
 
 {
   echo "GOPROXY=$url/go"
-  echo "GOAUTH=command $helper"
+  echo "GOAUTH=$helper"
 } >> "$GITHUB_ENV"
 echo "token=$token" >> "$GITHUB_OUTPUT"
 echo "go: modules from $url/go (GOAUTH $helper)"

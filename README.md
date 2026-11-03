@@ -454,7 +454,7 @@ steps:
 ```
 
 - `go-nora` exports `GOPROXY` (no `direct` fallback; `GOPRIVATE` modules still come from git)
-  and `GOAUTH=command $RUNNER_TEMP/go-nora/goauth`, a helper that mints a fresh GitHub OIDC token
+  and `GOAUTH=$RUNNER_TEMP/go-nora/goauth`, a helper that mints a fresh GitHub OIDC token
   for every `go` process and again after a 4xx.
 - `cargo-nora` appends source replacement and
   `credential-provider = ["cargo:token-from-stdout", <helper>]` to `$CARGO_HOME/config.toml`;
