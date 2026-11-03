@@ -946,11 +946,40 @@ jobs:
         with:
           name: static
           path: ${{ runner.temp }}
+      # Testcontainers, docker compose and BuildKit pull packages.maestra.io images (the
+      # nora pull-through, issues-maestra#1649) with ~/.docker/config.json. nora takes the
+      # OIDC token, which lives minutes: a credential helper mints a fresh one per pull.
+      - name: nora docker credentials
+        env:
+          AUDIENCE: ${{ inputs.packages-audience }}
+          PACKAGES_URL: ${{ inputs.packages-url }}
+        run: |
+          # >>> nora-cred-helper (scripts/test-dotnet-service-build.sh runs this block; all copies equal)
+          bin="$RUNNER_TEMP/nora-bin"; mkdir -p "$bin"
+          cat > "$bin/docker-credential-nora" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          [ "${1:-}" = get ] || exit 0
+          server=$(cat) # docker sends it without a newline
+          t=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$NORA_AUDIENCE" | jq -r '.value // empty')
+          [ -n "$t" ]
+          jq -cn --arg s "$server" --arg t "$t" '{ServerURL: $s, Username: "token", Secret: $t}'
+          EOF
+          chmod 755 "$bin/docker-credential-nora"
+          echo "$bin" >> "$GITHUB_PATH"
+          echo "NORA_AUDIENCE=$AUDIENCE" >> "$GITHUB_ENV"
+          host="${PACKAGES_URL#*://}"; host="${host%%/*}"
+          cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"; mkdir -p "$(dirname "$cfg")"
+          [ -s "$cfg" ] || echo '{}' > "$cfg"
+          jq --arg h "$host" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+          # <<< nora-cred-helper
+
       - name: image context
         run: |
           ctx="$RUNNER_TEMP/image"; mkdir -p "$ctx/static"
           tar -xzf "$RUNNER_TEMP/static.tgz" -C "$ctx/static"
-          printf 'FROM rclone/rclone:1.67.0\nCOPY static /static\n' > "$ctx/Dockerfile"
+          printf 'FROM packages.maestra.io/docker-hub/rclone/rclone:1.67.0@sha256:ec0f519fefc0d157b95ef30e230c0e945715e0235e4a868432622527f1d578f9\nCOPY static /static\n' > "$ctx/Dockerfile"
       # Login first, then one BuildKit build that pushes: only the static layer is
       # new, the rclone base layers stay in ECR (the old `docker build` + `docker push`
       # re-uploaded them every release).
@@ -1001,6 +1030,35 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Testcontainers, docker compose and BuildKit pull packages.maestra.io images (the
+      # nora pull-through, issues-maestra#1649) with ~/.docker/config.json. nora takes the
+      # OIDC token, which lives minutes: a credential helper mints a fresh one per pull.
+      - name: nora docker credentials
+        env:
+          AUDIENCE: ${{ inputs.packages-audience }}
+          PACKAGES_URL: ${{ inputs.packages-url }}
+        run: |
+          # >>> nora-cred-helper (scripts/test-dotnet-service-build.sh runs this block; all copies equal)
+          bin="$RUNNER_TEMP/nora-bin"; mkdir -p "$bin"
+          cat > "$bin/docker-credential-nora" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          [ "${1:-}" = get ] || exit 0
+          server=$(cat) # docker sends it without a newline
+          t=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$NORA_AUDIENCE" | jq -r '.value // empty')
+          [ -n "$t" ]
+          jq -cn --arg s "$server" --arg t "$t" '{ServerURL: $s, Username: "token", Secret: $t}'
+          EOF
+          chmod 755 "$bin/docker-credential-nora"
+          echo "$bin" >> "$GITHUB_PATH"
+          echo "NORA_AUDIENCE=$AUDIENCE" >> "$GITHUB_ENV"
+          host="${PACKAGES_URL#*://}"; host="${host%%/*}"
+          cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"; mkdir -p "$(dirname "$cfg")"
+          [ -s "$cfg" ] || echo '{}' > "$cfg"
+          jq --arg h "$host" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+          # <<< nora-cred-helper
+
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: *root-node-modules
@@ -1015,8 +1073,9 @@ jobs:
           NODE_VERSION: ${{ inputs.node-version }}
         run: |
           printf '.git\n' > .dockerignore
+          # nora, no digest: the tag follows the node-version input.
           {
-            printf 'FROM docker.io/library/node:%s-slim\nWORKDIR /app\nRUN chown 10001:10001 /app\n' "$NODE_VERSION"
+            printf 'FROM packages.maestra.io/docker-hub/library/node:%s-slim\nWORKDIR /app\nRUN chown 10001:10001 /app\n' "$NODE_VERSION"
             printf 'COPY --chown=10001:10001 package.json package-lock.json ./\nCOPY --chown=10001:10001 node_modules node_modules\n'
             [ ! -d tests/node_modules ] || printf 'COPY --chown=10001:10001 tests/node_modules tests/node_modules\n'
             printf 'COPY --chown=10001:10001 . .\n'
