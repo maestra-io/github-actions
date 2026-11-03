@@ -49,6 +49,11 @@ os_update_am_url: ""
 # the OsUpdateHostStrandedDrain alert, or the safety net silences itself.
 os_update_silence_minutes: 25
 
+# The `for:` of OsUpdateHostStrandedDrain (maestra-io/fluxcd
+# base/os-update-alerts/prometheusrule.yaml), in minutes. silence.yml asserts
+# os_update_silence_minutes < this. Change it only together with the alert.
+os_update_stranded_drain_for_minutes: 45
+
 # Post-run grace (tasks/tail_silence.yml): after a SUCCESSFUL apply, and after
 # an undrain-only run (the workloads a dead run moved are landing back), the same
 # matcher sets are re-posted for this long as createdBy `os-update-tail`, then

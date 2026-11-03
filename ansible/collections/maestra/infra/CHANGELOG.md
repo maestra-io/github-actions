@@ -7,6 +7,16 @@ finding, and because the `os_update` contract is shared across four repos:
 anything that changes a variable name or a hook expectation has to be findable
 from one place.
 
+## 1.5.0
+
+- `os_update`: the dead-man bound is one variable, `os_update_stranded_drain_for_minutes`
+  (default 45, the `for:` of `OsUpdateHostStrandedDrain` in maestra-io/fluxcd
+  `base/os-update-alerts`). `silence.yml` asserts `os_update_silence_minutes` below it
+  instead of a literal `< 30`. Kube nodes can now run 40-minute maintenance silences
+  ([issues-maestra#1653](https://github.com/maestra-io/issues-maestra/issues/1653)).
+- Consumer change: none required. Roll the alert's `for: 45m` before passing any
+  `silence_minutes` >= 30.
+
 ## 1.4.0
 
 - `wireguard_burst`: the `embedded` mode is gone (it had no consumer; the NAT

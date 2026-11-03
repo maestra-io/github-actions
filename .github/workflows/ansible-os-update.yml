@@ -79,7 +79,7 @@ on:
         type: string
         default: "alertmanager"
       silence_minutes:
-        description: "Dead-man window for the silences. Must stay < OsUpdateHostStrandedDrain's for: (30m)."
+        description: "Dead-man window for the silences. Must stay < OsUpdateHostStrandedDrain's for: (45m, os_update_stranded_drain_for_minutes)."
         required: false
         type: number
         default: 25

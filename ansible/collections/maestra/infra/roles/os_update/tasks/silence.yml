@@ -7,12 +7,14 @@
 # EC2 hubs), whose `instance` is not ours.
 
 - name: Invariant — the dead-man window must expire before the stranded-drain alert fires
-  # OsUpdateHostStrandedDrain has `for: 30m`. If the silence outlived it, the safety
-  # net that detects "a runner died and left this host drained" would be silenced by
-  # the very run that stranded the host.
+  # OsUpdateHostStrandedDrain has `for: <os_update_stranded_drain_for_minutes>m`. If
+  # the silence outlived it, the safety net that detects "a runner died and left this
+  # host drained" would be silenced by the very run that stranded the host.
   ansible.builtin.assert:
-    that: (os_update_silence_minutes | int) < 30
-    fail_msg: "os_update_silence_minutes must stay below OsUpdateHostStrandedDrain's for: (30m)."
+    that: (os_update_silence_minutes | int) < (os_update_stranded_drain_for_minutes | int)
+    fail_msg: >-
+      os_update_silence_minutes ({{ os_update_silence_minutes }}) must stay below
+      OsUpdateHostStrandedDrain's for: ({{ os_update_stranded_drain_for_minutes }}m).
 
 # Timestamps: a FRESH epoch (never ansible_facts.date_time.epoch — that one is
 # frozen at fact-gathering, and guards+plan+preflight have been eating into the

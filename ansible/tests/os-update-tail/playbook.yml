@@ -14,6 +14,7 @@
     os_update_run_url: https://example.invalid/run/1
     os_update_silence_minutes: 25
     os_update_tail_silence_minutes: 15
+    os_update_stranded_drain_for_minutes: 45
     # A host set plus a kube workload set, the shape vars.yml + silence-workload.yml build.
     os_update_silence_sets:
       - - {name: instance, value: "us-test-worker02.*", isRegex: true}
@@ -38,6 +39,33 @@
         - name: The guard refused, as it must
           ansible.builtin.assert:
             that: "'Another os-update drain window is open' in ansible_failed_result.msg"
+
+    - name: The dead-man window bound — a silence as long as the alert's for is refused
+      block:
+        - name: Silence for exactly os_update_stranded_drain_for_minutes
+          ansible.builtin.include_tasks: "{{ role_tasks }}/silence.yml"
+          vars:
+            os_update_am_url: http://127.0.0.1:1
+            os_update_silence_minutes: "{{ os_update_stranded_drain_for_minutes }}"
+        - name: Unreachable if the invariant passed
+          ansible.builtin.fail:
+            msg: a silence as long as the alert's for was accepted
+      rescue:
+        - name: The invariant refused, as it must
+          ansible.builtin.assert:
+            that: "'must stay below' in ansible_failed_result.msg"
+
+    - name: One minute under the bound passes the invariant (positive control)
+      block:
+        - name: Silence for os_update_stranded_drain_for_minutes - 1, Alertmanager unreachable
+          ansible.builtin.include_tasks: "{{ role_tasks }}/silence.yml"
+          vars:
+            os_update_am_url: http://127.0.0.1:1
+            os_update_silence_minutes: "{{ (os_update_stranded_drain_for_minutes | int) - 1 }}"
+      rescue:
+        - name: It got past the invariant and failed on the POST instead
+          ansible.builtin.assert:
+            that: "'must stay below' not in (ansible_failed_result.msg | default(''))"
 
     - name: Success path — tail first, then expire the maintenance silences
       ansible.builtin.include_tasks: "{{ role_tasks }}/{{ item }}"
