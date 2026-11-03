@@ -47,9 +47,15 @@ inputs:
     required: false
     default: './kustomization'
   flux-version:
-    description: 'flux CLI version (without v- prefix).'
+    description: 'flux CLI version (without v- prefix). Change flux-sha256 with it.'
     required: false
     default: '2.8.6'
+  flux-sha256:
+    description: >-
+      sha256 of flux_<flux-version>_linux_amd64.tar.gz (the release's
+      flux_<version>_checksums.txt); the install refuses any other archive.
+    required: false
+    default: 'c53cc990ae266f7840f64c81515d701d8821d558a9062aa4211d71b38cf044be'
   aws-region:
     description: >-
       AWS region for ECR. us-west-2 since phase 6 of the ECR eu-central-1 ->
@@ -233,14 +239,24 @@ runs:
                --region "$AWS_REGION" >/dev/null
 
     # ── Tools ─────────────────────────────────────────────────────────────
+    # From GitHub Releases through nora (packages.maestra.io/github/, release
+    # age and first-seen quarantine, issues-maestra#1649 s10), authenticated by
+    # the job's OIDC token (the bake needs id-token: write for the Teleport join
+    # anyway), and pinned by sha256.
     - name: install flux CLI
       shell: bash
       env:
         FLUX_VERSION: ${{ inputs.flux-version }}
+        FLUX_SHA256: ${{ inputs.flux-sha256 }}
       run: |
+        set -euo pipefail
+        oidc="$(curl -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+          "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=packages.maestra.io" | jq -r .value)"
+        echo "::add-mask::${oidc}"
         tgz="$(mktemp)"
-        curl -sfL --retry 5 --retry-delay 5 --retry-all-errors -o "$tgz" \
-          "https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/flux_${FLUX_VERSION}_linux_amd64.tar.gz"
+        curl -sfL --retry 5 --retry-delay 5 --retry-all-errors -u "oidc:${oidc}" -o "$tgz" \
+          "https://packages.maestra.io/github/fluxcd/flux2/releases/download/v${FLUX_VERSION}/flux_${FLUX_VERSION}_linux_amd64.tar.gz"
+        echo "${FLUX_SHA256}  ${tgz}" | sha256sum -c -
         sudo tar -xzf "$tgz" -C /usr/local/bin flux
         flux --version
 
