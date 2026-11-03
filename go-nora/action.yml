@@ -1,0 +1,37 @@
+name: "Go modules through nora"
+description: >-
+  Point Go at packages.maestra.io (nora) for every public module: GOPROXY without
+  a `direct` fallback (versions younger than 3 days are refused there,
+  issues-maestra#1649) and a GOAUTH command that hands each `go` process a fresh
+  GitHub OIDC token, so a token never expires between steps of a long job.
+  GOPRIVATE modules still come straight from git. Needs `permissions: id-token: write`
+  and Go >= 1.24 on the runner (GOAUTH). For a Docker build, pass the
+  `docker-goproxy` output as a BuildKit secret and read it in the Dockerfile with
+  `RUN --mount=type=secret,id=GOPROXY,env=GOPROXY go mod download`: it carries a
+  token minted by this step, so run the action right before the build.
+
+inputs:
+  url:
+    description: "nora base URL."
+    required: false
+    default: "https://packages.maestra.io"
+  audience:
+    description: "`aud` of the GitHub OIDC token nora accepts."
+    required: false
+    default: "packages.maestra.io"
+
+outputs:
+  docker-goproxy:
+    description: "GOPROXY with credentials (https://token:<jwt>@host/go) for a Docker build secret; masked."
+    value: ${{ steps.go-nora.outputs.docker-goproxy }}
+
+runs:
+  using: composite
+  steps:
+    - name: Go through nora
+      id: go-nora
+      shell: bash
+      env:
+        NORA_URL: ${{ inputs.url }}
+        NORA_AUDIENCE: ${{ inputs.audience }}
+      run: bash "${GITHUB_ACTION_PATH}/go-nora.sh"

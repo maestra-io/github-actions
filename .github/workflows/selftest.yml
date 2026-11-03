@@ -78,6 +78,9 @@ jobs:
       - name: terraform-nora CLI config and credentials helper (stub curl)
         run: bash scripts/test-terraform-nora.sh
 
+      - name: go-nora GOPROXY, GOAUTH helper, docker output (stub curl)
+        run: bash scripts/test-go-nora.sh
+
       - name: nora-image-prewarm image mapping, flate diff, OIDC round trip (stub)
         run: python3 nora-image-prewarm/prewarm.py --self-test
 

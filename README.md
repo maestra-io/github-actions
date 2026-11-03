@@ -429,6 +429,40 @@ lock picks the newest older one; a `.terraform.lock.hcl` that pins a younger ver
 matures (`host packages.maestra.io rejected the given authentication credentials` is that 403).
 Test: `scripts/test-terraform-nora.sh` (selftest).
 
+## Go modules through nora (`go-nora`)
+
+Public Go modules come from `https://packages.maestra.io/go` (nora's proxy of proxy.golang.org;
+a version whose `.info` Time is younger than 3 days is refused), not straight from
+proxy.golang.org (issues-maestra#1649). `GOPRIVATE` modules still come from git. The job needs
+`id-token: write`; Go >= 1.24 on the runner (GOAUTH):
+
+```yaml
+permissions:
+  id-token: write
+steps:
+  - uses: actions/setup-go@<sha> # v7.0.0
+  - uses: maestra-io/github-actions/go-nora@<40-hex sha> # vX.Y.Z
+    id: go-nora
+  - run: go test ./...
+  # An image build: right before it (the URL carries a token minted by go-nora).
+  - uses: docker/build-push-action@<sha>
+    with:
+      secrets: GOPROXY=${{ steps.go-nora.outputs.docker-goproxy }}
+```
+
+and in the Dockerfile `RUN --mount=type=secret,id=GOPROXY,env=GOPROXY go mod download` (a
+local build without the secret falls back to Go's default proxy). It exports `GOPROXY` (no
+`direct` fallback) and `GOAUTH=command $RUNNER_TEMP/go-nora/goauth`, a helper that mints a fresh
+GitHub OIDC token for every `go` process and again after a 4xx, so a long job never sends an
+expired one. Test: `scripts/test-go-nora.sh` (selftest).
+
+## Ansible Galaxy through nora
+
+`ansible-pr.yml` and `ansible-run.yml` install Galaxy collections from
+`https://packages.maestra.io/ansible/` (`ANSIBLE_GALAXY_SERVER_*`, a GitHub OIDC token): nora
+hides versions younger than 3 days, so a range like `>=8.0.0` resolves to the newest mature
+release. Roles and collections with a git `src` still come from git.
+
 ## Prewarm external images in nora (`nora-image-prewarm`)
 
 nora holds every image digest it sees for the first time for 3 days (issues-maestra#1649). This
