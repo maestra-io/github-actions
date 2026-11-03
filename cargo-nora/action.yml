@@ -1,0 +1,35 @@
+name: "Crates through nora"
+description: >-
+  Point cargo at packages.maestra.io (nora) instead of crates.io: source
+  replacement in $CARGO_HOME/config.toml (versions younger than 3 days are held
+  there, issues-maestra#1649) and a `cargo:token-from-stdout` credential provider
+  that mints a fresh GitHub OIDC token whenever cargo asks, so a token never
+  expires between steps of a long job. Run it after the Rust toolchain step.
+  Needs `permissions: id-token: write`. For a Docker build, pass the
+  `docker-token` output as the BuildKit secret CARGO_NORA_TOKEN (README).
+
+inputs:
+  url:
+    description: "nora base URL."
+    required: false
+    default: "https://packages.maestra.io"
+  audience:
+    description: "`aud` of the GitHub OIDC token nora accepts."
+    required: false
+    default: "packages.maestra.io"
+
+outputs:
+  docker-token:
+    description: "Cargo token (`Basic base64(token:<jwt>)`) for a Docker build secret; masked."
+    value: ${{ steps.cargo-nora.outputs.docker-token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Crates through nora
+      id: cargo-nora
+      shell: bash
+      env:
+        NORA_URL: ${{ inputs.url }}
+        NORA_AUDIENCE: ${{ inputs.audience }}
+      run: bash "${GITHUB_ACTION_PATH}/cargo-nora.sh"

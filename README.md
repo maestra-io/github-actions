@@ -456,6 +456,41 @@ local build without the secret falls back to Go's default proxy). It exports `GO
 GitHub OIDC token for every `go` process and again after a 4xx, so a long job never sends an
 expired one. Test: `scripts/test-go-nora.sh` (selftest).
 
+## Crates through nora (`cargo-nora`)
+
+crates.io comes through `https://packages.maestra.io/cargo` (sparse index; versions younger
+than 3 days are held), issues-maestra#1649. The job needs `id-token: write`; run the action
+after the Rust toolchain step:
+
+```yaml
+steps:
+  - uses: dtolnay/rust-toolchain@<sha>
+  - uses: maestra-io/github-actions/cargo-nora@<40-hex sha> # vX.Y.Z
+    id: cargo-nora
+  - run: cargo test --locked
+  # An image build: right before it (the token is minted by cargo-nora).
+  - uses: docker/build-push-action@<sha>
+    with:
+      secrets: CARGO_NORA_TOKEN=${{ steps.cargo-nora.outputs.docker-token }}
+```
+
+It appends source replacement and `credential-provider = ["cargo:token-from-stdout", <helper>]`
+to `$CARGO_HOME/config.toml`; the helper mints a fresh GitHub OIDC token whenever cargo asks.
+In the Dockerfile, fetch once with the secret and build offline (a local build without the
+secret keeps crates.io):
+
+```dockerfile
+RUN --mount=type=secret,id=CARGO_NORA_TOKEN,env=CARGO_REGISTRIES_NORA_TOKEN \
+    if [ -n "${CARGO_REGISTRIES_NORA_TOKEN:-}" ]; then printf '%s\n' '[source.crates-io]' \
+      'replace-with = "nora"' '[source.nora]' 'registry = "sparse+https://packages.maestra.io/cargo/index/"' \
+      '[registries.nora]' 'index = "sparse+https://packages.maestra.io/cargo/index/"' \
+      'credential-provider = ["cargo:token"]' \
+      >> "${CARGO_HOME:-$HOME/.cargo}/config.toml"; fi && cargo fetch --locked
+RUN cargo build --release --offline
+```
+
+Test: `scripts/test-cargo-nora.sh` (selftest).
+
 ## Ansible Galaxy through nora
 
 `ansible-pr.yml` and `ansible-run.yml` install Galaxy collections from
