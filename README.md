@@ -429,67 +429,56 @@ lock picks the newest older one; a `.terraform.lock.hcl` that pins a younger ver
 matures (`host packages.maestra.io rejected the given authentication credentials` is that 403).
 Test: `scripts/test-terraform-nora.sh` (selftest).
 
-## Go modules through nora (`go-nora`)
+## Go modules and crates through nora (`go-nora`, `cargo-nora`)
 
 Public Go modules come from `https://packages.maestra.io/go` (nora's proxy of proxy.golang.org;
-a version whose `.info` Time is younger than 3 days is refused), not straight from
-proxy.golang.org (issues-maestra#1649). `GOPRIVATE` modules still come from git. The job needs
-`id-token: write`; Go >= 1.24 on the runner (GOAUTH):
+a version whose `.info` Time is younger than 3 days is refused) and crates.io from
+`https://packages.maestra.io/cargo` (sparse index, versions younger than 3 days held), not
+straight from upstream (issues-maestra#1649). The job needs `id-token: write`.
 
 ```yaml
 permissions:
   id-token: write
 steps:
-  - uses: actions/setup-go@<sha> # v7.0.0
+  - uses: actions/setup-go@<sha>                                     # Go >= 1.24 (GOAUTH)
   - uses: maestra-io/github-actions/go-nora@<40-hex sha> # vX.Y.Z
-    id: go-nora
-  - run: go test ./...
-  # An image build: right before it (the URL carries a token minted by go-nora).
-  - uses: docker/build-push-action@<sha>
-    with:
-      secrets: GOPROXY=${{ steps.go-nora.outputs.docker-goproxy }}
-```
-
-and in the Dockerfile `RUN --mount=type=secret,id=GOPROXY,env=GOPROXY go mod download` (a
-local build without the secret falls back to Go's default proxy). It exports `GOPROXY` (no
-`direct` fallback) and `GOAUTH=command $RUNNER_TEMP/go-nora/goauth`, a helper that mints a fresh
-GitHub OIDC token for every `go` process and again after a 4xx, so a long job never sends an
-expired one. Test: `scripts/test-go-nora.sh` (selftest).
-
-## Crates through nora (`cargo-nora`)
-
-crates.io comes through `https://packages.maestra.io/cargo` (sparse index; versions younger
-than 3 days are held), issues-maestra#1649. The job needs `id-token: write`; run the action
-after the Rust toolchain step:
-
-```yaml
-steps:
-  - uses: dtolnay/rust-toolchain@<sha>
+    id: nora
+  # or, after the Rust toolchain step:
   - uses: maestra-io/github-actions/cargo-nora@<40-hex sha> # vX.Y.Z
-    id: cargo-nora
-  - run: cargo test --locked
-  # An image build: right before it (the token is minted by cargo-nora).
+    id: nora
+  - run: go test ./...        # cargo test --locked
+  # An image build: right after the action (its token is minted there).
   - uses: docker/build-push-action@<sha>
     with:
-      secrets: CARGO_NORA_TOKEN=${{ steps.cargo-nora.outputs.docker-token }}
+      secrets: PRIVATE_PACKAGES_TOKEN=${{ steps.nora.outputs.token }}
 ```
 
-It appends source replacement and `credential-provider = ["cargo:token-from-stdout", <helper>]`
-to `$CARGO_HOME/config.toml`; the helper mints a fresh GitHub OIDC token whenever cargo asks.
-In the Dockerfile, fetch once with the secret and build offline (a local build without the
-secret keeps crates.io):
+- `go-nora` exports `GOPROXY` (no `direct` fallback; `GOPRIVATE` modules still come from git)
+  and `GOAUTH=command $RUNNER_TEMP/go-nora/goauth`, a helper that mints a fresh GitHub OIDC token
+  for every `go` process and again after a 4xx.
+- `cargo-nora` appends source replacement and
+  `credential-provider = ["cargo:token-from-stdout", <helper>]` to `$CARGO_HOME/config.toml`;
+  the helper mints a fresh token whenever cargo asks.
+
+In the Dockerfile the token comes as the `PRIVATE_PACKAGES_TOKEN` secret, the same one
+`service-build.yml` and `dockerfiles` already pass (a local build without it keeps upstream):
 
 ```dockerfile
-RUN --mount=type=secret,id=CARGO_NORA_TOKEN,env=CARGO_REGISTRIES_NORA_TOKEN \
-    if [ -n "${CARGO_REGISTRIES_NORA_TOKEN:-}" ]; then printf '%s\n' '[source.crates-io]' \
-      'replace-with = "nora"' '[source.nora]' 'registry = "sparse+https://packages.maestra.io/cargo/index/"' \
+RUN --mount=type=secret,id=PRIVATE_PACKAGES_TOKEN,env=NORA_TOKEN \
+    GOPROXY="${NORA_TOKEN:+https://token:${NORA_TOKEN}@packages.maestra.io/go}" go mod download
+
+RUN --mount=type=secret,id=PRIVATE_PACKAGES_TOKEN,env=NORA_TOKEN \
+    if [ -n "${NORA_TOKEN:-}" ]; then printf '%s\n' '[source.crates-io]' 'replace-with = "nora"' \
+      '[source.nora]' 'registry = "sparse+https://packages.maestra.io/cargo/index/"' \
       '[registries.nora]' 'index = "sparse+https://packages.maestra.io/cargo/index/"' \
-      'credential-provider = ["cargo:token"]' \
-      >> "${CARGO_HOME:-$HOME/.cargo}/config.toml"; fi && cargo fetch --locked
+      'credential-provider = ["cargo:token"]' >> "${CARGO_HOME:-$HOME/.cargo}/config.toml"; \
+      export CARGO_REGISTRIES_NORA_TOKEN="Basic $(printf 'token:%s' "$NORA_TOKEN" | base64 | tr -d '\n')"; \
+    fi && cargo fetch --locked
 RUN cargo build --release --offline
 ```
 
-Test: `scripts/test-cargo-nora.sh` (selftest).
+Go redacts the userinfo (`token:xxxxx`) in its errors. Tests: `scripts/test-go-nora.sh`,
+`scripts/test-cargo-nora.sh` (selftest).
 
 ## Ansible Galaxy through nora
 

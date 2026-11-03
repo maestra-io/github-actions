@@ -6,7 +6,7 @@ description: >-
   that mints a fresh GitHub OIDC token whenever cargo asks, so a token never
   expires between steps of a long job. Run it after the Rust toolchain step.
   Needs `permissions: id-token: write`. For a Docker build, pass the
-  `docker-token` output as the BuildKit secret CARGO_NORA_TOKEN (README).
+  `token` output as the BuildKit secret PRIVATE_PACKAGES_TOKEN (README).
 
 inputs:
   url:
@@ -19,9 +19,9 @@ inputs:
     default: "packages.maestra.io"
 
 outputs:
-  docker-token:
-    description: "Cargo token (`Basic base64(token:<jwt>)`) for a Docker build secret; masked."
-    value: ${{ steps.cargo-nora.outputs.docker-token }}
+  token:
+    description: "The GitHub OIDC token for nora (masked), for the Docker build secret PRIVATE_PACKAGES_TOKEN."
+    value: ${{ steps.cargo-nora.outputs.token }}
 
 runs:
   using: composite

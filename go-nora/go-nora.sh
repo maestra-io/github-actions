@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Exports GOPROXY + GOAUTH for nora and writes the docker-goproxy output (see action.yml).
+# Exports GOPROXY + GOAUTH for nora and writes the token output (see action.yml).
 # Env: NORA_URL, NORA_AUDIENCE; RUNNER_TEMP, GITHUB_ENV, GITHUB_OUTPUT and the
 # runner's ACTIONS_ID_TOKEN_REQUEST_{URL,TOKEN}.
 set -euo pipefail
@@ -31,5 +31,5 @@ echo "::add-mask::$token"
   echo "GOPROXY=$url/go"
   echo "GOAUTH=command $helper"
 } >> "$GITHUB_ENV"
-echo "docker-goproxy=https://token:${token}@${url#https://}/go" >> "$GITHUB_OUTPUT"
+echo "token=$token" >> "$GITHUB_OUTPUT"
 echo "go: modules from $url/go (GOAUTH $helper)"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Routes cargo through nora and writes the docker-token output (see action.yml).
+# Routes cargo through nora and writes the token output (see action.yml).
 # Env: NORA_URL, NORA_AUDIENCE, CARGO_HOME (default ~/.cargo); RUNNER_TEMP,
 # GITHUB_OUTPUT and the runner's ACTIONS_ID_TOKEN_REQUEST_{URL,TOKEN}.
 set -euo pipefail
@@ -35,8 +35,9 @@ index = "sparse+$url/cargo/index/"
 credential-provider = ["cargo:token-from-stdout", "$helper"]
 TOML
 
-token=$("$helper")
+token=$(curl -fsS --retry 3 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+  "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${NORA_AUDIENCE}" | jq -r .value)
+[ -n "$token" ] && [ "$token" != null ] || { echo "::error::cargo-nora: no OIDC token" >&2; exit 1; }
 echo "::add-mask::$token"
-echo "::add-mask::${token#Basic }"
-echo "docker-token=$token" >> "$GITHUB_OUTPUT"
+echo "token=$token" >> "$GITHUB_OUTPUT"
 echo "cargo: crates from $url/cargo (config $cargo_home/config.toml)"

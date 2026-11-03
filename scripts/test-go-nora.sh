@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # go-nora/go-nora.sh with a stub `curl` on PATH: GOPROXY / GOAUTH exported, the
-# docker-goproxy output, the GOAUTH helper's credential set, and the refusal
+# token output, the GOAUTH helper's credential set, and the refusal
 # without the id-token permission. When go is on PATH, `go env` must accept GOAUTH.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,7 +22,7 @@ env -i PATH="$root/bin:$PATH" HOME="$root" RUNNER_TEMP="$root/tmp" GITHUB_ENV="$
   bash "$script" > "$root/log" 2>&1 || fail "run: $(cat "$root/log")"
 helper="$root/tmp/go-nora/goauth"
 printf 'GOPROXY=https://packages.maestra.io/go\nGOAUTH=command %s\n' "$helper" | diff - "$root/env" || fail "GITHUB_ENV"
-[ "$(cat "$root/out")" = "docker-goproxy=https://token:eyJ.stub.jwt@packages.maestra.io/go" ] || fail "output: $(cat "$root/out")"
+[ "$(cat "$root/out")" = "token=eyJ.stub.jwt" ] || fail "output: $(cat "$root/out")"
 grep -q '::add-mask::eyJ.stub.jwt' "$root/log" || fail "token not masked"
 want=$(printf 'https://packages.maestra.io/go\n\nAuthorization: Basic %s\n' "$(printf 'token:eyJ.stub.jwt' | base64 | tr -d '\n')")
 got=$(env PATH="$root/bin:$PATH" "${oidc[@]}" "$helper")

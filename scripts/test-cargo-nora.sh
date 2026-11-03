@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # cargo-nora/cargo-nora.sh with a stub `curl` on PATH: the config.toml source
-# replacement, the token-from-stdout helper, the masked docker-token output and the
+# replacement, the token-from-stdout helper, the masked token output and the
 # refusal without the id-token permission.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,8 +26,8 @@ cfg="$root/.cargo/config.toml"
 grep -qxF 'replace-with = "nora"' "$cfg" || fail "no source replacement"
 grep -qxF 'registry = "sparse+https://packages.maestra.io/cargo/index/"' "$cfg" || fail "source registry"
 grep -qxF "credential-provider = [\"cargo:token-from-stdout\", \"$helper\"]" "$cfg" || fail "credential provider"
-[ "$(cat "$root/out")" = "docker-token=$want" ] || fail "output: $(cat "$root/out")"
-grep -qxF "::add-mask::$want" "$root/log" || fail "token not masked"
+[ "$(cat "$root/out")" = "token=eyJ.stub.jwt" ] || fail "output: $(cat "$root/out")"
+grep -qxF "::add-mask::eyJ.stub.jwt" "$root/log" || fail "token not masked"
 got=$(env PATH="$root/bin:$PATH" "${oidc[@]}" "$helper")
 [ "$got" = "$want" ] || fail "helper: $got"
 

@@ -78,10 +78,10 @@ jobs:
       - name: terraform-nora CLI config and credentials helper (stub curl)
         run: bash scripts/test-terraform-nora.sh
 
-      - name: go-nora GOPROXY, GOAUTH helper, docker output (stub curl)
+      - name: go-nora GOPROXY, GOAUTH helper, token output (stub curl)
         run: bash scripts/test-go-nora.sh
 
-      - name: cargo-nora source replacement, token-from-stdout helper, docker token (stub curl)
+      - name: cargo-nora source replacement, token-from-stdout helper, token output (stub curl)
         run: bash scripts/test-cargo-nora.sh
 
       - name: nora-image-prewarm image mapping, flate diff, OIDC round trip (stub)
