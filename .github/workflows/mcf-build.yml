@@ -956,19 +956,23 @@ jobs:
         run: |
           # >>> nora-cred-helper (scripts/test-dotnet-service-build.sh runs this block; all copies equal)
           bin="$RUNNER_TEMP/nora-bin"; mkdir -p "$bin"
+          # The helper runs in the caller's environment, which tox and other test runners
+          # scrub: the job's OIDC request URL and token go to a 0600 file next to it.
+          ( umask 077; printf 'url=%q\ntoken=%q\naud=%q\n' "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+            "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$AUDIENCE" > "$bin/oidc.env" )
           cat > "$bin/docker-credential-nora" <<'EOF'
           #!/usr/bin/env bash
           set -euo pipefail
           [ "${1:-}" = get ] || exit 0
           server=$(cat) # docker sends it without a newline
-          t=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$NORA_AUDIENCE" | jq -r '.value // empty')
+          . "${BASH_SOURCE[0]%/*}/oidc.env"
+          t=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $token" \
+            "$url&audience=$aud" | jq -r '.value // empty')
           [ -n "$t" ]
           jq -cn --arg s "$server" --arg t "$t" '{ServerURL: $s, Username: "token", Secret: $t}'
           EOF
           chmod 755 "$bin/docker-credential-nora"
           echo "$bin" >> "$GITHUB_PATH"
-          echo "NORA_AUDIENCE=$AUDIENCE" >> "$GITHUB_ENV"
           host="${PACKAGES_URL#*://}"; host="${host%%/*}"
           cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"; mkdir -p "$(dirname "$cfg")"
           [ -s "$cfg" ] || echo '{}' > "$cfg"
@@ -1040,19 +1044,23 @@ jobs:
         run: |
           # >>> nora-cred-helper (scripts/test-dotnet-service-build.sh runs this block; all copies equal)
           bin="$RUNNER_TEMP/nora-bin"; mkdir -p "$bin"
+          # The helper runs in the caller's environment, which tox and other test runners
+          # scrub: the job's OIDC request URL and token go to a 0600 file next to it.
+          ( umask 077; printf 'url=%q\ntoken=%q\naud=%q\n' "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+            "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$AUDIENCE" > "$bin/oidc.env" )
           cat > "$bin/docker-credential-nora" <<'EOF'
           #!/usr/bin/env bash
           set -euo pipefail
           [ "${1:-}" = get ] || exit 0
           server=$(cat) # docker sends it without a newline
-          t=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$NORA_AUDIENCE" | jq -r '.value // empty')
+          . "${BASH_SOURCE[0]%/*}/oidc.env"
+          t=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $token" \
+            "$url&audience=$aud" | jq -r '.value // empty')
           [ -n "$t" ]
           jq -cn --arg s "$server" --arg t "$t" '{ServerURL: $s, Username: "token", Secret: $t}'
           EOF
           chmod 755 "$bin/docker-credential-nora"
           echo "$bin" >> "$GITHUB_PATH"
-          echo "NORA_AUDIENCE=$AUDIENCE" >> "$GITHUB_ENV"
           host="${PACKAGES_URL#*://}"; host="${host%%/*}"
           cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"; mkdir -p "$(dirname "$cfg")"
           [ -s "$cfg" ] || echo '{}' > "$cfg"

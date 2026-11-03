@@ -126,14 +126,19 @@ cat > "$n/bin/curl" <<'C'
 C
 chmod 755 "$n/bin/curl"
 echo '{"auths":{"515260921971.dkr.ecr.us-west-2.amazonaws.com":{"auth":"x"}}}' > "$n/home/.docker/config.json"
-: > "$n/path"; : > "$n/env"
-HOME="$n/home" RUNNER_TEMP="$n/tmp" GITHUB_PATH="$n/path" GITHUB_ENV="$n/env" \
-  AUDIENCE=packages.maestra.io PACKAGES_URL=https://packages.maestra.io bash -c "set -eo pipefail; $cred"
+install() { # <dir> <audience>: run the block with a job's OIDC env, as the workflow step does
+  mkdir -p "$1/tmp"; : > "$1/path"
+  HOME="$n/home" RUNNER_TEMP="$1/tmp" GITHUB_PATH="$1/path" AUDIENCE="$2" PACKAGES_URL=https://packages.maestra.io \
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN=x ACTIONS_ID_TOKEN_REQUEST_URL="https://t/?v=1" bash -c "set -eo pipefail; $cred"
+}
+# get <dir>: the helper as tox runs it, with an environment that has PATH only
+get() { printf %s packages.maestra.io | env -i PATH="$n/bin:$PATH" "$(cat "$1/path")/docker-credential-nora" get; }
+install "$n/ok" packages.maestra.io
 eq "$(jq -c '{a: (.auths|keys), h: .credHelpers}' "$n/home/.docker/config.json")" \
   '{"a":["515260921971.dkr.ecr.us-west-2.amazonaws.com"],"h":{"packages.maestra.io":"nora"}}' "nora config keeps auths"
-helper="$(cat "$n/path")/docker-credential-nora"
-out=$(printf %s packages.maestra.io | ACTIONS_ID_TOKEN_REQUEST_TOKEN=x ACTIONS_ID_TOKEN_REQUEST_URL="https://t/?v=1" PATH="$n/bin:$PATH" NORA_AUDIENCE=packages.maestra.io "$helper" get)
-eq "$(jq -r '.ServerURL + " " + .Username + " " + (.Secret|test("^tok-")|tostring)' <<<"$out")" "packages.maestra.io token true" "nora helper get"
-eq "$(cat "$n/env")" "NORA_AUDIENCE=packages.maestra.io" "nora audience env"
-if printf %s packages.maestra.io | ACTIONS_ID_TOKEN_REQUEST_TOKEN=x ACTIONS_ID_TOKEN_REQUEST_URL="https://t/?v=1" PATH="$n/bin:$PATH" NORA_AUDIENCE=wrong "$helper" get >/dev/null 2>&1; then echo "FAIL nora helper: empty token accepted"; exit 1; fi
+eq "$(jq -r '.ServerURL + " " + .Username + " " + (.Secret|test("^tok-")|tostring)' <<<"$(get "$n/ok")")" \
+  "packages.maestra.io token true" "nora helper get, scrubbed env"
+eq "$(stat -c %a "$n/ok/tmp/nora-bin/oidc.env" 2>/dev/null || stat -f %Lp "$n/ok/tmp/nora-bin/oidc.env")" 600 "oidc.env mode"
+install "$n/bad" wrong
+if get "$n/bad" >/dev/null 2>&1; then echo "FAIL nora helper: empty token accepted"; exit 1; fi
 echo "dotnet-service-build nora-cred-helper: OK"
