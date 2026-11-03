@@ -979,7 +979,7 @@ jobs:
         run: |
           ctx="$RUNNER_TEMP/image"; mkdir -p "$ctx/static"
           tar -xzf "$RUNNER_TEMP/static.tgz" -C "$ctx/static"
-          printf 'FROM rclone/rclone:1.67.0\nCOPY static /static\n' > "$ctx/Dockerfile"
+          printf 'FROM packages.maestra.io/docker-hub/rclone/rclone:1.67.0@sha256:ec0f519fefc0d157b95ef30e230c0e945715e0235e4a868432622527f1d578f9\nCOPY static /static\n' > "$ctx/Dockerfile"
       # Login first, then one BuildKit build that pushes: only the static layer is
       # new, the rclone base layers stay in ECR (the old `docker build` + `docker push`
       # re-uploaded them every release).
@@ -1073,8 +1073,9 @@ jobs:
           NODE_VERSION: ${{ inputs.node-version }}
         run: |
           printf '.git\n' > .dockerignore
+          # nora, no digest: the tag follows the node-version input.
           {
-            printf 'FROM docker.io/library/node:%s-slim\nWORKDIR /app\nRUN chown 10001:10001 /app\n' "$NODE_VERSION"
+            printf 'FROM packages.maestra.io/docker-hub/library/node:%s-slim\nWORKDIR /app\nRUN chown 10001:10001 /app\n' "$NODE_VERSION"
             printf 'COPY --chown=10001:10001 package.json package-lock.json ./\nCOPY --chown=10001:10001 node_modules node_modules\n'
             [ ! -d tests/node_modules ] || printf 'COPY --chown=10001:10001 tests/node_modules tests/node_modules\n'
             printf 'COPY --chown=10001:10001 . .\n'
