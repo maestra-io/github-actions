@@ -108,3 +108,25 @@ eq "$(aws_run 3)" "4 3 0" "NoCredentials 3x, then credentials"
 eq "$(aws_run 9)" "5 4 0" "never: 5 tries, then the AWS steps report it"
 grep -q '::warning::no AWS credentials' "$work/out" || { cat "$work/out"; echo "FAIL aws-credentials: no warning"; exit 1; }
 echo "dotnet-service-build aws-credentials: OK"
+
+# ── nora-cred-helper: a fresh OIDC token per docker pull ───────────────────────
+cred=$(sed -n '/# >>> nora-cred-helper/,/# <<< nora-cred-helper/p' "$wf" | sed 's/^          //')
+[ -n "$cred" ] || { echo "nora-cred-helper block not found in $wf"; exit 1; }
+n="$work/nora"; mkdir -p "$n/bin" "$n/home/.docker" "$n/tmp"
+cat > "$n/bin/curl" <<'C'
+#!/usr/bin/env bash
+[[ "$*" == *"audience=packages.maestra.io"* ]] && echo '{"value":"tok-'"$RANDOM"'"}'
+C
+chmod 755 "$n/bin/curl"
+echo '{"auths":{"515260921971.dkr.ecr.us-west-2.amazonaws.com":{"auth":"x"}}}' > "$n/home/.docker/config.json"
+: > "$n/path"; : > "$n/env"
+HOME="$n/home" RUNNER_TEMP="$n/tmp" GITHUB_PATH="$n/path" GITHUB_ENV="$n/env" \
+  AUDIENCE=packages.maestra.io PACKAGES_URL=https://packages.maestra.io bash -c "set -eo pipefail; $cred"
+eq "$(jq -c '{a: (.auths|keys), h: .credHelpers}' "$n/home/.docker/config.json")" \
+  '{"a":["515260921971.dkr.ecr.us-west-2.amazonaws.com"],"h":{"packages.maestra.io":"nora"}}' "nora config keeps auths"
+helper="$(cat "$n/path")/docker-credential-nora"
+out=$(printf %s packages.maestra.io | ACTIONS_ID_TOKEN_REQUEST_TOKEN=x ACTIONS_ID_TOKEN_REQUEST_URL="https://t/?v=1" PATH="$n/bin:$PATH" NORA_AUDIENCE=packages.maestra.io "$helper" get)
+eq "$(jq -r '.ServerURL + " " + .Username + " " + (.Secret|test("^tok-")|tostring)' <<<"$out")" "packages.maestra.io token true" "nora helper get"
+eq "$(cat "$n/env")" "NORA_AUDIENCE=packages.maestra.io" "nora audience env"
+if printf %s packages.maestra.io | ACTIONS_ID_TOKEN_REQUEST_TOKEN=x ACTIONS_ID_TOKEN_REQUEST_URL="https://t/?v=1" PATH="$n/bin:$PATH" NORA_AUDIENCE=wrong "$helper" get >/dev/null 2>&1; then echo "FAIL nora helper: empty token accepted"; exit 1; fi
+echo "dotnet-service-build nora-cred-helper: OK"
