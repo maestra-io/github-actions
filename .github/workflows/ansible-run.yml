@@ -375,8 +375,27 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.ansible/collections
-          key: galaxy-${{ runner.os }}-${{ hashFiles(inputs.requirements_galaxy) }}
+          # "nora": collections cached before Galaxy went through nora (a version
+          # younger than 3 days among them) are not restored.
+          key: galaxy-nora-${{ runner.os }}-${{ hashFiles(inputs.requirements_galaxy) }}
 
+      # Galaxy through nora (packages.maestra.io/ansible/, issues-maestra#1649 s9):
+      # collection versions younger than 3 days are hidden there, so a range like
+      # ">=8.0.0" resolves to the newest mature release. The ANSIBLE_GALAXY_SERVER_*
+      # variables reach every later step: the install below and ansible-lint's own
+      # requirements install. Auth: a GitHub OIDC token as Basic token:<jwt>
+      # (expires in minutes, enough for the install that follows).
+      - name: Galaxy through nora
+        if: ${{ hashFiles(inputs.requirements_galaxy) != '' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const t = await core.getIDToken('packages.maestra.io');
+            core.setSecret(t);
+            core.exportVariable('ANSIBLE_GALAXY_SERVER_LIST', 'nora');
+            core.exportVariable('ANSIBLE_GALAXY_SERVER_NORA_URL', 'https://packages.maestra.io/ansible/');
+            core.exportVariable('ANSIBLE_GALAXY_SERVER_NORA_USERNAME', 'token');
+            core.exportVariable('ANSIBLE_GALAXY_SERVER_NORA_PASSWORD', t);
       - name: Install Galaxy collections/roles
         if: ${{ hashFiles(inputs.requirements_galaxy) != '' }}
         # From working_directory so ansible.cfg's roles_path/collections_path apply —

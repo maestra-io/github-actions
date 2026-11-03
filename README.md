@@ -429,6 +429,64 @@ lock picks the newest older one; a `.terraform.lock.hcl` that pins a younger ver
 matures (`host packages.maestra.io rejected the given authentication credentials` is that 403).
 Test: `scripts/test-terraform-nora.sh` (selftest).
 
+## Go modules and crates through nora (`go-nora`, `cargo-nora`)
+
+Public Go modules come from `https://packages.maestra.io/go` (nora's proxy of proxy.golang.org;
+a version whose `.info` Time is younger than 3 days is refused) and crates.io from
+`https://packages.maestra.io/cargo` (sparse index, versions younger than 3 days held), not
+straight from upstream (issues-maestra#1649). The job needs `id-token: write`.
+
+```yaml
+permissions:
+  id-token: write
+steps:
+  - uses: actions/setup-go@<sha>                                     # Go >= 1.24 (GOAUTH)
+  - uses: maestra-io/github-actions/go-nora@<40-hex sha> # vX.Y.Z
+    id: nora
+  # or, after the Rust toolchain step:
+  - uses: maestra-io/github-actions/cargo-nora@<40-hex sha> # vX.Y.Z
+    id: nora
+  - run: go test ./...        # cargo test --locked
+  # An image build: right after the action (its token is minted there).
+  - uses: docker/build-push-action@<sha>
+    with:
+      secrets: PRIVATE_PACKAGES_TOKEN=${{ steps.nora.outputs.token }}
+```
+
+- `go-nora` exports `GOPROXY` (no `direct` fallback; `GOPRIVATE` modules still come from git)
+  and `GOAUTH=command $RUNNER_TEMP/go-nora/goauth`, a helper that mints a fresh GitHub OIDC token
+  for every `go` process and again after a 4xx.
+- `cargo-nora` appends source replacement and
+  `credential-provider = ["cargo:token-from-stdout", <helper>]` to `$CARGO_HOME/config.toml`;
+  the helper mints a fresh token whenever cargo asks.
+
+In the Dockerfile the token comes as the `PRIVATE_PACKAGES_TOKEN` secret, the same one
+`service-build.yml` and `dockerfiles` already pass (a local build without it keeps upstream):
+
+```dockerfile
+RUN --mount=type=secret,id=PRIVATE_PACKAGES_TOKEN,env=NORA_TOKEN \
+    GOPROXY="${NORA_TOKEN:+https://token:${NORA_TOKEN}@packages.maestra.io/go}" go mod download
+
+RUN --mount=type=secret,id=PRIVATE_PACKAGES_TOKEN,env=NORA_TOKEN \
+    if [ -n "${NORA_TOKEN:-}" ]; then printf '%s\n' '[source.crates-io]' 'replace-with = "nora"' \
+      '[source.nora]' 'registry = "sparse+https://packages.maestra.io/cargo/index/"' \
+      '[registries.nora]' 'index = "sparse+https://packages.maestra.io/cargo/index/"' \
+      'credential-provider = ["cargo:token"]' >> "${CARGO_HOME:-$HOME/.cargo}/config.toml"; \
+      export CARGO_REGISTRIES_NORA_TOKEN="Basic $(printf 'token:%s' "$NORA_TOKEN" | base64 | tr -d '\n')"; \
+    fi && cargo fetch --locked
+RUN cargo build --release --offline
+```
+
+Go redacts the userinfo (`token:xxxxx`) in its errors. Tests: `scripts/test-go-nora.sh`,
+`scripts/test-cargo-nora.sh` (selftest).
+
+## Ansible Galaxy through nora
+
+`ansible-pr.yml` and `ansible-run.yml` install Galaxy collections from
+`https://packages.maestra.io/ansible/` (`ANSIBLE_GALAXY_SERVER_*`, a GitHub OIDC token): nora
+hides versions younger than 3 days, so a range like `>=8.0.0` resolves to the newest mature
+release. Roles and collections with a git `src` still come from git.
+
 ## Prewarm external images in nora (`nora-image-prewarm`)
 
 nora holds every image digest it sees for the first time for 3 days (issues-maestra#1649). This
