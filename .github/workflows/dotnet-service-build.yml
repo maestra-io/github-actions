@@ -1420,9 +1420,12 @@ jobs:
           cache-from: ${{ steps.cache.outputs.from }}
       # Keyless cosign signature + CycloneDX SBOM attestation of the pushed digest,
       # stored as OCI referrers next to the image. Best-effort: never fails the
-      # release (sign-image/action.yml, issues-maestra#1648).
+      # release (sign-image/action.yml, issues-maestra#1648); capped at 10 min so a
+      # slow Fulcio/Rekor/syft never times out the job that pushed the image.
       - name: sign ${{ matrix.image }}:${{ needs.version.outputs.release }}
         if: ${{ needs.version.outputs.publish == 'true' }}
+        continue-on-error: true
+        timeout-minutes: 10
         uses: maestra-io/github-actions/sign-image@a0e5143b4ba2e0119de2bf32b55ee79e68b71c06 # v1.61.2
         with:
           image: ${{ steps.ecr.outputs.registry }}/${{ matrix.image }}

@@ -595,7 +595,7 @@ jobs:
     needs: version
     if: ${{ needs.version.outputs.tests-layout == 'lockfile' }}
     runs-on: runs-on=${{ github.run_id }}-tests-install/pool=small
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       contents: read
       id-token: write # nora OIDC token
@@ -978,8 +978,11 @@ jobs:
             org.opencontainers.image.version=${{ needs.version.outputs.release }}
       # Keyless cosign signature + CycloneDX SBOM attestation of the pushed digest,
       # stored as OCI referrers next to the image. Best-effort: never fails the
-      # release (sign-image/action.yml, issues-maestra#1648).
+      # release (sign-image/action.yml, issues-maestra#1648); capped at 10 min so a
+      # slow Fulcio/Rekor/syft never times out the job that pushed the image.
       - name: sign ${{ needs.version.outputs.image }}:${{ needs.version.outputs.release }}
+        continue-on-error: true
+        timeout-minutes: 10
         uses: maestra-io/github-actions/sign-image@a0e5143b4ba2e0119de2bf32b55ee79e68b71c06 # v1.61.2
         with:
           image: ${{ steps.ecr.outputs.registry }}/${{ needs.version.outputs.image }}
@@ -989,7 +992,7 @@ jobs:
     needs: [version, install, image]
     if: ${{ !cancelled() && needs.version.outputs.publish == 'true' && needs.install.result == 'success' && needs.image.result == 'success' }}
     runs-on: runs-on=${{ github.run_id }}-deps-image/pool=small
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       contents: read
       id-token: write # Teleport join
@@ -1045,8 +1048,11 @@ jobs:
           cache-to: type=gha,mode=max,ignore-error=true,scope=mcf-deps-${{ needs.version.outputs.image }}
       # Keyless cosign signature + CycloneDX SBOM attestation of the pushed digest,
       # stored as OCI referrers next to the image. Best-effort: never fails the
-      # release (sign-image/action.yml, issues-maestra#1648).
+      # release (sign-image/action.yml, issues-maestra#1648); capped at 10 min so a
+      # slow Fulcio/Rekor/syft never times out the job that pushed the image.
       - name: sign ${{ needs.version.outputs.image }}-with-deps:${{ needs.version.outputs.release }}
+        continue-on-error: true
+        timeout-minutes: 10
         uses: maestra-io/github-actions/sign-image@a0e5143b4ba2e0119de2bf32b55ee79e68b71c06 # v1.61.2
         with:
           image: ${{ steps.ecr.outputs.registry }}/${{ needs.version.outputs.image }}-with-deps
