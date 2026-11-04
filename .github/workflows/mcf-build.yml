@@ -1697,7 +1697,8 @@ jobs:
       # the coverage comment, which the next run's test job rewrites without it; a red gate
       # strips it. Only github-actions[bot] can write it: fork PRs get a read-only token.
       - name: mark the tree tested
-        if: ${{ always() && needs.test.result != 'skipped' }}
+        # always(): a gate red before test ran (version, install) strips an older marker too.
+        if: ${{ always() }}
         continue-on-error: true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
