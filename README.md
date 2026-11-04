@@ -676,8 +676,8 @@ unconditionally, the tests run only with input `e2e`.
 - **No route → skipped.** When fluxcd has no e2e provider for the repo, `e2e-stand` publishes the
   static, shows ⚠️ "not registered in fluxcd for e2e stands" and outputs `route: false`; `e2e` is
   then skipped, it never fails on the login.
-- **`e2e`** (input `e2e`, default `false`: the repo turns its tests on with `e2e: true` in its
-  `pr.yml`, and that PR is also its first e2e run; the input goes away once every repo is on;
+- **`e2e`** (input `e2e`, default `true`: every repo with `tests/e2e/` runs them, `e2e: false` in
+  `pr.yml` opts out; `e2e: true` is a no-op left from the opt-in period;
   `pool=build`, 60 min): the root and `tests/` caches as `functional`, Chromium of the
   tests' Playwright, then `npm run e2e:ci` in `tests/` with `CI=true`,
   `BASE_URL=https://e2e-<repo>-pr-<N>.testing-env.omicron.maestra.io`, `ADMINSITE_USERNAME`,
