@@ -97,7 +97,7 @@ grep -A2 '^      functional-required:$' "$wf" | grep -qx '        default: true'
   || { echo "FAIL functional-required does not default to true"; exit 1; }
 eq "$(job deps-image needs)" "[version, install, image]" "deps-image needs"
 eq "$(job deps-image if)" "\${{ !cancelled() && needs.version.outputs.publish == 'true' && needs.install.result == 'success' && needs.image.result == 'success' }}" "deps-image follows image: an unreleased tag is never pushed"
-eq "$(job release if)" "\${{ !cancelled() && needs.image.result == 'success' && needs.deps-image.result == 'success' }}" "release follows image and deps-image, not success() of skipped jobs"
+eq "$(job release if)" "\${{ !cancelled() && needs.image.result == 'success' && needs.deps-image.result == 'success' && (needs.version.outputs.e2e != 'true' || needs.e2e-image.result == 'success') }}" "release follows image, deps-image and e2e-image with tests/e2e/, not success() of skipped jobs"
 eq "$(job sourcemaps if)" "\${{ !cancelled() && needs.release.result == 'success' }}" "sourcemaps follows release"
 eq "$(job bake if)" "\${{ !cancelled() && needs.release.result == 'success' && needs.version.outputs.bake == 'true' }}" "bake follows release"
 echo "functional release gate: ok"
