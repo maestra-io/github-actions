@@ -48,7 +48,9 @@
 # fingerprint `<commit>:<file>:<rule-id>:<line>` per line (the job log prints it; the
 # summary lists its parts).
 #
-# gitleaks-action installs the newest gitleaks release (GITLEAKS_VERSION latest).
+# gitleaks-action downloads the gitleaks release GITLEAKS_VERSION names from github.com
+# itself (no URL or checksum input): the version is pinned, never `latest`, so a new
+# release reaches every repo only through a reviewed bump here.
 #
 # Inputs:
 #   ref   ref of maestra-io/github-actions the central config is read from (default
@@ -99,7 +101,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
-          GITLEAKS_VERSION: latest
+          GITLEAKS_VERSION: 8.30.1
           GITLEAKS_CONFIG: .github-actions/gitleaks/gitleaks.toml
 
   actions-pinned:
