@@ -44,35 +44,22 @@ install_cosign() { # pinned binary from the GitHub release, sha256-checked; one 
   return 1
 }
 
-syft_run() { # <docker run args...> -- <syft args...>: syft from its OCI image, CycloneDX JSON on stdout
-  local args=()
-  while [ "$1" != -- ]; do args+=("$1"); shift; done; shift
-  timeout 900 docker run --rm "${args[@]}" "$SYFT_IMAGE" "$@" -q -o cyclonedx-json
-}
-
-sbom_of() { # <ref> <out file>: ECR auth from the job's AWS credentials
-  local ref=$1 out=$2 registry region pass oci
+sbom_of() { # <ref> <out file>: syft from its OCI image, ECR auth from the job's AWS credentials.
+  # The auth goes in through a throwaway docker config, not SYFT_REGISTRY_AUTH_*: syft redacts
+  # every configured auth value from its output, so the username "AWS" became "*******" in the
+  # package descriptions and authors of the SBOM (AWS SDK packages, code-intelligence image).
+  local ref=$1 out=$2 registry region pass cfg="$dir/docker-${2##*/}" start=$SECONDS
   registry=${ref%%/*}
   region=$(cut -d. -f4 <<<"$registry")
   pass=$(aws ecr get-login-password --region "$region") || return 1
-  # skopeo downloads the layers in parallel into an OCI layout (2-3x faster than syft's own
-  # registry pull, eu-central-1 runner <- us-west-2 ECR); syft scans the layout. Same
-  # components as `registry:` (byte-identical .components); --source-* keep the image ref
-  # and the pushed digest in metadata.component. Any failure: syft pulls it itself.
-  oci="$dir/oci-${out##*/}"
-  if command -v skopeo >/dev/null &&
-    (umask 077; printf '{"auths":{"%s":{"auth":"%s"}}}' "$registry" "$(printf 'AWS:%s' "$pass" | base64 -w0)" >"$dir/auth.json") &&
-    timeout 900 skopeo copy -q --authfile "$dir/auth.json" "docker://$ref" "oci:$oci" &&
-    syft_run -v "$oci:/oci:ro" -- oci-dir:/oci --source-name "${ref%@*}" --source-version "${ref#*@}" >"$out"; then
-    :
-  else
-    echo "$ref: skopeo path failed or unavailable, syft pulls from the registry"
-    SYFT_REGISTRY_AUTH_PASSWORD=$pass syft_run -e SYFT_REGISTRY_AUTH_AUTHORITY="$registry" -e SYFT_REGISTRY_AUTH_USERNAME=AWS \
-      -e SYFT_REGISTRY_AUTH_PASSWORD -- "registry:$ref" >"$out" || { rm -rf "$oci"; return 1; }
-  fi
-  rm -rf "$oci" "$dir/auth.json"
-  test -s "$out" || return 1
-  echo "$ref: SBOM $(jq '.components | length' "$out") components, $(wc -c <"$out") bytes"
+  mkdir -p "$cfg"
+  (umask 077; printf '{"auths":{"%s":{"auth":"%s"}}}' "$registry" "$(printf 'AWS:%s' "$pass" | base64 -w0)" >"$cfg/config.json")
+  timeout 900 docker run --rm -v "$cfg:/docker-config:ro" -e DOCKER_CONFIG=/docker-config \
+    "$SYFT_IMAGE" "registry:$ref" -q -o cyclonedx-json >"$out"
+  local rc=$?
+  rm -rf "$cfg"
+  [ "$rc" = 0 ] && test -s "$out" || return 1
+  echo "$ref: SBOM $(jq '.components | length' "$out") components, $(wc -c <"$out") bytes, $((SECONDS - start)) s"
 }
 
 read -r -d '' -a refs <<<"$SIGN_REFS"
@@ -88,7 +75,8 @@ dir=$(mktemp -d)
 sbom_pid=
 if [ "$SBOM" = true ]; then
   ( for i in "${!refs[@]}"; do
-      sbom_of "${refs[$i]}" "$dir/sbom-$i.cdx.json" >"$dir/sbom-$i.log" 2>&1; echo $? >"$dir/sbom-$i.rc"
+      sbom_of "${refs[$i]}" "$dir/sbom-$i.cdx.json" >"$dir/sbom-$i.log" 2>&1
+      echo $? >"$dir/sbom-$i.rc.tmp" && mv "$dir/sbom-$i.rc.tmp" "$dir/sbom-$i.rc"
     done ) &
   sbom_pid=$!
 fi
@@ -104,11 +92,12 @@ else
   [ -n "$sbom_pid" ] && kill "$sbom_pid" 2>/dev/null
   for i in "${!refs[@]}"; do got[i]=none; done
 fi
-[ -n "$sbom_pid" ] && wait "$sbom_pid"
 
+# Attest each ref as soon as its SBOM is there: the next SBOM is made meanwhile.
 overall=$want
 for i in "${!refs[@]}"; do
   ref=${refs[$i]} f="$dir/sbom-$i.cdx.json"
+  while [ -n "$sbom_pid" ] && [ ! -f "$dir/sbom-$i.rc" ] && kill -0 "$sbom_pid" 2>/dev/null; do sleep 1; done
   [ -f "$dir/sbom-$i.log" ] && cat "$dir/sbom-$i.log"
   if [ "${got[$i]}" = signature ] && [ "$SBOM" = true ] && [ "$(cat "$dir/sbom-$i.rc" 2>/dev/null)" = 0 ] &&
     retry "cosign attest $ref" cosign attest --yes --type cyclonedx --predicate "$f" "$ref"; then
@@ -118,4 +107,5 @@ for i in "${!refs[@]}"; do
   [ "${got[$i]}" = "$want" ] || echo "::warning::sign-image: $ref got '${got[$i]}', wanted '$want'; re-run the job to retry"
   [ "$(rank "${got[$i]}")" -lt "$(rank "$overall")" ] && overall=${got[$i]}
 done
+[ -n "$sbom_pid" ] && wait "$sbom_pid"
 echo "status=$overall" >> "${GITHUB_OUTPUT:-/dev/null}"

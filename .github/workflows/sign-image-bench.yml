@@ -87,17 +87,29 @@ jobs:
           cosign verify-attestation "${id[@]}" --type cyclonedx "$REF" > "$RUNNER_TEMP/att.jsonl"
           n=$(wc -l < "$RUNNER_TEMP/att.jsonl"); echo "verified CycloneDX attestations: $n"
           [ "$n" -ge 2 ] || { echo "::error::expected 2 attestations (old + new)"; exit 1; }
-          i=0
+          # every job of one image signs the same digest: all attestations of it are compared.
+          # The released action's syft redacts its registry username "AWS" to "*******" in the
+          # SBOM text; the normalized hash undoes only that.
           while read -r line; do
-            i=$((i+1))
-            jq -r '.payload | @base64d | fromjson | .predicate' <<<"$line" > "$RUNNER_TEMP/bom-$i.json"
-            jq -c '{components: (.components|length), deps: (.dependencies|length), meta: .metadata.component}' "$RUNNER_TEMP/bom-$i.json"
-            jq -S '.components' "$RUNNER_TEMP/bom-$i.json" > "$RUNNER_TEMP/c-$i.json"
-            jq -S '.dependencies' "$RUNNER_TEMP/bom-$i.json" > "$RUNNER_TEMP/d-$i.json"
-          done < "$RUNNER_TEMP/att.jsonl"
-          cmp "$RUNNER_TEMP/c-1.json" "$RUNNER_TEMP/c-2.json" && echo "components identical"
-          cmp "$RUNNER_TEMP/d-1.json" "$RUNNER_TEMP/d-2.json" && echo "dependencies identical"
+            jq -r '.payload | @base64d | fromjson | .predicate' <<<"$line" > "$RUNNER_TEMP/bom.json"
+            raw=$(jq -cS '.components' "$RUNNER_TEMP/bom.json" | sha256sum | cut -c1-12)
+            norm=$(jq -cS '.components | walk(if type == "string" then gsub("\\*{7}"; "AWS") else . end)' "$RUNNER_TEMP/bom.json" | sha256sum | cut -c1-12)
+            dep=$(jq -cS '.dependencies' "$RUNNER_TEMP/bom.json" | sha256sum | cut -c1-12)
+            echo "bom components=$(jq '.components|length' "$RUNNER_TEMP/bom.json") raw=$raw norm=$norm deps=$dep redacted=$(grep -o '\*\*\*\*\*\*\*' "$RUNNER_TEMP/bom.json" | wc -l) name=$(jq -r .metadata.component.name "$RUNNER_TEMP/bom.json")"
+          done < "$RUNNER_TEMP/att.jsonl" | tee "$RUNNER_TEMP/boms.txt"
+          echo "distinct raw: $(grep -o 'raw=[0-9a-f]*' "$RUNNER_TEMP/boms.txt" | sort -u | wc -l), normalized: $(grep -o 'norm=[0-9a-f]*' "$RUNNER_TEMP/boms.txt" | sort -u | wc -l), deps: $(grep -o 'deps=[0-9a-f]*' "$RUNNER_TEMP/boms.txt" | sort -u | wc -l)"
+          [ "$(grep -o 'norm=[0-9a-f]*' "$RUNNER_TEMP/boms.txt" | sort -u | wc -l)" = 1 ] || { echo "::error::SBOM components differ beyond the AWS redaction"; exit 1; }
           types=$(aws ecr list-image-referrers --region us-west-2 --repository-name "$REPOSITORY" \
             --subject-id imageDigest="$DIGEST" \
             --query 'referrers[].annotations."dev.sigstore.bundle.predicateType"' --output text)
           echo "referrer predicateTypes: $types"
+      - name: split download vs scan (skopeo -> OCI layout, syft oci-dir)
+        env:
+          REF: ${{ steps.ecr.outputs.registry }}/${{ env.REPOSITORY }}@${{ steps.copy.outputs.digest }}
+          SYFT_IMAGE: ghcr.io/anchore/syft:v1.51.1@sha256:95fe0835e5bebc6f8b1f8acef68d47d63d594ef4c0f25c097ff853b23cbac74c
+        run: |
+          (umask 077; printf '{"auths":{"%s":{"auth":"%s"}}}' "${REF%%/*}" "$(printf 'AWS:%s' "$(aws ecr get-login-password --region us-west-2)" | base64 -w0)" > "$RUNNER_TEMP/auth.json")
+          s=$SECONDS; skopeo copy -q --authfile "$RUNNER_TEMP/auth.json" "docker://$REF" "oci:$RUNNER_TEMP/oci"; echo "download (skopeo) $((SECONDS - s)) s, $(du -sm "$RUNNER_TEMP/oci" | cut -f1) MiB"
+          s=$SECONDS; docker run --rm -v "$RUNNER_TEMP/oci:/oci:ro" "$SYFT_IMAGE" oci-dir:/oci -q -o cyclonedx-json > /dev/null; echo "scan (syft oci-dir) $((SECONDS - s)) s"
+          s=$SECONDS; docker run --rm -v "$RUNNER_TEMP/oci:/oci:ro" -e SYFT_FILE_METADATA_SELECTION=none "$SYFT_IMAGE" oci-dir:/oci -q -o cyclonedx-json > /dev/null; echo "scan (syft oci-dir, no file metadata) $((SECONDS - s)) s"
+          rm -rf "$RUNNER_TEMP/oci" "$RUNNER_TEMP/auth.json"
