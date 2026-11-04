@@ -62,7 +62,30 @@ if grep -nE '^ +path: node_modules$' "$wf"; then echo "FAIL a root cache step li
 if grep -nF 'npx --no playwright --version' "$wf"; then echo "FAIL npx eats --version: the browser key gets npm's version"; exit 1; fi
 grep -qF "v=\$(node -p \"require('@playwright/test/package.json').version\" || true)" "$wf" \
   || { echo "FAIL the browser cache key does not read @playwright/test/package.json"; exit 1; }
+# Both http-server steps read one version: a bump must not leave the cache key behind.
+eq "$(grep -cF 'http-server@' "$wf")" "$(grep -cE '^ +(HTTP_SERVER: http-server@|#.*http-server@)' "$wf")" "http-server version only in the job env"
+# shellcheck disable=SC2016 # the expression is matched literally
+grep -qF 'key: mcf-${{ env.HTTP_SERVER }}-${{ runner.os }}-${{ runner.arch }}' "$wf" \
+  || { echo "FAIL the http-server cache key does not carry its version"; exit 1; }
+functional_job=$(awk '/^  functional:$/ { on = 1; next } on && /^  [a-z]/ { exit } on' "$wf")
+eq "$(grep -cF "if: \${{ steps.server-cache.outputs.cache-hit != 'true' }}" <<<"$functional_job")" "3" "token, install and save run only on an http-server cache miss"
+eq "$(grep -cF "steps.chrome.outputs.system != 'true'" <<<"$functional_job")" "3" "browser restore, install and save all skip on system Chrome"
+grep -A2 '^      functional-system-chrome:$' "$wf" | grep -qx '        default: false' \
+  || { echo "FAIL functional-system-chrome is not opt-in"; exit 1; }
 echo "functional cache paths: ok"
+
+chrome_prog=$(block functional-chrome)
+# chrome <input> <path>: the step's output with that input and Chrome path
+chrome() {
+  : > "$root/chrome.out"
+  SYSTEM_CHROME="$1" CHROME_PATH="$2" GITHUB_OUTPUT="$root/chrome.out" bash -c "set -eo pipefail; $chrome_prog" >/dev/null
+  cat "$root/chrome.out"
+}
+printf '#!/bin/sh\n' > "$root/chrome"; chmod +x "$root/chrome"
+eq "$(chrome true "$root/chrome")" "system=true" "opted in, Chrome on the runner"
+eq "$(chrome true "$root/no-chrome")" "system=false" "opted in, no Chrome: the Playwright install stays"
+eq "$(chrome false "$root/chrome")" "system=false" "not opted in"
+echo "functional system chrome: ok"
 
 # job <name> <key>: the value of a top-level key (needs, if) of a job in the workflow
 job() { awk -v j="  $1:" -v k="    $2: " '$0 == j { on = 1; next } on && /^  [a-z]/ { exit }

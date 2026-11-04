@@ -631,14 +631,17 @@ changes in the MCF repo: the jobs switch on by files.
   `tests/`, each in its own log group, fails the run and holds the `image` (no release).
 - **`functional`** (`tests/functional/playwright.config.ts`; on pull requests and pushes, not on
   `renovate/*` or `LocalizationPull`): the `static` artifact of `build` (source maps
-  removed) is unpacked to an empty `site/` and served by `http-server@14.1.1` (installed
-  from nora) on `http://localhost:8080`, the port the tests expect; then
+  removed) is unpacked to an empty `site/` and served by `http-server@14.1.1` (from nora,
+  cached per repo after the first install) on `http://localhost:8080`, the port the tests expect; then
   `BASE_URL=http://localhost:8080 RETRIES=2 WORKERS=<functional-workers> npm run functional:ci`
   in `tests/`. The backend is mocked by the tests: no secrets, no stand.
 - **Browser.** `npx playwright install --with-deps chromium` from `tests/`, so it is the
   Chromium of the Playwright the tests resolve; `~/.cache/ms-playwright` is cached by that
   version. frontend-playwright prefers `/usr/bin/google-chrome` with `--no-sandbox`
   when the file exists, so on a runner image with Chrome the tests run in that Chrome.
+  `functional-system-chrome: true` (default `false`, opt-in per repo) then skips the Chromium
+  cache and install, ~30 s per run; the only difference left is that `--with-deps` no longer
+  adds its 9 font packages. Off the runner image's Chrome it falls back to the install.
 - **Blocking.** `functional-required` defaults to `true`: a red run fails the workflow and
   `pr gate`, and the `image` (and so `release`, `bake`) does not run. A repo opts out with
   `functional-required: false`: the job gets `continue-on-error`, a red run shows ❌ and

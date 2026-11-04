@@ -60,6 +60,10 @@
 #   packages-url        Package registry (default https://packages.maestra.io, nora).
 #   packages-audience   `aud` of the GitHub OIDC token nora accepts.
 #   functional-workers  Playwright workers of `functional` (default 4, as frontend-playwright).
+#   functional-system-chrome  On a runner with /usr/bin/google-chrome skip the Playwright Chromium and its
+#                       apt fonts of `functional` (default false: opt-in per repo until every repo is on,
+#                       then the input goes away). frontend-playwright runs the tests in that Chrome
+#                       anyway, so only the fonts change. Not for a repo with its own browser config.
 #   functional-required A red `functional` fails the run and `pr gate` and holds the image and
 #                       release (default true; false: advisory, the summary still shows red).
 #   e2e                 Run `npm run e2e:ci` on the e2e stand (default false: opt-in per repo with
@@ -198,6 +202,9 @@ on:
       functional-workers:
         type: string
         default: "4"
+      functional-system-chrome:
+        type: boolean
+        default: false
       functional-required:
         type: boolean
         default: true
@@ -1289,6 +1296,8 @@ jobs:
     permissions:
       contents: read
       id-token: write # nora OIDC token, test-results-ingest
+    env:
+      HTTP_SERVER: http-server@14.1.1
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1327,21 +1336,43 @@ jobs:
           [ -n "$v" ] || { echo "::error::no Playwright in tests/"; exit 1; }
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "Playwright $v"
+      # `install chromium` costs ~26 s on a cache hit: `--with-deps` runs apt-get update and adds
+      # 9 font packages. With input functional-system-chrome the runner's Chrome, which
+      # frontend-playwright prefers, runs the tests without any of it.
+      - id: chrome
+        env:
+          SYSTEM_CHROME: ${{ inputs.functional-system-chrome }}
+        run: |
+          # >>> functional-chrome (scripts/test-functional.sh runs this block)
+          system=false
+          if [ "$SYSTEM_CHROME" = true ] && [ -x "${CHROME_PATH:-/usr/bin/google-chrome}" ]; then system=true; fi
+          echo "system=$system" >> "$GITHUB_OUTPUT"
+          echo "system Chrome only: $system"
+          # <<< functional-chrome
       - id: browsers
+        if: ${{ steps.chrome.outputs.system != 'true' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: mcf-playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright.outputs.version }}
       - name: install chromium
+        if: ${{ steps.chrome.outputs.system != 'true' }}
         working-directory: tests
         run: npx --no playwright install --with-deps chromium
-      - if: ${{ steps.browsers.outputs.cache-hit != 'true' }}
+      - if: ${{ steps.chrome.outputs.system != 'true' && steps.browsers.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: ${{ steps.browsers.outputs.cache-primary-key }}
+      # A nora install costs ~25 s per job: 48 packages, none of them used by the build or the tests.
+      - id: server-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/mcf-http-server
+          key: mcf-${{ env.HTTP_SERVER }}-${{ runner.os }}-${{ runner.arch }}
       - name: mint packages token
         id: token
+        if: ${{ steps.server-cache.outputs.cache-hit != 'true' }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           AUDIENCE: ${{ inputs.packages-audience }}
@@ -1350,8 +1381,8 @@ jobs:
             const t = await core.getIDToken(process.env.AUDIENCE);
             core.setSecret(t);
             core.setOutput('token', t);
-      # The tests hardcode :8080 (frontend-webhooks Common.ts), whatever BASE_URL says.
-      - name: start http-server
+      - name: install http-server
+        if: ${{ steps.server-cache.outputs.cache-hit != 'true' }}
         env:
           NPM_TOKEN: ${{ steps.token.outputs.token }}
           URL: ${{ inputs.packages-url }}
@@ -1361,9 +1392,17 @@ jobs:
             echo "registry=${registry}"
             echo "//${registry#https://}:_authToken=\${NPM_TOKEN}"
           } > "$RUNNER_TEMP/npmrc"
-          srv="$RUNNER_TEMP/http-server"; mkdir -p "$srv"; cd "$srv"
-          NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/npmrc" npm install --prefix "$srv" --no-save --no-audit --no-fund http-server@14.1.1
-          nohup "$srv/node_modules/.bin/http-server" "$RUNNER_TEMP/site" -p 8080 -c-1 --cors \
+          srv="$HOME/.cache/mcf-http-server"; mkdir -p "$srv"; cd "$srv"
+          NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/npmrc" npm install --prefix "$srv" --no-save --no-audit --no-fund "$HTTP_SERVER"
+      - if: ${{ steps.server-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/mcf-http-server
+          key: ${{ steps.server-cache.outputs.cache-primary-key }}
+      # The tests hardcode :8080 (frontend-webhooks Common.ts), whatever BASE_URL says.
+      - name: start http-server
+        run: |
+          nohup "$HOME/.cache/mcf-http-server/node_modules/.bin/http-server" "$RUNNER_TEMP/site" -p 8080 -c-1 --cors \
             > "$RUNNER_TEMP/http-server.log" 2>&1 &
       - name: wait for http-server
         env:
