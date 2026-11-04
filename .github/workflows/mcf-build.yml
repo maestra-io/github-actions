@@ -66,8 +66,8 @@
 #                       anyway, so only the fonts change. Not for a repo with its own browser config.
 #   functional-required A red `functional` fails the run and `pr gate` and holds the image and
 #                       release (default true; false: advisory, the summary still shows red).
-#   e2e                 Run `npm run e2e:ci` on the e2e stand (default false: opt-in per repo with
-#                       `e2e: true` in pr.yml until every repo is on, then the input goes away).
+#   e2e                 Run `npm run e2e:ci` on the e2e stand (default true; `e2e: false` opts a repo
+#                       out, `e2e: true` in pr.yml is a no-op left from the opt-in period).
 #                       The e2e stand itself is published on every pull_request with tests/e2e/.
 #   e2e-workers         Playwright workers of `e2e` (default 4).
 #   e2e-required        A red `e2e` fails the run and `pr gate` (default false: advisory). It
@@ -210,7 +210,7 @@ on:
         default: true
       e2e:
         type: boolean
-        default: false
+        default: true
       e2e-workers:
         type: string
         default: "4"
