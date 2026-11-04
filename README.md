@@ -353,7 +353,8 @@ jobs:
 - `service`: kebab-case service name. Derives `TELEPORT_TOKEN` (`image-push-github-actions-<service>`) and `IMAGE_MANIFESTS` (`<service>-manifests`). **(required)**
 - `images`: comma-separated list of image basenames the action will verify exist in ECR before baking. If any is missing, the bake fails. **(required)**
 - `tag`: explicit bare-semver tag to bake. Default `''`. When empty, the tag is taken from the `workflow_dispatch` input (if any) or `GITHUB_REF_NAME` (the tag that triggered the run) — the behaviour for mirrored repos. **Set this for GitHub-native repos** that bake from a `needs: build` job in a push-to-`main` release run: there the release tag is created with `GITHUB_TOKEN`, which GitHub will not let trigger a separate `on: push: tags` workflow, and `GITHUB_REF_NAME` is `main` rather than the semver tag. Precedence: `tag` → `workflow_dispatch.inputs.tag` → `GITHUB_REF_NAME`.
-- `flux-version`: flux CLI version, no `v-` prefix. Default `2.8.6`.
+- `flux-version`: flux CLI version, no `v-` prefix. Default `2.8.6`. Change `flux-sha256` with it.
+- `flux-sha256`: sha256 of `flux_<flux-version>_linux_amd64.tar.gz`. The default matches `2.8.6`.
 - `aws-region`: ECR region. Default `us-west-2` (phase 6 of [issues-maestra#1354](https://github.com/maestra-io/issues-maestra/issues/1354) — the eu-central-1 registry is frozen).
 - `ecr-registry`: ECR registry host. Default `515260921971.dkr.ecr.us-west-2.amazonaws.com`.
 - `teleport-fqdn`: Teleport proxy. Default `teleport.maestra.io:443`.
@@ -548,7 +549,7 @@ jobs:
 - **Findings**: red job, listed (redacted) in the job summary and a review comment on
   the PR per finding, and the SARIF report as a run artifact (the action's defaults).
 
-The action installs the newest gitleaks release (`GITLEAKS_VERSION: latest`). One input,
+The action installs the pinned gitleaks release (`GITLEAKS_VERSION: 8.30.1`); a new one arrives only through a reviewed bump. One input,
 `ref`: the ref of this repo the central config is read from (default `main`).
 
 **Config**: only the central [`gitleaks/gitleaks.toml`](gitleaks/gitleaks.toml) (gitleaks'
