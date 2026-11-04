@@ -13,14 +13,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pool: [small, build]
+        rep: [1, 2]
         order: [old-first, new-first]
         image:
-          - frontend-mailings-with-deps@sha256:aeaa08cf4062ea8016136d07dec00e47470fe02be5c963194f7efac3d781ce69
-          - frontend-mailings@sha256:885308e185d51b945d87df300e77890b9ac618b084a69c4ab2cfd7b418d68b12
           - nexus_services@sha256:6f661780f1e0bd0935fee1ba944b00336f8850a6d3419e840d5d4e85430f001d
-          - code-intelligence@sha256:45f9d93793f952a357187e6e220058e38fe52bb6621866b51758628186a6298b
-    runs-on: runs-on=${{ github.run_id }}-bench-${{ strategy.job-index }}/pool=${{ matrix.pool }}
+          - messaging_services@sha256:d3a7f08d0a2c78802cab5c78dd4756f90bd5fec1acedd95510329a0b0cbb1fdc
+          - messaging_lrt@sha256:1785010feb6b7462e68de60aac558f3a1f56832d9c00a7d46a7921cd149e768c
+    runs-on: runs-on=${{ github.run_id }}-bench-${{ strategy.job-index }}/runner=us-spot-2xl-sticky/env=us
     timeout-minutes: 40
     permissions:
       contents: read

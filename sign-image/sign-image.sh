@@ -33,7 +33,7 @@ install_cosign() { # pinned binary from the GitHub release, sha256-checked; one 
   case $(uname -m) in x86_64) arch=amd64 ;; aarch64 | arm64) arch=arm64 ;; *) echo "no cosign pin for $(uname -m)"; return 1 ;; esac
   mkdir -p "$bindir"
   for i in 1 2; do
-    if curl -fsSL --retry 3 -o "$bin" "https://github.com/sigstore/cosign/releases/download/$COSIGN_VERSION/cosign-linux-$arch" &&
+    if curl -fsSL --retry 3 --max-time 120 -o "$bin" "https://github.com/sigstore/cosign/releases/download/$COSIGN_VERSION/cosign-linux-$arch" &&
       sha256sum -c --status <<<"${COSIGN_SHA256[$arch]}  $bin"; then
       chmod +x "$bin"; PATH="$bindir:$PATH"
       [ -n "${GITHUB_PATH:-}" ] && echo "$bindir" >>"$GITHUB_PATH"

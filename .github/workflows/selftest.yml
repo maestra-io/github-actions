@@ -28,6 +28,7 @@ on:
       - "ci/**"
       - "scripts/**"
       - "push-helm-chart-to-aws-ecr/**"
+      - "sign-image/**"
       - "tbot-join/**"
       - "terraform-nora/**"
       - "nora-image-prewarm/**"
@@ -111,6 +112,8 @@ jobs:
         run: bash scripts/test-service-build.sh
       - name: ecr-push-check (tag absent / same digest / other digest)
         run: bash scripts/test-ecr-push-check.sh
+      - name: sign-image status, background SBOM, cosign pin, no syft auth env (stub cosign/curl/docker/aws)
+        run: bash scripts/test-sign-image.sh
 
       - name: hot-test-publish stand names, manifest override, route wait, release bucket check, summary (workflow copy)
         run: bash scripts/test-hot-test-publish.sh
