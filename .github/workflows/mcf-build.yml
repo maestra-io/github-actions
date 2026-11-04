@@ -330,6 +330,16 @@ jobs:
             tests/functional/playwright.config.ts
             tests/e2e/playwright.config.ts
           sparse-checkout-cone-mode: false
+      # Here, not in deps-image: that job runs after `image` pushed its immutable tag, and
+      # never on a pull request. node_modules are installed by node-version and run on DEPS_BASE.
+      - name: node-version and DEPS_BASE have the same major
+        env:
+          NODE_VERSION: ${{ inputs.node-version }}
+        run: |
+          case "$DEPS_BASE" in
+            *"/node:${NODE_VERSION%%.*}-slim@"*) ;;
+            *) echo "::error::node-version $NODE_VERSION does not match the major of DEPS_BASE $DEPS_BASE"; exit 1 ;;
+          esac
       - id: v
         env:
           PREFIX: ${{ vars.RELEASE_PREFIX }}
@@ -1084,16 +1094,13 @@ jobs:
       # `COPY . .` + `docker build` + `docker push` re-uploaded the whole node_modules every time.
       - name: Dockerfile
         env:
-          NODE_VERSION: ${{ inputs.node-version }}
+          PACKAGES_URL: ${{ inputs.packages-url }}
         run: |
           printf '.git\n' > .dockerignore
-          # node_modules were installed by node-version: the image has to run the same major.
-          case "$DEPS_BASE" in
-            *"/node:${NODE_VERSION%%.*}-slim@"*) ;;
-            *) echo "::error::node-version $NODE_VERSION does not match the major of DEPS_BASE $DEPS_BASE"; exit 1 ;;
-          esac
+          # The host the credential helper above is registered for.
+          host="${PACKAGES_URL#*://}"; host="${host%%/*}"
           {
-            printf 'FROM %s\nWORKDIR /app\nRUN chown 10001:10001 /app\n' "$DEPS_BASE"
+            printf 'FROM %s\nWORKDIR /app\nRUN chown 10001:10001 /app\n' "${DEPS_BASE/packages.maestra.io/$host}"
             printf 'COPY --chown=10001:10001 package.json package-lock.json ./\nCOPY --chown=10001:10001 node_modules node_modules\n'
             [ ! -d tests/node_modules ] || printf 'COPY --chown=10001:10001 tests/node_modules tests/node_modules\n'
             # node_modules are in the layers above: re-copying them cost ~1 min of COPY and ~2 min
