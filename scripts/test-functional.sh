@@ -68,8 +68,7 @@ echo "functional cache paths: ok"
 job() { awk -v j="  $1:" -v k="    $2: " '$0 == j { on = 1; next } on && /^  [a-z]/ { exit }
   on && index($0, k) == 1 { print substr($0, length(k) + 1); exit }' "$wf"; }
 eq "$(job image needs)" "[version, checks, test, build, tests-checks, functional]" "image needs"
-# reuse / reuse-functional: the release of a tree a green PR run tested (scripts/test-mcf-build-reuse.sh).
-eq "$(job image if)" "\${{ !cancelled() && needs.version.outputs.publish == 'true' && needs.build.result == 'success' && (needs.version.outputs.reuse == 'true' || (needs.checks.result == 'success' && needs.test.result == 'success' && (needs.version.outputs.tests != 'true' || needs.tests-checks.result == 'success'))) && (!inputs.functional-required || needs.version.outputs.functional != 'true' || needs.version.outputs.reuse-functional == 'true' || needs.functional.result == 'success') }}" "image waits for tests-checks and a required functional"
+eq "$(job image if)" "\${{ !cancelled() && needs.version.outputs.publish == 'true' && needs.checks.result == 'success' && needs.test.result == 'success' && needs.build.result == 'success' && (needs.version.outputs.tests != 'true' || needs.tests-checks.result == 'success') && (!inputs.functional-required || needs.version.outputs.functional != 'true' || needs.functional.result == 'success') }}" "image waits for tests-checks and a required functional"
 eq "$(job functional continue-on-error)" "\${{ !inputs.functional-required }}" "functional failure is advisory only when not required"
 grep -A2 '^      functional-required:$' "$wf" | grep -qx '        default: true' \
   || { echo "FAIL functional-required does not default to true"; exit 1; }
