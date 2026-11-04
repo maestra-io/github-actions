@@ -1093,14 +1093,13 @@ jobs:
       # releases, so a release re-pushes only the sources layer. The old single
       # `COPY . .` + `docker build` + `docker push` re-uploaded the whole node_modules every time.
       - name: Dockerfile
-        env:
-          PACKAGES_URL: ${{ inputs.packages-url }}
         run: |
           printf '.git\n' > .dockerignore
-          # The host the credential helper above is registered for.
-          host="${PACKAGES_URL#*://}"; host="${host%%/*}"
+          # The helper above covers packages-url; DEPS_BASE's host stays fixed whatever that is.
+          cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+          jq --arg h "${DEPS_BASE%%/*}" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
           {
-            printf 'FROM %s\nWORKDIR /app\nRUN chown 10001:10001 /app\n' "${DEPS_BASE/packages.maestra.io/$host}"
+            printf 'FROM %s\nWORKDIR /app\nRUN chown 10001:10001 /app\n' "$DEPS_BASE"
             printf 'COPY --chown=10001:10001 package.json package-lock.json ./\nCOPY --chown=10001:10001 node_modules node_modules\n'
             [ ! -d tests/node_modules ] || printf 'COPY --chown=10001:10001 tests/node_modules tests/node_modules\n'
             # node_modules are in the layers above: re-copying them cost ~1 min of COPY and ~2 min
