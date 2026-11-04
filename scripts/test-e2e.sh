@@ -3,7 +3,7 @@
 # Self-check for the e2e jobs of mcf-build.yml: the tests/e2e/ detection (only with
 # tests/package.json, not on excluded branches), the wiring of e2e-stand (the hot-test
 # conditions plus tests/e2e/, no input, stand-prefix e2e, the static artifact) and e2e (only
-# with input e2e on a stand with a route, advisory unless e2e-required, never holds the image), the
+# unless e2e: false, on a stand with a route, advisory unless e2e-required, never holds the image), the
 # Vault credentials (step outputs only, never printed) and the e2e step summary from
 # Playwright JUnit. Runs the inline blocks of the reusable workflow itself.
 set -euo pipefail
@@ -71,7 +71,7 @@ echo "e2e detect: ok"
 }
 eq "$(job e2e-stand needs)" "[version, build]" "e2e-stand needs"
 if grep -qE 'inputs\.e2e-stand|^      e2e-stand:$' "$wf"; then echo "FAIL e2e-stand is behind an input: the stand is unconditional"; exit 1; fi
-eq "$(awk '/^      e2e:$/ { on = 1; next } on && /default:/ { print $2; exit }' "$wf")" "false" "e2e is turned on per repo in pr.yml"
+eq "$(awk '/^      e2e:$/ { on = 1; next } on && /default:/ { print $2; exit }' "$wf")" "true" "e2e runs by default, e2e: false opts a repo out"
 grep -qF "      e2e: \${{ steps.tests.outputs.e2e }}" "$wf" || { echo "FAIL the e2e detection output depends on more than the files"; exit 1; }
 stand=$(jobtext e2e-stand); hot=$(jobtext hot-test)
 has "$stand" "      stand-prefix: e2e" "e2e-stand prefix"
