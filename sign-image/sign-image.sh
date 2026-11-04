@@ -54,12 +54,14 @@ sbom_of() { # <ref> <out file>: syft from its OCI image, ECR auth from the job's
   pass=$(aws ecr get-login-password --region "$region") || return 1
   mkdir -p "$cfg"
   (umask 077; printf '{"auths":{"%s":{"auth":"%s"}}}' "$registry" "$(printf 'AWS:%s' "$pass" | base64 -w0)" >"$cfg/config.json")
+  docker image inspect "$SYFT_IMAGE" >/dev/null 2>&1 || timeout 300 docker pull -q "$SYFT_IMAGE" >/dev/null
+  local pulled=$SECONDS
   timeout 900 docker run --rm -v "$cfg:/docker-config:ro" -e DOCKER_CONFIG=/docker-config \
     "$SYFT_IMAGE" "registry:$ref" -q -o cyclonedx-json >"$out"
   local rc=$?
   rm -rf "$cfg"
   [ "$rc" = 0 ] && test -s "$out" || return 1
-  echo "$ref: SBOM $(jq '.components | length' "$out") components, $(wc -c <"$out") bytes, $((SECONDS - start)) s"
+  echo "$ref: SBOM $(jq '.components | length' "$out") components, $(wc -c <"$out") bytes, syft $((SECONDS - pulled)) s (+$((pulled - start)) s auth and syft image)"
 }
 
 read -r -d '' -a refs <<<"$SIGN_REFS"
