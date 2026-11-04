@@ -1492,7 +1492,7 @@ jobs:
         if: ${{ needs.version.outputs.publish == 'true' }}
         continue-on-error: true
         timeout-minutes: 10
-        uses: maestra-io/github-actions/sign-image@bdfea43a7d47149012fa1a488c91e5d6a49b2744 # v1.62.2
+        uses: maestra-io/github-actions/sign-image@21da9a74395b7d6fb7dfa71ba2805c280d11fe32 # v1.64.2
         with:
           image: ${{ steps.ecr.outputs.registry }}/${{ matrix.image }}
           digest: ${{ steps.push.outputs.digest || steps.build.outputs.digest }}
