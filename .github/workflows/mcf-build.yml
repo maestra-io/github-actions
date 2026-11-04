@@ -132,7 +132,13 @@
 #   pr-gate   pull_request only, the check a branch ruleset requires (`build / pr gate`): red when
 #             a PR job failed or was cancelled, skipped jobs pass; functional and e2e count only
 #             with functional-required / e2e-required. image, release, sourcemaps, bake never run
-#             on pull_request.
+#             on pull_request. When green it marks the run's merge tree tested (a hidden
+#             `mcf-tested` line in the coverage comment).
+#   reuse     push / workflow_dispatch: when a PR of the commit has that marker for the very tree
+#             (and Node.js) being built, checks, test and tests-checks do not run again, nor does
+#             functional when it was green there; image accepts them as passed. Same tree = same
+#             sources, lockfile and workflow files, so the verdict is the PR's. The tree differs
+#             (base moved after the last PR run, a red last run, no marker): everything runs.
 #
 # Not ported from mcf@3: cyrillic (translation-checker, issues-maestra#1581),
 # the -e2e image (issues-maestra#1573),
@@ -311,6 +317,9 @@ jobs:
       tests-layout: ${{ steps.tests.outputs.tests-layout }}
       functional: ${{ steps.tests.outputs.functional }}
       e2e: ${{ steps.tests.outputs.e2e }}
+      tree: ${{ steps.reuse.outputs.tree }}
+      reuse: ${{ steps.reuse.outputs.reuse }}
+      reuse-functional: ${{ steps.reuse.outputs.reuse-functional }}
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -422,6 +431,42 @@ jobs:
           last_hotfix=$(printf '%s\n' "$versions" | grep . | sort -V | tail -n 1 || true)
           { echo "last-hotfix=$last_hotfix"; echo "is-hotfix=$is_hotfix"; } >> "$GITHUB_OUTPUT"
           echo "LAST_HOTFIX=${last_hotfix:-<none>} hotfix=$is_hotfix"
+
+      # The tree this run builds. pull_request: pr-gate marks it tested on the PR. Otherwise
+      # (push, workflow_dispatch): checks, test and tests-checks (and functional) are reused when
+      # the last green run of a PR of this commit tested exactly this tree with this Node.js.
+      - id: reuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          NODE: ${{ inputs.node-version }}
+        run: |
+          tree=$(git rev-parse 'HEAD^{tree}')
+          echo "tree=$tree" >> "$GITHUB_OUTPUT"
+          [ "$EVENT" != pull_request ] || exit 0
+          # >>> tested-marker (scripts/test-mcf-build-reuse.sh runs this block)
+          # Reads PR comment bodies on stdin; prints "<functional result> <run id>" of the
+          # mcf-tested marker (pr-gate) for tree $1 and Node.js $2, nothing when there is none.
+          tested_marker() {
+            { grep -oE '<!-- mcf-tested tree=[0-9a-f]{40} node=[^ ]+ functional=[a-z]+ run=[0-9]+ -->' || true; } \
+              | awk -v t="tree=$1" -v n="node=$2" '$3 == t && $4 == n { sub(/^functional=/, "", $5); sub(/^run=/, "", $6); print $5, $6; exit }'
+          }
+          # <<< tested-marker
+          prs=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[].number') \
+            || { echo "::warning::PR lookup failed: checks and tests run"; prs=""; }
+          for pr in $prs; do
+            hit=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$pr/comments" \
+              --jq '.[] | select(.user.login == "github-actions[bot]") | .body' | tested_marker "$tree" "$NODE") \
+              || { echo "::warning::PR #$pr comments lookup failed"; continue; }
+            [ -n "$hit" ] || continue
+            read -r functional run <<<"$hit"
+            url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run"
+            { echo "reuse=true"; [ "$functional" != success ] || echo "reuse-functional=true"; } >> "$GITHUB_OUTPUT"
+            msg="tree ${tree:0:12} passed checks and tests in PR #$pr ([run $run]($url)), functional $functional: not run again"
+            echo "$msg"; echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          done
+          echo "no green PR run of tree ${tree:0:12}: checks and tests run"
 
   # install + codegen in one job (one runner boot and one node_modules restore less on the
   # critical path). The job id stays `install`: the npm-cacache key carries github.job.
@@ -630,7 +675,8 @@ jobs:
           key: ${{ steps.cache.outputs.cache-primary-key }}
 
   checks:
-    needs: install
+    needs: [version, install]
+    if: ${{ needs.version.outputs.reuse != 'true' }}
     runs-on: runs-on=${{ github.run_id }}-checks/pool=build
     timeout-minutes: 30
     steps:
@@ -716,7 +762,8 @@ jobs:
           # <<< checks-verdict
 
   test:
-    needs: install
+    needs: [version, install]
+    if: ${{ needs.version.outputs.reuse != 'true' }}
     runs-on: runs-on=${{ github.run_id }}-test/${{ inputs.test-runner }}
     timeout-minutes: ${{ inputs.test-timeout-minutes }}
     permissions:
@@ -814,7 +861,7 @@ jobs:
 
   tests-checks:
     needs: [version, install, tests-install]
-    if: ${{ !cancelled() && needs.version.outputs.tests == 'true' && needs.install.result == 'success' && (needs.tests-install.result == 'success' || needs.tests-install.result == 'skipped') }}
+    if: ${{ !cancelled() && needs.version.outputs.tests == 'true' && needs.version.outputs.reuse != 'true' && needs.install.result == 'success' && (needs.tests-install.result == 'success' || needs.tests-install.result == 'skipped') }}
     runs-on: runs-on=${{ github.run_id }}-tests-checks/pool=small
     timeout-minutes: 15
     permissions:
@@ -934,7 +981,7 @@ jobs:
 
   image:
     needs: [version, checks, test, build, tests-checks, functional]
-    if: ${{ !cancelled() && needs.version.outputs.publish == 'true' && needs.checks.result == 'success' && needs.test.result == 'success' && needs.build.result == 'success' && (needs.version.outputs.tests != 'true' || needs.tests-checks.result == 'success') && (!inputs.functional-required || needs.version.outputs.functional != 'true' || needs.functional.result == 'success') }}
+    if: ${{ !cancelled() && needs.version.outputs.publish == 'true' && needs.build.result == 'success' && (needs.version.outputs.reuse == 'true' || (needs.checks.result == 'success' && needs.test.result == 'success' && (needs.version.outputs.tests != 'true' || needs.tests-checks.result == 'success'))) && (!inputs.functional-required || needs.version.outputs.functional != 'true' || needs.version.outputs.reuse-functional == 'true' || needs.functional.result == 'success') }}
     runs-on: runs-on=${{ github.run_id }}-image/pool=small
     timeout-minutes: 15
     permissions:
@@ -1086,7 +1133,9 @@ jobs:
             printf 'FROM packages.maestra.io/docker-hub/library/node:%s-slim\nWORKDIR /app\nRUN chown 10001:10001 /app\n' "$NODE_VERSION"
             printf 'COPY --chown=10001:10001 package.json package-lock.json ./\nCOPY --chown=10001:10001 node_modules node_modules\n'
             [ ! -d tests/node_modules ] || printf 'COPY --chown=10001:10001 tests/node_modules tests/node_modules\n'
-            printf 'COPY --chown=10001:10001 . .\n'
+            # node_modules are in the layers above: re-copying them cost ~1 min of COPY and ~1 min
+            # of layer diff per release (frontend-mailings 1.1.63) for no change in the image.
+            printf 'COPY --chown=10001:10001 --exclude=node_modules --exclude=tests/node_modules . .\n'
           } > "$RUNNER_TEMP/Dockerfile.deps"
       - name: ecr login
         id: ecr
@@ -1264,7 +1313,7 @@ jobs:
 
   functional:
     needs: [version, install, tests-install, build]
-    if: ${{ !cancelled() && needs.version.outputs.functional == 'true' && needs.build.result == 'success' && (needs.tests-install.result == 'success' || needs.tests-install.result == 'skipped') }}
+    if: ${{ !cancelled() && needs.version.outputs.functional == 'true' && needs.version.outputs.reuse-functional != 'true' && needs.build.result == 'success' && (needs.tests-install.result == 'success' || needs.tests-install.result == 'skipped') }}
     runs-on: runs-on=${{ github.run_id }}-functional/pool=build
     timeout-minutes: 30
     continue-on-error: ${{ !inputs.functional-required }}
@@ -1625,9 +1674,13 @@ jobs:
     needs: [changes, version, install, tests-install, checks, test, tests-checks, build, hot-test, e2e-stand, functional, e2e, pr-checks]
     runs-on: runs-on=${{ github.run_id }}-pr-gate/pool=small
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write # the mcf-tested marker in the coverage comment
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - env:
+      - id: gate
+        env:
           NEEDS: ${{ toJSON(needs) }}
           FUNCTIONAL_REQUIRED: ${{ inputs.functional-required }}
           E2E_REQUIRED: ${{ inputs.e2e-required }}
@@ -1639,3 +1692,37 @@ jobs:
             | to_entries | map(select(.value.result == "failure" or .value.result == "cancelled") | .key) | join(" ")' <<<"$NEEDS")
           [ -z "$red" ] || { echo "::error::failed or cancelled: $red"; exit 1; }
           # <<< pr-gate
+      # The release of the merge reuses checks, test, tests-checks (and a green functional) when
+      # it builds the very tree this run tested (version job, step reuse). The marker rides in
+      # the coverage comment, which the next run's test job rewrites without it; a red gate
+      # strips it. Only github-actions[bot] can write it: fork PRs get a read-only token.
+      - name: mark the tree tested
+        # always(): a gate red before test ran (version, install) strips an older marker too.
+        if: ${{ always() }}
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          TESTED: ${{ steps.gate.outcome == 'success' && needs.checks.result == 'success' && needs.test.result == 'success' && needs.build.result == 'success' && (needs.version.outputs.tests != 'true' || needs.tests-checks.result == 'success') }}
+          TREE: ${{ needs.version.outputs.tree }}
+          NODE: ${{ inputs.node-version }}
+          FUNCTIONAL: ${{ needs.functional.result }}
+        with:
+          script: |
+            const MARKER = '<!-- mcf-build-coverage -->';
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: issue_number });
+            if (pr.head.sha !== context.payload.pull_request.head.sha) {
+              core.info(`not the PR head (${pr.head.sha}): no marker`);
+              return;
+            }
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const c = comments.find(c => c.user?.login === 'github-actions[bot]' && c.body?.includes(MARKER));
+            if (!c) { core.info('no coverage comment: no marker'); return; }
+            let body = c.body.replace(/\n?<!-- mcf-tested [^>]*-->/g, '');
+            const { TESTED, TREE, NODE, FUNCTIONAL } = process.env;
+            if (TESTED === 'true' && /^[0-9a-f]{40}$/.test(TREE)) {
+              body += `\n<!-- mcf-tested tree=${TREE} node=${NODE} functional=${FUNCTIONAL || 'skipped'} run=${context.runId} -->`;
+            }
+            if (body !== c.body) await github.rest.issues.updateComment({ owner, repo, comment_id: c.id, body });
+            core.info(TESTED === 'true' ? `tree ${TREE} marked tested` : 'not green: no marker');
