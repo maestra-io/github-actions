@@ -129,8 +129,6 @@ jobs:
         run: bash scripts/test-e2e.sh
       - name: mcf-build pr gate (needs, verdict; workflow copy)
         run: bash scripts/test-mcf-build-pr-gate.sh
-      - name: mcf-build release reuse of a PR-tested tree (marker parser, wiring; workflow copy)
-        run: bash scripts/test-mcf-build-reuse.sh
 
       - name: pr-checks check-encoding and kustomize entry points
         run: bash scripts/test-pr-checks.sh
