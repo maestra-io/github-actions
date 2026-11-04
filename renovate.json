@@ -2,12 +2,29 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended",
-    "github>maestra-io/renovate-config:externalImages"
+    "github>maestra-io/renovate-config:externalImages",
+    "github>maestra-io/renovate-config:mcfUploadBase"
   ],
   "timezone": "Europe/Lisbon",
   "semanticCommits": "enabled",
   "semanticCommitType": "chore",
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "DEPS_BASE of mcf-build.yml. Looked up on Docker Hub, the source nora proxies: Renovate has no docker credentials for nora. So the 3-day hold of externalImages applies, and a digest move is a PR for a person.",
+      "managerFilePatterns": ["/^\\.github/workflows/mcf-build\\.yml$/"],
+      "matchStrings": ["packages\\.maestra\\.io/docker-hub/library/(?<depName>node):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]{64})"],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    }
+  ],
   "packageRules": [
+    {
+      "description": "DEPS_BASE keeps the Node major of the node-version input of mcf-build.yml; the workflow fails when they differ.",
+      "matchFileNames": [".github/workflows/mcf-build.yml"],
+      "matchPackageNames": ["node"],
+      "allowedVersions": "<25"
+    },
     {
       "description": "Every external action in this repo is referenced by its version tag (`@vX.Y.Z`), never by a commit sha: no digests are pinned, Renovate bumps the tag. Grouped and weekly because these workflows are a shared library — one PR a week is one review and one release tag, instead of a dozen tags nobody reads. `separateMajorMinor: false` is what makes it literally one PR -- config:recommended would otherwise split majors into a second branch. Flip it back to true if a stuck major (setup-python v7, configure-aws-credentials v6 are waiting) starts holding the routine bumps hostage.",
       "matchManagers": ["github-actions"],
