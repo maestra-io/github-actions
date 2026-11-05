@@ -25,8 +25,18 @@ only the ansible bodies are deduplicated. This keeps the cross-tool `needs` grap
 **Path convention**: the Execute step runs with `working-directory: <working_directory>`
 (default `ansible/`), so **`playbook` and `inventory` are `working_directory`-relative** —
 `playbooks/nat-gateway.yml`, `inventory/teleport_inventory.py`, `inventory/hosts.yml`.
-Never prefix them with `ansible/`. Only `requirements_pip` / `requirements_galaxy` /
+Never prefix them with `ansible/`. Only `uv_project` / `requirements_pip` / `requirements_galaxy` /
 `requirements_lint` are workspace-root-relative (they're consumed before the cd).
+
+**Python packages** come from the caller's `pyproject.toml` + `uv.lock` in `uv_project`
+(default: the repo root), through nora only (issues-maestra#1649): the Ansible toolchain is
+`[project].dependencies`, ansible-lint/yamllint are the `lint` dependency group, and nora is
+the only index (`[[tool.uv.index]] name = "maestra"`, `url = "https://packages.maestra.io/simple/"`,
+`default = true`, `[tool.uv] package = false`). The workflows run `uv sync --locked`
+(credentials from `uv-nora`) and refuse a `uv.lock` that names any other host. The lint job
+installs the runtime set plus `lint`, so ansible-lint judges against the repo's own ansible pin.
+A repo without a `uv.lock` still gets `requirements_pip` / `requirements_lint` from PyPI
+(legacy; removed once every caller has migrated).
 
 | input | type | required | default | purpose |
 | --- | --- | --- | --- | --- |
@@ -57,7 +67,8 @@ Never prefix them with `ansible/`. Only `requirements_pip` / `requirements_galax
 | `teleport_join_token` | string | no | `github-actions-infra-deploy` | teleport join token |
 | `teleport_fqdn` | string | no | `teleport.maestra.io:443` | proxy (note: explicit :443) |
 | `python_version` | string | no | `3.14` | uv-installed python |
-| `requirements_pip` | string | no | `ansible/requirements-pip.txt` | run-time pip manifest |
+| `uv_project` | string | no | `.` | dir of `pyproject.toml` + `uv.lock` (nora only); `uv sync --locked` into setup-python's interpreter |
+| `requirements_pip` | string | no | `ansible/requirements-pip.txt` | legacy run-time pip manifest (only without a `uv.lock` in `uv_project`) |
 | `requirements_galaxy` | string | no | `ansible/requirements.yml` | galaxy manifest |
 | `no_hosts_fail_on_apply` | boolean | no | `false` | mssql/ad: empty group → fail on apply, skip on check |
 
@@ -244,7 +255,7 @@ Every caller is `uses: maestra-io/github-actions/.github/workflows/<x>.yml@<sha>
 ## Backward-compatibility checklist (per consumer, before merge)
 
 - [ ] inventory: teleport script committed (hyperv) or `inventory` input points at the real path.
-- [ ] `requirements_pip` vs `requirements_lint` filenames match the repo (both are inputs).
+- [ ] `pyproject.toml` + `uv.lock` in `uv_project` (runtime deps + `lint` group, nora the only index).
 - [ ] windows repos set `use_mitogen=false` + `windows_mode=true`.
 - [ ] dual-vault repos compute `vault_mode`/`vault_addr`/`teleport_app`/`vault_role` per matrix row.
 - [ ] `no_hosts_fail_on_apply=true` only for mssql/ad (asymmetric exit).

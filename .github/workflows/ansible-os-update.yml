@@ -36,6 +36,13 @@ on:
         required: false
         type: string
         default: "ansible"
+      uv_project:
+        description: >-
+          Directory of the caller's pyproject.toml + uv.lock (see ansible-run.yml).
+          Without a uv.lock there, ansible/requirements-pip.txt from PyPI (legacy).
+        required: false
+        type: string
+        default: "."
       region:
         required: true
         type: string
@@ -155,10 +162,45 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
-          enable-cache: true
+          version: "0.13.6"
+          enable-cache: false
+
+      # Credentials for nora (packages.maestra.io), the caller's only Python index.
+      - uses: maestra-io/github-actions/uv-nora@22ccbf9ff3d76fe13025cbc009d395024f025198 # v1.67.0
 
       - name: Install ansible
-        run: uv pip install --system -r ansible/requirements-pip.txt
+        env:
+          DEPS_PROJECT: ${{ inputs.uv_project }}
+          DEPS_GROUP: ""
+          DEPS_TARGET: system
+          LEGACY_REQUIREMENTS: ansible/requirements-pip.txt
+          LEGACY_EXTRA: ""
+        run: |
+          # >>> python-deps (identical in every ansible workflow; ansible/tests/test-python-deps.sh)
+          set -euo pipefail
+          if [ -f "${DEPS_PROJECT}/uv.lock" ]; then
+            # nora only: a lock that names any other host is refused, never followed.
+            if other=$(grep -oE 'https?://[^/"]+' "${DEPS_PROJECT}/uv.lock" | sort -u | grep -vx 'https://packages.maestra.io'); then
+              echo "::error file=${DEPS_PROJECT}/uv.lock::uv.lock names hosts other than packages.maestra.io: ${other//$'\n'/ }"
+              exit 1
+            fi
+            args=(--locked --no-install-project --project "$DEPS_PROJECT")
+            [ -z "${DEPS_GROUP:-}" ] || args+=(--group "$DEPS_GROUP")
+            if [ "$DEPS_TARGET" = active ]; then
+              args+=(--active)
+            else
+              # setup-python's interpreter, as `pip install --system` did; --inexact keeps its pip.
+              export UV_PROJECT_ENVIRONMENT="${pythonLocation:?actions/setup-python must run first}"
+              args+=(--inexact)
+            fi
+            uv sync "${args[@]}"
+          else
+            echo "::warning::no ${DEPS_PROJECT}/uv.lock: installing ${LEGACY_REQUIREMENTS} from PyPI (legacy path, removed once every caller has a uv.lock; issues-maestra#1649)"
+            legacy=(-r "$LEGACY_REQUIREMENTS")
+            [ -z "${LEGACY_EXTRA:-}" ] || legacy=("$LEGACY_EXTRA" "${legacy[@]}")
+            if [ "$DEPS_TARGET" = active ]; then uv pip install "${legacy[@]}"; else uv pip install --system "${legacy[@]}"; fi
+          fi
+          # <<< python-deps
 
       - name: Get Teleport version from proxy
         id: tp-version
@@ -336,6 +378,7 @@ jobs:
       playbook: ${{ inputs.playbook }}
       inventory: ${{ inputs.inventory }}
       working_directory: ${{ inputs.working_directory }}
+      uv_project: ${{ inputs.uv_project }}
       region: ${{ inputs.region }}
       environment: ${{ inputs.environment }}
       site: ${{ inputs.site }}
@@ -394,6 +437,7 @@ jobs:
       playbook: ${{ inputs.playbook }}
       inventory: ${{ inputs.inventory }}
       working_directory: ${{ inputs.working_directory }}
+      uv_project: ${{ inputs.uv_project }}
       region: ${{ inputs.region }}
       environment: ${{ inputs.environment }}
       site: ${{ inputs.site }}

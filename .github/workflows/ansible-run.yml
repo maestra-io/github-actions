@@ -251,7 +251,18 @@ on:
         required: false
         type: string
         default: "3.14"
+      uv_project:
+        description: >-
+          Directory (workspace-relative) of the caller's pyproject.toml + uv.lock:
+          the Ansible toolchain as `[project].dependencies`, nora as the only index
+          (`[[tool.uv.index]] name = "maestra"`, default = true; issues-maestra#1649).
+          While it has no uv.lock, requirements_pip is installed from PyPI as before
+          (legacy, removed once every caller has migrated).
+        required: false
+        type: string
+        default: "."
       requirements_pip:
+        description: "Legacy (no uv.lock in uv_project): the runtime requirements file."
         required: false
         type: string
         default: "ansible/requirements-pip.txt"
@@ -352,24 +363,57 @@ jobs:
         continue-on-error: true
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
-          enable-cache: true
+          version: "0.13.6"
+          enable-cache: false
 
       # Observed 2026-09-02 on the eu _haproxy_cdp check row (run 33612325844):
       # `Fetching manifest data from https://raw.githubusercontent.com/astral-sh/
-      # versions/main/v1/uv.ndjson` -> `##[error]fetch failed`. No version is
-      # pinned anywhere in the consumer repos, so the action resolves "latest",
-      # which makes that fetch mandatory on every single run.
+      # versions/main/v1/uv.ndjson` -> `##[error]fetch failed` (uv was unpinned then;
+      # it is pinned now, the retry stays for the download itself).
       - name: Set up uv — retry
         if: steps.setup-uv.outcome == 'failure'
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
-          enable-cache: true
+          version: "0.13.6"
+          enable-cache: false
+
+      # Credentials for nora (packages.maestra.io), the caller's only Python index.
+      - uses: maestra-io/github-actions/uv-nora@22ccbf9ff3d76fe13025cbc009d395024f025198 # v1.67.0
 
       # See the tp-version step: inputs reach the shell through env only.
-      - name: Install ansible + pip requirements
+      - name: Install ansible + Python dependencies
         env:
-          REQUIREMENTS_PIP: ${{ inputs.requirements_pip }}
-        run: uv pip install --system -r "$REQUIREMENTS_PIP"
+          DEPS_PROJECT: ${{ inputs.uv_project }}
+          DEPS_GROUP: ""
+          DEPS_TARGET: system
+          LEGACY_REQUIREMENTS: ${{ inputs.requirements_pip }}
+          LEGACY_EXTRA: ""
+        run: |
+          # >>> python-deps (identical in every ansible workflow; ansible/tests/test-python-deps.sh)
+          set -euo pipefail
+          if [ -f "${DEPS_PROJECT}/uv.lock" ]; then
+            # nora only: a lock that names any other host is refused, never followed.
+            if other=$(grep -oE 'https?://[^/"]+' "${DEPS_PROJECT}/uv.lock" | sort -u | grep -vx 'https://packages.maestra.io'); then
+              echo "::error file=${DEPS_PROJECT}/uv.lock::uv.lock names hosts other than packages.maestra.io: ${other//$'\n'/ }"
+              exit 1
+            fi
+            args=(--locked --no-install-project --project "$DEPS_PROJECT")
+            [ -z "${DEPS_GROUP:-}" ] || args+=(--group "$DEPS_GROUP")
+            if [ "$DEPS_TARGET" = active ]; then
+              args+=(--active)
+            else
+              # setup-python's interpreter, as `pip install --system` did; --inexact keeps its pip.
+              export UV_PROJECT_ENVIRONMENT="${pythonLocation:?actions/setup-python must run first}"
+              args+=(--inexact)
+            fi
+            uv sync "${args[@]}"
+          else
+            echo "::warning::no ${DEPS_PROJECT}/uv.lock: installing ${LEGACY_REQUIREMENTS} from PyPI (legacy path, removed once every caller has a uv.lock; issues-maestra#1649)"
+            legacy=(-r "$LEGACY_REQUIREMENTS")
+            [ -z "${LEGACY_EXTRA:-}" ] || legacy=("$LEGACY_EXTRA" "${legacy[@]}")
+            if [ "$DEPS_TARGET" = active ]; then uv pip install "${legacy[@]}"; else uv pip install --system "${legacy[@]}"; fi
+          fi
+          # <<< python-deps
 
       - name: Cache Ansible Galaxy collections
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

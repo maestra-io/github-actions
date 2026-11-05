@@ -15,6 +15,8 @@ on:
     paths:
       - ".github/workflows/ansible-os-update.yml"
       - ".github/workflows/ansible-run.yml"
+      - ".github/workflows/ansible-pr.yml"
+      - ".github/workflows/collection-lint.yml"
       - ".github/workflows/dotnet-service-build.yml"
       - ".github/workflows/frontend-codegen.yml"
       - ".github/workflows/hot-test-publish.yml"
@@ -169,6 +171,11 @@ jobs:
       # runs the workflow's own step block against stubs.
       - name: avoid-target-proxy pin (ansible-run.yml)
         run: bash ansible/tests/test-avoid-target-proxy.sh
+
+      # The Python install of every Ansible workflow: the caller's uv.lock through
+      # nora only, the legacy requirements file while it has none (issues-maestra#1649).
+      - name: python-deps block (uv.lock through nora, legacy requirements)
+        run: bash ansible/tests/test-python-deps.sh
 
       # The test carries its own copy of the selector; a change to the workflow
       # that does not update the test would leave the test green and meaningless.

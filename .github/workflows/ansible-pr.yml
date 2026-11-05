@@ -53,11 +53,25 @@ on:
         required: false
         type: string
         default: "."
+      uv_project:
+        description: >-
+          Directory (workspace-relative) of the caller's pyproject.toml + uv.lock:
+          the Ansible toolchain as `[project].dependencies`, ansible-lint/yamllint
+          as the `lint` dependency group, nora as the only index
+          (`[[tool.uv.index]] name = "maestra"`, default = true; issues-maestra#1649).
+          While that directory has no uv.lock, requirements_lint / requirements_pip
+          are installed from PyPI as before (legacy, removed once every caller has
+          migrated).
+        required: false
+        type: string
+        default: "."
       requirements_lint:
+        description: "Legacy (no uv.lock in uv_project): lint pins, installed with an unpinned ansible."
         required: false
         type: string
         default: "ansible/requirements-lint.txt"
       requirements_pip:
+        description: "Legacy (no uv.lock in uv_project): the runtime requirements file."
         required: false
         type: string
         default: "ansible/requirements-pip.txt"
@@ -128,18 +142,52 @@ jobs:
       # the workspace, so yamllint/ansible-lint over `lint_paths` never see it.
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
-          enable-cache: true
+          version: "0.13.6"
+          enable-cache: false
           python-version: ${{ inputs.python_version }}
           activate-environment: true
           venv-path: ${{ runner.temp }}/lint-venv
+      # Credentials for nora (packages.maestra.io), the caller's only Python index.
+      - uses: maestra-io/github-actions/uv-nora@22ccbf9ff3d76fe13025cbc009d395024f025198 # v1.67.0
       # Inputs reach the shell through `env:`, never through ${{ }} in the script
       # body: GitHub substitutes the expression BEFORE bash parses the line, so a
       # quote or a `;` in a caller-supplied value would execute here. Same rule as
       # the tp-version / Execute steps in ansible-run.yml.
+      # The lock's runtime set (the repo's own ansible pin) plus the `lint` group,
+      # into the activated venv: ansible-lint judges against the ansible that runs.
       - name: Install lint deps
         env:
-          REQUIREMENTS_LINT: ${{ inputs.requirements_lint }}
-        run: uv pip install ansible -r "$REQUIREMENTS_LINT"
+          DEPS_PROJECT: ${{ inputs.uv_project }}
+          DEPS_GROUP: lint
+          DEPS_TARGET: active
+          LEGACY_REQUIREMENTS: ${{ inputs.requirements_lint }}
+          LEGACY_EXTRA: ansible
+        run: |
+          # >>> python-deps (identical in every ansible workflow; ansible/tests/test-python-deps.sh)
+          set -euo pipefail
+          if [ -f "${DEPS_PROJECT}/uv.lock" ]; then
+            # nora only: a lock that names any other host is refused, never followed.
+            if other=$(grep -oE 'https?://[^/"]+' "${DEPS_PROJECT}/uv.lock" | sort -u | grep -vx 'https://packages.maestra.io'); then
+              echo "::error file=${DEPS_PROJECT}/uv.lock::uv.lock names hosts other than packages.maestra.io: ${other//$'\n'/ }"
+              exit 1
+            fi
+            args=(--locked --no-install-project --project "$DEPS_PROJECT")
+            [ -z "${DEPS_GROUP:-}" ] || args+=(--group "$DEPS_GROUP")
+            if [ "$DEPS_TARGET" = active ]; then
+              args+=(--active)
+            else
+              # setup-python's interpreter, as `pip install --system` did; --inexact keeps its pip.
+              export UV_PROJECT_ENVIRONMENT="${pythonLocation:?actions/setup-python must run first}"
+              args+=(--inexact)
+            fi
+            uv sync "${args[@]}"
+          else
+            echo "::warning::no ${DEPS_PROJECT}/uv.lock: installing ${LEGACY_REQUIREMENTS} from PyPI (legacy path, removed once every caller has a uv.lock; issues-maestra#1649)"
+            legacy=(-r "$LEGACY_REQUIREMENTS")
+            [ -z "${LEGACY_EXTRA:-}" ] || legacy=("$LEGACY_EXTRA" "${legacy[@]}")
+            if [ "$DEPS_TARGET" = active ]; then uv pip install "${legacy[@]}"; else uv pip install --system "${legacy[@]}"; fi
+          fi
+          # <<< python-deps
       - name: Cache Ansible Galaxy collections
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -227,6 +275,7 @@ jobs:
       no_hosts_fail_on_apply: ${{ inputs.no_hosts_fail_on_apply }}
       teleport_join_token: ${{ inputs.teleport_join_token }}
       teleport_fqdn: ${{ inputs.teleport_fqdn }}
+      uv_project: ${{ inputs.uv_project }}
       requirements_pip: ${{ inputs.requirements_pip }}
       requirements_galaxy: ${{ inputs.requirements_galaxy }}
       python_version: ${{ inputs.python_version }}
