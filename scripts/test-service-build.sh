@@ -32,3 +32,30 @@ fails "=t" "no image"
 fails "x=:t" "empty dockerfile"
 fails "x=a:b:c:d" "four fields"
 echo "service-build image-targets: ok"
+
+# release: release-version wins over RELEASE_PREFIX.run_number and must be X.Y.Z.
+rel_prog=$(sed -n '/# >>> release/,/# <<< release/p' "$wf" | sed 's/^          //')
+[ -n "$rel_prog" ] || { echo "release block not found in $wf"; exit 1; }
+rel() { RELEASE_VERSION="$1" PREFIX="${2:-}" TAG_PREFIX="${3:-}" RUN_NUMBER=7 bash -c "set -eo pipefail; $rel_prog"$'\n''echo "$release $tag"'; }
+eq "$(rel "")" "1.1.7 1.1.7" "default prefix"
+eq "$(rel "" 2.3)" "2.3.7 2.3.7" "RELEASE_PREFIX"
+eq "$(rel 4.220.0 2.3)" "4.220.0 4.220.0" "release-version"
+eq "$(rel "" "" standard-blocks-v)" "1.1.7 standard-blocks-v1.1.7" "release-tag-prefix"
+for bad in 4.220 v4.220.0 4.220.0-beta "4.220.0 " $'4.220.0\nx=1'; do
+  if rel "$bad" >/dev/null 2>&1; then echo "FAIL release-version '$bad': accepted"; exit 1; fi
+done
+for bad in "a b" "a/b" $'a\nx=1' 'a;b'; do
+  if rel "" "" "$bad" >/dev/null 2>&1; then echo "FAIL release-tag-prefix '$bad': accepted"; exit 1; fi
+done
+echo "service-build release: ok"
+
+# shards: test-shards -> matrix of shard indexes, 1..20.
+sh_prog=$(sed -n '/# >>> shards/,/# <<< shards/p' "$wf" | sed 's/^          //')
+[ -n "$sh_prog" ] || { echo "shards block not found in $wf"; exit 1; }
+shards() { TEST_SHARDS="$1" bash -c "set -eo pipefail; $sh_prog"$'\n''echo "$shards"'; }
+eq "$(shards 1)" "[1]" "one shard"
+eq "$(shards 4)" "[1,2,3,4]" "four shards"
+for bad in 0 21 -1 x ""; do
+  if shards "$bad" >/dev/null 2>&1; then echo "FAIL test-shards '$bad': accepted"; exit 1; fi
+done
+echo "service-build shards: ok"

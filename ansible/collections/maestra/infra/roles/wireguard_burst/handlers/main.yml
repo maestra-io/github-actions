@@ -1,0 +1,13 @@
+---
+- name: Restart nftables (wireguard_burst)
+  ansible.builtin.systemd:
+    name: nftables
+    state: restarted
+  when: not ansible_check_mode
+
+# frr-reload.py (frr-pythontools) applies the diff; sessions stay up.
+- name: Reload frr (wireguard_burst)
+  ansible.builtin.systemd:
+    name: frr
+    state: reloaded
+  when: not ansible_check_mode

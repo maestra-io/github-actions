@@ -1,0 +1,140 @@
+# Reusable pull-request checks: the merge-request checks every service had
+# (check-encoding, plus a kustomize build of the overlays), ported to GitHub.
+# dotnet-service-build.yml and service-build.yml call it on pull_request, so every
+# service that releases through them gets it; mcf-build.yml calls it for the
+# kustomize build only. A repo with its own workflows calls it directly:
+#
+#   jobs:
+#     checks:
+#       uses: maestra-io/github-actions/.github/workflows/pr-checks.yml@main
+#       permissions: { contents: read }
+#
+# The secret scan is not here and not in any shared workflow: it is each repo's own
+# workflow calling gitleaks.yml (gitleaks/gitleaks-action):
+#
+# .github/workflows/gitleaks.yml in the repo:
+#   name: gitleaks
+#   on: pull_request
+#   permissions: { contents: read, pull-requests: write }
+#   jobs:
+#     gitleaks:
+#       uses: maestra-io/github-actions/.github/workflows/gitleaks.yml@main
+#       secrets: inherit
+#
+# Everything is scoped to what the PR changes, so a file nobody touched never blocks a
+# merge:
+#   check-encoding  the changed files with these extensions must be UTF-8.
+#   kustomize       `kustomize build` of every overlay under kustomize-path when a file
+#                   under it changed (Flux builds the same trees from <service>-manifests;
+#                   the bake only packs them, so a broken overlay otherwise surfaces in
+#                   the cluster).
+#
+# Inputs:
+#   check-encoding       default true.
+#   encoding-extensions  default txt,xml,json,config,cs,csproj,sln (the component's).
+#   kustomize            default true.
+#   kustomize-path       default kustomization.
+#   ref                  ref of maestra-io/github-actions the scripts are read from
+#                        (default main; set it when testing a branch).
+#   gitleaks             DEPRECATED, ignored: the scan is the repo's own gitleaks.yml
+#                        workflow; removed once no caller passes it (a reusable
+#                        workflow rejects an undeclared input, so it stays declared).
+#
+# Only on pull_request (the job is skipped otherwise). Needs contents: read only: the
+# changed files come from the test merge commit.
+
+name: pr-checks
+
+on:
+  workflow_call:
+    inputs:
+      # DEPRECATED, ignored: the scan is the repo's own gitleaks.yml workflow;
+      # removed once no caller passes it.
+      gitleaks:
+        type: boolean
+        default: true
+      check-encoding:
+        type: boolean
+        default: true
+      encoding-extensions:
+        type: string
+        default: txt,xml,json,config,cs,csproj,sln
+      kustomize:
+        type: boolean
+        default: true
+      kustomize-path:
+        type: string
+        default: kustomization
+      ref:
+        type: string
+        default: main
+
+permissions:
+  contents: read
+
+env:
+  KUSTOMIZE_VERSION: v5.8.3
+  KUSTOMIZE_SHA256: cb9e31198d3f63b44848bd0afc4c8efc56e6cfef9c93a4a39a211940e6decd61
+
+jobs:
+  checks:
+    name: pr checks
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: runs-on=${{ github.run_id }}-pr-checks/pool=small
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      # The test merge commit and its first parent, the base branch tip (HEAD^1). No
+      # token left in git config: the steps below read the PR's own files.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: maestra-io/github-actions
+          ref: ${{ inputs.ref }}
+          path: .pr-checks
+          sparse-checkout: pr-checks
+          persist-credentials: false
+      - name: changed files
+        run: |
+          set -euo pipefail
+          # NUL-separated and unquoted: core.quotePath would turn a non-ASCII name
+          # into an octal-escaped string that names no file.
+          git -c core.quotePath=false diff -z --name-only --diff-filter=d HEAD^1 HEAD > "$RUNNER_TEMP/changed"
+          echo "$(tr -cd '\0' < "$RUNNER_TEMP/changed" | wc -c) files changed"
+
+      - name: check-encoding
+        if: ${{ !cancelled() && inputs.check-encoding }}
+        env:
+          EXTENSIONS: ${{ inputs.encoding-extensions }}
+        run: |
+          set -euo pipefail
+          if [ ! -s "$RUNNER_TEMP/changed" ]; then echo "no changed files"; exit 0; fi
+          xargs -0 python3 -I .pr-checks/pr-checks/check-encoding.py "$EXTENSIONS" < "$RUNNER_TEMP/changed"
+
+      - name: kustomize build (changed overlays tree)
+        if: ${{ !cancelled() && inputs.kustomize }}
+        env:
+          KPATH: ${{ inputs.kustomize-path }}
+        run: |
+          set -euo pipefail
+          if [ ! -d "$KPATH" ] || ! grep -qz "^${KPATH%/}/" "$RUNNER_TEMP/changed"; then
+            echo "nothing changed under $KPATH"; exit 0
+          fi
+          curl -fsSL -o "$RUNNER_TEMP/kustomize.tar.gz" \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          echo "${KUSTOMIZE_SHA256}  $RUNNER_TEMP/kustomize.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/kustomize.tar.gz" -C "$RUNNER_TEMP" kustomize
+          failed=0
+          for ep in $(bash .pr-checks/pr-checks/kustomize-entry-points.sh "$KPATH"); do
+            if out=$("$RUNNER_TEMP/kustomize" build --load-restrictor LoadRestrictionsNone "$ep" 2>&1 >/dev/null); then
+              echo "ok   $ep"
+            else
+              echo "::error::kustomize build $ep failed"; echo "$out"; failed=1
+            fi
+          done
+          exit $failed

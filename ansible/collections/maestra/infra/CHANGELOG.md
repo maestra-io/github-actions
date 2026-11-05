@@ -7,6 +7,74 @@ finding, and because the `os_update` contract is shared across four repos:
 anything that changes a variable name or a hook expectation has to be findable
 from one place.
 
+## 1.4.0
+
+- `wireguard_burst`: the `embedded` mode is gone (it had no consumer; the NAT
+  gateways no longer terminate burst-node WireGuard). Removed variables:
+  `wireguard_burst_mode`, `wireguard_burst_manage_interface`,
+  `wireguard_burst_neighbour_lan_ip`, `wireguard_burst_neighbour_mac`,
+  `wireguard_burst_fallback_distance` and the output facts
+  `wireguard_burst_{frr_static,frr_bfd,nft_input,nft_forward}`. The rendered
+  files of a gateway are byte-identical to 1.3.1.
+- Consumer change: drop `wireguard_burst_mode` from the inventory (now unused).
+
+## 1.3.1
+
+- `wireguard_burst`: a fresh host passes `--check`. The FRR install and
+  config are skipped in check mode while the FRR apt repository is still only
+  "would add" (apt had no `frr=<version>` candidate, user `frr` and `/etc/frr`
+  did not exist); the textfile directory is only created if missing, so it no
+  longer fights node_exporter's own owner/mode on every run.
+- No consumer change.
+
+## 1.3.0
+
+- New role `wireguard_burst` ([issues-maestra#1444](https://github.com/maestra-io/issues-maestra/issues/1444)):
+  WireGuard termination for Kubernetes burst nodes with one BFD-tracked FRR
+  static `/32` per slot (300 ms x 3). Two modes: `embedded` (on a host that
+  owns its own nftables/FRR; the role exposes the lines to include) and
+  `dedicated` (owns nftables, FRR and sysctls, announces live slots to its
+  uplinks over eBGP with BFD). Gateway public-key assert, per-slot textfile
+  metrics. Contract: `roles/wireguard_burst/README.md`.
+- `os_update`: no change.
+
+## 1.2.2
+
+- `os_update` role: `mode=undrain-only` posts the same post-run tail silences
+  the success path does, before dropping the maintenance silences. The hatch
+  runs after a cancelled or dead run, i.e. while the workloads the drain moved
+  are landing back, and every alert whose `for:` elapsed under the maintenance
+  silence fired the second it was dropped (us-iota node 02, 19.10.2026 19:52
+  UTC: TooManyLogs x7 across three contours, AlertingRulesError,
+  ReconcileErrors, ApdexLow — all noise from pods returning).
+- No consumer change.
+
+## 1.2.1
+
+- `os_update` role: `apt.yml` sets `NEEDRESTART_SUSPEND=1`. needrestart is
+  installed on Ubuntu 24.04 hosts (all three us-iota nodes) and in mode `a`
+  restarted every service on an upgraded lib from inside dpkg (k0scontroller /
+  etcd on all three iota nodes, 07.10.2026, from an unrelated apt run). `stage`
+  runs apt on a host still in rotation, so that restart broke its "activate
+  nothing" contract outright. Trade-off: an `apply` whose upgrade needs no
+  reboot leaves services on the old libs until the next reboot.
+- No consumer change.
+
+## 1.2.0
+
+- `os_update` role: **post-run tail silence** after a successful `apply`
+  ([issues-maestra#1104](https://github.com/maestra-io/issues-maestra/issues/1104)).
+  Once verify → undrain → marker clear → settle have all passed, the same
+  `os_update_silence_sets` are re-posted with `createdBy: os-update-tail` and
+  `endsAt = now + os_update_tail_silence_minutes` (default 15; `0` disables it),
+  and only then are the maintenance silences expired. The tail covers alerts
+  whose `for:` outlasts the job while pinned workloads come back
+  (KafkaClusterImbalanced fired 64 s after a us-omicron worker job, 19.10.2026).
+  A failed `apply`, `binary-update` and `undrain-only` post no tail.
+- The tail's `createdBy` is outside `^gha-os-update`, so it never trips the
+  contour-wide one-at-a-time guard: the next host starts while the tail is up.
+- No consumer change: new role default, no new hook, no new variable to set.
+
 ## 1.1.0
 
 - `os_update` role: new `os_update_mode: binary-update`

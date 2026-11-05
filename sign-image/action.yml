@@ -1,0 +1,53 @@
+name: 'Sign and attest ECR images (cosign keyless + CycloneDX SBOM)'
+description: >-
+  Keyless-signs pushed image digests with cosign 3 (GitHub OIDC -> Fulcio,
+  Rekor) and attests a CycloneDX SBOM of each (syft). Both land in the image's
+  own repository as OCI referrers (artifactType
+  application/vnd.dev.sigstore.bundle.v0.3+json; no tags, so immutable
+  repositories need no sha256-* exclusion). Run it after the push, in a job
+  with `id-token: write`, AWS credentials for the registry and a docker login
+  to it (push-to-aws-ecr-repository leaves all three). Best-effort: a Fulcio,
+  Rekor or syft failure is a workflow warning and `status` says what landed;
+  the release itself never fails here (issues-maestra#1648).
+inputs:
+  image:
+    description: 'Image without tag or digest, e.g. 515260921971.dkr.ecr.us-west-2.amazonaws.com/my-service. With `digest`.'
+    required: false
+    default: ''
+  digest:
+    description: 'Pushed manifest digest (sha256:...), e.g. the docker/build-push-action `digest` output. With `image`.'
+    required: false
+    default: ''
+  refs:
+    description: 'Instead of (or besides) image+digest: newline-separated `<image>@sha256:<digest>` refs, for jobs that push several images.'
+    required: false
+    default: ''
+  sbom:
+    description: '`true` (default): also attest a CycloneDX SBOM; `false`: signature only.'
+    required: false
+    default: 'true'
+outputs:
+  status:
+    description: '`sbom+signature`, `signature` or `none`: the weakest of what landed over all images.'
+    value: ${{ steps.sign.outputs.status || 'none' }}
+runs:
+  using: composite
+  steps:
+    # One step: cosign (pinned binary, sha256-checked) installs and signs while the SBOM
+    # is made in the background (sign-image.sh). Inputs reach the shell through env,
+    # never ${{ }} in the script body. syft runs from its OCI image (anchore/sbom-action's
+    # installer died with "You must be root" on ubuntu-latest, kube-web-view run 33622342378).
+    - name: cosign sign + attest
+      id: sign
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+        DIGEST: ${{ inputs.digest }}
+        REFS: ${{ inputs.refs }}
+        SBOM: ${{ inputs.sbom }}
+        SYFT_IMAGE: ghcr.io/anchore/syft:v1.51.1@sha256:95fe0835e5bebc6f8b1f8acef68d47d63d594ef4c0f25c097ff853b23cbac74c
+      run: |
+        SIGN_REFS="$REFS"
+        if [ -n "$IMAGE$DIGEST" ]; then SIGN_REFS="$SIGN_REFS"$'\n'"$IMAGE@$DIGEST"; fi
+        export SIGN_REFS
+        bash "$GITHUB_ACTION_PATH/sign-image.sh"

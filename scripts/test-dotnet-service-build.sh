@@ -12,7 +12,7 @@ prog=$(sed -n '/# >>> targets-and-bakes/,/# <<< targets-and-bakes/p' "$wf" | sed
 # run <IMAGE_TARGETS> <BAKES> [BASE_IMAGE] -> prints "matrix|images|bakes|multi|base_name|base_dockerfile|base_target", or exits 1
 run() {
   IMAGE_TARGETS="$1" BAKES="$2" BASE_IMAGE="${3:-}" DOCKERFILE=Dockerfile SERVICE="" BAKE_PATH=./kustomization \
-  KARGO_PROJECT="" KARGO_WAREHOUSE="" REPO_NAME=my-repo \
+  REPO_NAME=my-repo \
     bash -c "set -eo pipefail; $prog"$'\n''echo "$matrix|$images|$bakes|$multi|$base_name|$base_dockerfile|$base_target"'
 }
 eq() { [ "$1" = "$2" ] || { printf 'FAIL %s\n  got:  %s\n  want: %s\n' "$3" "$1" "$2"; exit 1; }; }
@@ -22,7 +22,7 @@ fails() { if run "$1" "$2" "${4:-}" >/dev/null 2>&1; then echo "FAIL $3: accepte
 IFS='|' read -r m i b multi _ < <(run "a_services=services,a_lrt=lrt" "")
 eq "$m" '[{"image":"a_services","dockerfile":"Dockerfile","target":"services","context":"."},{"image":"a_lrt","dockerfile":"Dockerfile","target":"lrt","context":"."}]' "pairs"
 eq "$i" "a_services,a_lrt" "images"
-eq "$b" '[{"service":"my-repo","bake-path":"./kustomization","images":"a_services,a_lrt","kargo-project":"kargo-my-repo","kargo-warehouse":"my-repo"}]' "single bake"
+eq "$b" '[{"service":"my-repo","bake-path":"./kustomization","images":"a_services,a_lrt"}]' "single bake"
 eq "$multi" false "single multi"
 
 # Other Dockerfiles and last-stage builds.
@@ -36,7 +36,7 @@ eq "$i" "postfix,init,smpp,x" "context images"
 
 # Several warehouses; images default to all; comments and blank lines ignored.
 IFS='|' read -r _ _ b multi _ < <(run "m_services=services,c_services=c-services,c_lrt=c-lrt" $'# mta\nmindbox-mta ./kustomization/mta m_services\n\ncampaigns ./kustomization/campaigns c_services,c_lrt\nall ./k')
-eq "$b" '[{"service":"mindbox-mta","bake-path":"./kustomization/mta","images":"m_services","kargo-project":"kargo-mindbox-mta","kargo-warehouse":"mindbox-mta"},{"service":"campaigns","bake-path":"./kustomization/campaigns","images":"c_services,c_lrt","kargo-project":"kargo-campaigns","kargo-warehouse":"campaigns"},{"service":"all","bake-path":"./k","images":"m_services,c_services,c_lrt","kargo-project":"kargo-all","kargo-warehouse":"all"}]' "bakes"
+eq "$b" '[{"service":"mindbox-mta","bake-path":"./kustomization/mta","images":"m_services"},{"service":"campaigns","bake-path":"./kustomization/campaigns","images":"c_services,c_lrt"},{"service":"all","bake-path":"./k","images":"m_services,c_services,c_lrt"}]' "bakes"
 eq "$multi" true "multi"
 
 # base-image: none by default; name may carry a tag; optional target.
@@ -108,3 +108,37 @@ eq "$(aws_run 3)" "4 3 0" "NoCredentials 3x, then credentials"
 eq "$(aws_run 9)" "5 4 0" "never: 5 tries, then the AWS steps report it"
 grep -q '::warning::no AWS credentials' "$work/out" || { cat "$work/out"; echo "FAIL aws-credentials: no warning"; exit 1; }
 echo "dotnet-service-build aws-credentials: OK"
+
+# ── nora-cred-helper: a fresh OIDC token per docker pull ───────────────────────
+cred=$(awk 'index($0,"# >>> nora-cred-helper"){n++} n==1{print} n==1&&index($0,"# <<< nora-cred-helper"){exit}' "$wf" | sed 's/^          //')
+[ -n "$cred" ] || { echo "nora-cred-helper block not found in $wf"; exit 1; }
+# Every job that pulls through nora carries the same copy (reusable workflows cannot share a file).
+for f in dotnet-service-build:2 service-build:2 mcf-build:2 nuget-package-publish:1 python-package-publish:1; do
+  w="$here/../.github/workflows/${f%%:*}.yml"
+  got=$(sed -n '/# >>> nora-cred-helper/,/# <<< nora-cred-helper/p' "$w" | sed 's/^          //')
+  want=$(for _ in $(seq "${f##*:}"); do printf '%s\n' "$cred"; done)
+  [ "$got" = "${want%$'\n'}" ] || { echo "FAIL nora-cred-helper: ${f%%:*}.yml copies differ or are missing"; exit 1; }
+done
+n="$work/nora"; mkdir -p "$n/bin" "$n/home/.docker" "$n/tmp"
+cat > "$n/bin/curl" <<'C'
+#!/usr/bin/env bash
+[[ "$*" == *"audience=packages.maestra.io"* ]] && echo '{"value":"tok-'"$RANDOM"'"}'
+C
+chmod 755 "$n/bin/curl"
+echo '{"auths":{"515260921971.dkr.ecr.us-west-2.amazonaws.com":{"auth":"x"}}}' > "$n/home/.docker/config.json"
+install() { # <dir> <audience>: run the block with a job's OIDC env, as the workflow step does
+  mkdir -p "$1/tmp"; : > "$1/path"
+  HOME="$n/home" RUNNER_TEMP="$1/tmp" GITHUB_PATH="$1/path" AUDIENCE="$2" PACKAGES_URL=https://packages.maestra.io \
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN=x ACTIONS_ID_TOKEN_REQUEST_URL="https://t/?v=1" bash -c "set -eo pipefail; $cred"
+}
+# get <dir>: the helper as tox runs it, with an environment that has PATH only
+get() { printf %s packages.maestra.io | env -i PATH="$n/bin:$PATH" "$(cat "$1/path")/docker-credential-nora" get; }
+install "$n/ok" packages.maestra.io
+eq "$(jq -c '{a: (.auths|keys), h: .credHelpers}' "$n/home/.docker/config.json")" \
+  '{"a":["515260921971.dkr.ecr.us-west-2.amazonaws.com"],"h":{"packages.maestra.io":"nora"}}' "nora config keeps auths"
+eq "$(jq -r '.ServerURL + " " + .Username + " " + (.Secret|test("^tok-")|tostring)' <<<"$(get "$n/ok")")" \
+  "packages.maestra.io token true" "nora helper get, scrubbed env"
+eq "$(stat -c %a "$n/ok/tmp/nora-bin/oidc.env" 2>/dev/null || stat -f %Lp "$n/ok/tmp/nora-bin/oidc.env")" 600 "oidc.env mode"
+install "$n/bad" wrong
+if get "$n/bad" >/dev/null 2>&1; then echo "FAIL nora helper: empty token accepted"; exit 1; fi
+echo "dotnet-service-build nora-cred-helper: OK"

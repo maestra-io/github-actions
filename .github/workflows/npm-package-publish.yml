@@ -6,8 +6,17 @@
 #
 #   jobs:
 #     package:
-#       uses: maestra-io/github-actions/.github/workflows/npm-package-publish.yml@<sha> # vX.Y.Z
+#       uses: maestra-io/github-actions/.github/workflows/npm-package-publish.yml@main
 #       permissions: { contents: write, id-token: write, issues: write, pull-requests: write }
+#       secrets: inherit
+#
+# Release token: semantic-release pushes its version commit (@semantic-release/git)
+# to the default branch, which a gitleaks ruleset closes to direct pushes. The push
+# goes as the GitHub App maestra-frontend-release (a bypass actor of that ruleset):
+# org variable FRONTEND_RELEASE_APP_ID + org secret FRONTEND_RELEASE_APP_PRIVATE_KEY,
+# which reaches this workflow only through the caller's `secrets: inherit`, and only
+# in repos selected on the secret. Without the secret the release falls back to
+# github.token and fails on a ruleset-protected branch.
 #
 # Version source: semantic-release, exactly as on GitLab: the job runs the
 # package's own `npm run release`, which reads the commits since the last vX.Y.Z
@@ -24,6 +33,8 @@
 #   checks            npm scripts run after install, space-separated, each only if
 #                     the package has it (default: the lib@3 merge-request jobs
 #                     graphql-codegen check-types check-scripts check-styles test).
+#                     check-scripts gets eslint --concurrency=auto when it is a single
+#                     eslint command on ESLint >= 9.34.
 #                     All of them run even after one fails; the failed ones are
 #                     listed in the job summary and fail the step at the end.
 #   test-script       Legacy single script (default test). Any other value runs
@@ -45,20 +56,12 @@
 # settings; only its registry/auth lines are replaced. The token is read from
 # NPM_TOKEN at run time and never stored.
 #
-# Lockfiles: `resolved` URLs of the legacy Artifactory registry are rewritten to
-# nora before `npm ci` (scripts/npm-lockfile-to-nora.sh, inlined below: a reusable
-# workflow cannot read files of its own repository). `replace-registry-host`
-# alone cannot do it: npm keeps the Artifactory path (/artifactory/api/npm/npm/...)
-# under nora's /npm/, and Artifactory's scoped tarball layout /-/@scope/name-ver.tgz
-# is not nora's /-/name-ver.tgz. The rewrite is reverted after install, so a release
-# commit (@semantic-release/git) carries the repository's own lockfile.
+# Lockfiles: every `resolved` URL must already point at nora (fix one with
+# scripts/npm-lockfile-to-nora.sh); the install fails up front otherwise. npm fetches a
+# lockfile URL as is, and `replace-registry-host` drops nora's /npm/ path.
 #
-# `replace-registry-host=npmjs` (npm's default, written explicitly) routes only
-# registry.npmjs.org URLs through nora. `always` also rewrote nora's OWN tarball
-# URLs: npm 10 builds `<registry without slash><pathname>`, so
-# https://packages.maestra.io/npm/x/-/x-1.tgz became /npm/npm/x/-/x-1.tgz, a 404
-# for every package resolved from a packument rather than the lockfile (an `npx`
-# tool, a semantic-release plugin installed on the fly).
+# The PR secret scan is not part of this workflow: each repo runs it in its own
+# workflow that calls this repo's reusable secret-scan workflow (see the README).
 
 name: npm-package-publish
 
@@ -101,6 +104,9 @@ on:
       pool:
         type: string
         default: small
+    secrets:
+      FRONTEND_RELEASE_APP_PRIVATE_KEY:
+        required: false
 
 concurrency:
   group: ${{ github.event_name == 'pull_request' && format('npm-{0}-{1}', github.repository, github.ref) || format('npm-{0}', github.repository) }}
@@ -118,16 +124,48 @@ jobs:
       issues: write        # @semantic-release/github success/fail comments
       pull-requests: write
       id-token: write      # nora OIDC token
+    env:
+      # A step `if` cannot read `secrets`.
+      HAS_RELEASE_APP_KEY: ${{ secrets.FRONTEND_RELEASE_APP_PRIVATE_KEY != '' }}
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0 # semantic-release walks the history to the last tag
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - id: node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ inputs.node-version }}
           node-version-file: ${{ inputs.node-version == '' && inputs.node-version-file || '' }}
+
+      - name: check lockfile registry
+        env:
+          URL: ${{ inputs.packages-url }}
+        run: |
+          # Same check as mcf-build.yml (selftest: scripts/test-npm-lockfile-to-nora.sh).
+          nora="${URL%/}/npm/"
+          bad=""
+          for f in package-lock.json npm-shrinkwrap.json; do
+            [ -f "$f" ] || continue
+            out=$(jq -r --arg f "$f" --arg n "$nora" '.. | objects | .resolved | strings | select(test("^[a-z+]+://") and (startswith($n) | not)) | "\($f): \(.)"' "$f")
+            [ -z "$out" ] || bad+="$out"$'\n'
+          done
+          if [ -n "$bad" ]; then
+            printf '%s' "$bad" | head -20
+            echo "::error::lockfile has resolved URLs outside $nora: run scripts/npm-lockfile-to-nora.sh from maestra-io/github-actions and commit the lockfile"
+            exit 1
+          fi
+
+      # node_modules from the last run with this lockfile: `npm ci` sends the GitHub OIDC
+      # token, which expires mid-install on big packages (E401 after ~6 min), and 49
+      # packages installing at once overload nora. Keyed on the lockfile, package.json
+      # and .npmrc: a hit skips `npm ci`, so a manifest out of sync with the lockfile must miss.
+      - id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: node_modules
+          key: npm-package-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ steps.node.outputs.node-version }}-${{ hashFiles('package-lock.json', 'npm-shrinkwrap.json', 'package.json', '.npmrc') }}
 
       - name: write .npmrc
         env:
@@ -144,7 +182,6 @@ jobs:
             echo "registry=${registry}"
             echo "${SCOPE}:registry=${registry}"
             echo "//${registry#https://}:_authToken=\${NPM_TOKEN}"
-            echo "replace-registry-host=npmjs"
           } > "$RUNNER_TEMP/npmrc"
           mv "$RUNNER_TEMP/npmrc" .npmrc
           echo "registry ${registry}, scope ${SCOPE}"
@@ -160,25 +197,37 @@ jobs:
             core.setSecret(t);
             core.setOutput('token', t);
 
+      # npm's tarball store from the latest run (this branch, else the default one): a new
+      # lockfile (a Renovate bump) fetches only the changed packages from nora, not all of
+      # them (a Renovate wave saturated nora's link, NoraHighLatency 21.10.2026).
+      - id: npm-cache
+        if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm/_cacache
+          key: npm-cacache-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json', 'npm-shrinkwrap.json') }}
+          restore-keys: npm-cacache-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-
+
       - name: install
+        if: ${{ steps.cache.outputs.cache-hit != 'true' }}
         env:
           NPM_TOKEN: ${{ steps.token.outputs.token }}
           URL: ${{ inputs.packages-url }}
         run: |
-          # Same program as scripts/npm-lockfile-to-nora.sh (keep in sync; selftest covers the script).
-          nora="${URL%/}/npm/"
-          nora_re=$(printf '%s' "$nora" | sed 's/[.[\*^$/]/\\&/g')
-          locks=()
-          for f in package-lock.json npm-shrinkwrap.json; do [ -f "$f" ] && locks+=("$f"); done
-          for f in "${locks[@]}"; do
-            sed -i.bak -E \
-              -e "s#(\"resolved\": *\")https://artifactory\.mindbox\.ru/artifactory/api/npm/[^/\"]+/#\1${nora}#g" \
-              -e "s#(\"resolved\": *\"${nora_re}@[^/\"]+/[^/\"]+/-/)@[^/\"]+/#\1#g" \
-              "$f"
-            rm -f "$f.bak"
-          done
           npm ci --prefer-offline --ignore-scripts
-          [ "${#locks[@]}" -eq 0 ] || git checkout -- "${locks[@]}"
+
+      - if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.npm-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm/_cacache
+          key: ${{ steps.npm-cache.outputs.cache-primary-key }}
+
+      # Before the checks: a red check must not cost the next run its install.
+      - if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: node_modules
+          key: ${{ steps.cache.outputs.cache-primary-key }}
 
       # lib@3 ran these as separate jobs, so one red check did not hide the others.
       # graphql-codegen goes first: on push it generates the code build:npm-package needs.
@@ -191,6 +240,22 @@ jobs:
         run: |
           summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
           printf '### npm checks\n\n| script | result |\n|---|---|\n' >> "$summary"
+          # >>> eslint-concurrency
+          # ESLint >= 9.34 lints files in worker threads with --concurrency (auto: half the CPUs,
+          # one thread for a small file set): a type-aware lint of a large MCF takes ~2.5x less.
+          # Printed only when script $1 of ./package.json is a single eslint command (args appended
+          # by `npm run -- …` land on eslint) that sets no concurrency itself, and the installed
+          # ESLint knows the flag; otherwise nothing, and the script runs as written.
+          eslint_concurrency() {
+            local cmd v major minor sep='[;&|]' word='(^|[[:space:]])eslint([[:space:]]|$)'
+            cmd=$(jq -r --arg s "$1" '.scripts[$s] // ""' package.json)
+            [[ "$cmd" =~ $word && ! "$cmd" =~ $sep && "$cmd" != *--concurrency* ]] || return 0
+            v=$(jq -r '.version // ""' node_modules/eslint/package.json 2>/dev/null) || return 0
+            IFS=. read -r major minor _ <<< "$v"
+            [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] || return 0
+            if (( major > 9 || (major == 9 && minor >= 34) )); then echo --concurrency=auto; fi
+          }
+          # <<< eslint-concurrency
           failed=""
           for s in $CHECKS; do
             if ! jq -e --arg s "$s" '.scripts[$s]' package.json > /dev/null; then
@@ -200,6 +265,7 @@ jobs:
             set --
             case "$s" in
               check-styles) set -- --allow-empty-input ;;
+              check-scripts) c=$(eslint_concurrency "$s"); [ -z "$c" ] || set -- "$c" ;;
               test) [ "$COVERAGE" != true ] || set -- --coverage --coverage.reportsDirectory=coverage \
                       --coverage.reporter=json-summary --coverage.reporter=text-summary --coverage.reporter=lcov ;;
             esac
@@ -269,11 +335,26 @@ jobs:
             core.setSecret(t);
             core.setOutput('token', t);
 
+      # The version commit must pass the default branch's ruleset (see "Release token").
+      - name: mint release app token
+        id: app
+        if: ${{ inputs.release && github.event_name != 'pull_request' && env.HAS_RELEASE_APP_KEY == 'true' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.FRONTEND_RELEASE_APP_ID }}
+          private-key: ${{ secrets.FRONTEND_RELEASE_APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          # Not the installation's whole set: what the job's github.token has for
+          # semantic-release (push + tag; @semantic-release/github release comments).
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+
       - name: release (semantic-release)
         if: ${{ inputs.release && github.event_name != 'pull_request' }}
         env:
           NPM_TOKEN: ${{ steps.release-token.outputs.token }}
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ steps.app.outputs.token || github.token }}
           HUSKY: "0"
           LEFTHOOK: "0"
           BUILD_SCRIPT: ${{ inputs.build-script }}
