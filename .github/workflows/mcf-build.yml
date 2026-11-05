@@ -1170,6 +1170,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ inputs.node-version }}
+          package-manager-cache: false
       - if: ${{ needs.version.outputs.tests-layout == 'workspace' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -1192,10 +1193,18 @@ jobs:
             # The image gets tests/ only: what npm hoisted to the root goes to tests/node_modules.
             shopt -s nullglob
             mkdir -p tests/node_modules
+            self=$(readlink -f tests)
             for d in node_modules/.bin/* node_modules/* node_modules/@*/*; do
               case "$d" in node_modules/@*/* | node_modules/.bin/*) ;; node_modules/@*) continue ;; esac
               t="tests/$d"
-              if [ ! -e "$t" ] && [ ! -L "$t" ]; then mkdir -p "${t%/*}"; cp -a "$d" "$t"; fi
+              [ ! -e "$t" ] && [ ! -L "$t" ] || continue
+              src=$d
+              # A local package's link is relative to the root node_modules: copy what it points to.
+              if [ -L "$d" ] && [[ "$d" != node_modules/.bin/* ]]; then
+                src=$(readlink -f "$d") || continue
+                [ -e "$src" ] && [ "$src" != "$self" ] || continue
+              fi
+              mkdir -p "${t%/*}"; cp -a "$src" "$t"
             done
           fi
           [ -f tests/node_modules/@playwright/test/package.json ] || { echo "::error::no @playwright/test in tests/node_modules"; exit 1; }

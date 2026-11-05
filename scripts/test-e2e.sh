@@ -6,7 +6,8 @@
 # unless e2e: false, on a stand with a route, advisory unless e2e-required, never holds the image), the
 # Vault credentials (step outputs only, never printed), the e2e step summary from
 # Playwright JUnit and the release-time e2e-image (its Dockerfile from tests/node_modules, a
-# root workspace's hoisted packages copied in; release waits for it only with tests/e2e/).
+# root workspace's hoisted packages copied in, linked local packages by content; release waits
+# for it only with tests/e2e/).
 # Runs the inline blocks of the reusable workflow itself.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -151,6 +152,7 @@ eq "$(grep -B1 'uses: maestra-io/github-actions/sign-image@' <<<"$ei")" "$(grep 
 eq "$(grep 'uses: maestra-io/github-actions/push-to-aws-ecr-repository@' <<<"$ei")" "$(grep 'uses: maestra-io/github-actions/push-to-aws-ecr-repository@' <<<"$deps")" "e2e-image ECR action pin as with-deps"
 hasnt "$ei" "packages.maestra.io" "e2e-image pulls MCR directly"
 hasnt "$ei" "credHelpers" "e2e-image needs no nora credentials"
+has "$ei" "          package-manager-cache: false" "e2e-image publishes: no package manager cache from setup-node"
 echo "e2e-image wiring: ok"
 
 ctx_prog=$(block e2e-image-context)
@@ -185,13 +187,23 @@ ln -s ../@playwright/test/cli.js "$workspace/node_modules/.bin/playwright"
 ln -s ../eslint/bin/eslint.js "$workspace/node_modules/.bin/eslint"
 ln -s ../eslint/bin/eslint.js "$workspace/tests/node_modules/.bin/eslint"
 ln -s ../tests "$workspace/node_modules/frontend-x-tests"
+mkdir -p "$workspace/packages/helpers"; pkg "$workspace/packages/helpers/node_modules/x" 1.0.0
+printf '{"name":"@x/helpers","version":"2.0.0"}\n' > "$workspace/packages/helpers/package.json"
+mkdir -p "$workspace/node_modules/@x"; ln -s ../../packages/helpers "$workspace/node_modules/@x/helpers"
+ln -s ../missing "$workspace/node_modules/dangling"
 eq "$(ctx "$workspace" workspace)" "$want" "Dockerfile.e2e, tests/ as a root workspace"
 eq "$(jq -r .version "$workspace/tests/node_modules/@playwright/test/package.json")" "1.56.1" "hoisted @playwright/test copied into tests/node_modules"
 eq "$(jq -r .version "$workspace/tests/node_modules/dotenv/package.json")" "17.0.0" "hoisted package copied"
 eq "$(jq -r .version "$workspace/tests/node_modules/eslint/package.json")" "8.57.0" "tests/node_modules keeps its own version over the root's"
 eq "$(ls "$workspace/tests/node_modules/eslint")" "package.json" "the root's eslint is not copied into the tests/ one"
 eq "$(readlink "$workspace/tests/node_modules/.bin/playwright")" "../@playwright/test/cli.js" "root .bin link copied as a link"
-[ -L "$workspace/tests/node_modules/frontend-x-tests" ] || { echo "FAIL workspace link not copied as a link"; exit 1; }
+[ ! -e "$workspace/tests/node_modules/frontend-x-tests" ] && [ ! -L "$workspace/tests/node_modules/frontend-x-tests" ] \
+  || { echo "FAIL the link to the tests workspace itself is copied"; exit 1; }
+[ ! -L "$workspace/tests/node_modules/@x/helpers" ] || { echo "FAIL a local package is copied as its link"; exit 1; }
+eq "$(jq -r .version "$workspace/tests/node_modules/@x/helpers/package.json")" "2.0.0" "a linked local package copied with its contents"
+eq "$(jq -r .version "$workspace/tests/node_modules/@x/helpers/node_modules/x/package.json")" "1.0.0" "a linked local package keeps its own node_modules"
+[ ! -e "$workspace/tests/node_modules/dangling" ] && [ ! -L "$workspace/tests/node_modules/dangling" ] \
+  || { echo "FAIL a dangling link is copied"; exit 1; }
 
 nopw=$(repo no-playwright package.json tests/package.json tests/package-lock.json "$e2e_cfg")
 pkg "$nopw/node_modules/@playwright/test" 1.56.1

@@ -712,7 +712,8 @@ admin of ci-gate.
 - **Contents.** The build context is `tests/` with `tests/node_modules` from the `tests-install`
   cache; for a `tests` workspace of the root (no `tests/package-lock.json`) the root cache is
   restored and every package npm hoisted to the root `node_modules` (and its `.bin` links) is
-  copied into `tests/node_modules`, those already there kept. Base
+  copied into `tests/node_modules`, those already there kept (a linked local package by its
+  contents; the workspace's link to `tests/` itself is skipped). Base
   `mcr.microsoft.com/playwright:v<X>-noble`, `<X>` the installed `@playwright/test` (pulled from
   MCR directly, no nora), `WORKDIR /tests`, user `pwuser`, `CMD ["npm","run","e2e:ci"]`; the
   `node_modules` and the sources are separate layers in the gha cache (scope `mcf-e2e-<image>`).
