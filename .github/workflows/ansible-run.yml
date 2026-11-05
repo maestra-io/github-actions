@@ -67,7 +67,7 @@ on:
         type: boolean
         default: false
       checkout_ref:
-        description: "Git ref to check out and run instead of the caller's commit (empty = the caller's commit). Lets a caller run a check-mode plan of an older commit, e.g. a drift check of github.event.before before an apply."
+        description: "Git ref to check out and run instead of the caller's commit (empty = the caller's commit). Lets a caller run a check-mode plan of an older commit, e.g. a drift check of github.event.before before an apply. That commit must carry uv_project/uv.lock: a commit older than its repo's uv migration fails the install step."
         required: false
         type: string
         default: ""

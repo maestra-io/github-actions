@@ -49,7 +49,7 @@ A repo without a `uv.lock` fails the install step: there is no PyPI path
 | `tags` | string | no | `""` | ansible `--tags` |
 | `verbosity` | string | no | `normal` | `normal` / `-v` / `-vv` / `-vvv` |
 | `check_mode` | boolean | no | `false` | `--check --diff` |
-| `checkout_ref` | string | no | `""` | ref to check out instead of the caller's commit (e.g. a drift check of `github.event.before`) |
+| `checkout_ref` | string | no | `""` | ref to check out instead of the caller's commit (e.g. a drift check of `github.event.before`); that commit must carry `<uv_project>/uv.lock`, a commit older than the repo's uv migration fails the install |
 | `use_mitogen` | boolean | no | `true` | Linux Mitogen linear strategy + runtime plugin-path step |
 | `windows_mode` | boolean | no | `false` | forces `linear` + `ANSIBLE_HOST_KEY_CHECKING=False` for PowerShell-over-SSH |
 | `vault_mode` | string | no | `none` | `none` / `public` / `tunnel` |
