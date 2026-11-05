@@ -31,6 +31,7 @@ on:
       - "sign-image/**"
       - "tbot-join/**"
       - "terraform-nora/**"
+      - "uv-nora/**"
       - "nora-image-prewarm/**"
       - ".github/workflows/pr-checks.yml"
       - "pr-checks/**"
@@ -84,6 +85,9 @@ jobs:
 
       - name: cargo-nora source replacement, token-from-stdout helper, token output (stub curl)
         run: bash scripts/test-cargo-nora.sh
+
+      - name: uv-nora keyring helper, UV_* env, token output (stub curl, local 401 index)
+        run: bash scripts/test-uv-nora.sh
 
       - name: nora-image-prewarm image mapping, flate diff, OIDC round trip (stub)
         run: python3 nora-image-prewarm/prewarm.py --self-test

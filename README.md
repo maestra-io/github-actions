@@ -481,6 +481,55 @@ RUN cargo build --release --offline
 Go redacts the userinfo (`token:xxxxx`) in its errors. Tests: `scripts/test-go-nora.sh`,
 `scripts/test-cargo-nora.sh` (selftest).
 
+## Python packages through nora (`uv-nora`)
+
+Every Python repo uses uv with a committed `uv.lock` and nora as its only index
+(issues-maestra#1649): a version younger than the hold is not served, and nothing falls back
+to pypi.org. The index is declared in `pyproject.toml`:
+
+```toml
+[[tool.uv.index]]
+name = "maestra"
+url = "https://packages.maestra.io/simple/"
+default = true
+```
+
+```yaml
+permissions:
+  id-token: write
+steps:
+  - uses: astral-sh/setup-uv@<sha>
+    with: { version: "<pinned>" }
+  - uses: maestra-io/github-actions/uv-nora@<40-hex sha> # vX.Y.Z
+    id: nora
+  - run: uv sync --locked && uv run pytest
+  # An image build: right after the action (its token is minted there).
+  - uses: docker/build-push-action@<sha>
+    with:
+      secrets: PRIVATE_PACKAGES_TOKEN=${{ steps.nora.outputs.token }}
+```
+
+`uv-nora` exports `UV_INDEX_MAESTRA_USERNAME=token` and `UV_KEYRING_PROVIDER=subprocess` and puts
+a `keyring` helper on PATH that mints a fresh GitHub OIDC token whenever uv asks (after nora's
+401), for nora's URLs only. In the Dockerfile the token is the `PRIVATE_PACKAGES_TOKEN` secret
+(`service-build.yml` passes it too):
+
+```dockerfile
+# Into the image's own Python (as pip did; --inexact keeps what the base image ships).
+ENV UV_NO_CACHE=1 UV_PYTHON_DOWNLOADS=never UV_COMPILE_BYTECODE=1 UV_INDEX_MAESTRA_USERNAME=token \
+    UV_PROJECT_ENVIRONMENT=/usr/local
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=bind,from=ghcr.io/astral-sh/uv:<version>@sha256:<digest>,source=/uv,target=/usr/local/bin/uv \
+    --mount=type=secret,id=PRIVATE_PACKAGES_TOKEN,required=true \
+    UV_INDEX_MAESTRA_PASSWORD="$(cat /run/secrets/PRIVATE_PACKAGES_TOKEN)" \
+    uv sync --locked --inexact --no-dev --no-install-project
+```
+
+uv is bind-mounted from its image, so nothing of it stays in a layer and no pip is involved (pip
+before 23.1 cannot read nora's PEP 691 `dist-info-metadata` objects).
+
+Test: `scripts/test-uv-nora.sh` (selftest).
+
 ## Ansible Galaxy through nora
 
 `ansible-pr.yml` and `ansible-run.yml` install Galaxy collections from
