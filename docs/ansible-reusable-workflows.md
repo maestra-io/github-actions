@@ -25,8 +25,8 @@ only the ansible bodies are deduplicated. This keeps the cross-tool `needs` grap
 **Path convention**: the Execute step runs with `working-directory: <working_directory>`
 (default `ansible/`), so **`playbook` and `inventory` are `working_directory`-relative** —
 `playbooks/nat-gateway.yml`, `inventory/teleport_inventory.py`, `inventory/hosts.yml`.
-Never prefix them with `ansible/`. Only `uv_project` / `requirements_pip` / `requirements_galaxy` /
-`requirements_lint` are workspace-root-relative (they're consumed before the cd).
+Never prefix them with `ansible/`. Only `uv_project` / `requirements_galaxy` are
+workspace-root-relative (they're consumed before the cd).
 
 **Python packages** come from the caller's `pyproject.toml` + `uv.lock` in `uv_project`
 (default `ansible`, next to `ansible.cfg`, so an `ansible/**` path filter sees a toolchain bump), through nora only (issues-maestra#1649): the Ansible toolchain is
@@ -35,8 +35,8 @@ the only index (`[[tool.uv.index]] name = "maestra"`, `url = "https://packages.m
 `default = true`, `[tool.uv] package = false`). The workflows run `uv sync --locked`
 (credentials from `uv-nora`) and refuse a `uv.lock` that names any other host. The lint job
 installs the runtime set plus `lint`, so ansible-lint judges against the repo's own ansible pin.
-A repo without a `uv.lock` still gets `requirements_pip` / `requirements_lint` from PyPI
-(legacy; removed once every caller has migrated).
+A repo without a `uv.lock` fails the install step: there is no PyPI path
+(`requirements_pip` / `requirements_lint` are deprecated and ignored).
 
 | input | type | required | default | purpose |
 | --- | --- | --- | --- | --- |
@@ -49,7 +49,7 @@ A repo without a `uv.lock` still gets `requirements_pip` / `requirements_lint` f
 | `tags` | string | no | `""` | ansible `--tags` |
 | `verbosity` | string | no | `normal` | `normal` / `-v` / `-vv` / `-vvv` |
 | `check_mode` | boolean | no | `false` | `--check --diff` |
-| `checkout_ref` | string | no | `""` | ref to check out instead of the caller's commit (e.g. a drift check of `github.event.before`) |
+| `checkout_ref` | string | no | `""` | ref to check out instead of the caller's commit (e.g. a drift check of `github.event.before`); that commit must carry `<uv_project>/uv.lock`, a commit older than the repo's uv migration fails the install |
 | `use_mitogen` | boolean | no | `true` | Linux Mitogen linear strategy + runtime plugin-path step |
 | `windows_mode` | boolean | no | `false` | forces `linear` + `ANSIBLE_HOST_KEY_CHECKING=False` for PowerShell-over-SSH |
 | `vault_mode` | string | no | `none` | `none` / `public` / `tunnel` |
@@ -68,7 +68,6 @@ A repo without a `uv.lock` still gets `requirements_pip` / `requirements_lint` f
 | `teleport_fqdn` | string | no | `teleport.maestra.io:443` | proxy (note: explicit :443) |
 | `python_version` | string | no | `3.14` | uv-installed python |
 | `uv_project` | string | no | `ansible` | dir of `pyproject.toml` + `uv.lock` (nora only); `uv sync --locked` into setup-python's interpreter |
-| `requirements_pip` | string | no | `ansible/requirements-pip.txt` | legacy run-time pip manifest (only without a `uv.lock` in `uv_project`) |
 | `requirements_galaxy` | string | no | `ansible/requirements.yml` | galaxy manifest |
 | `no_hosts_fail_on_apply` | boolean | no | `false` | mssql/ad: empty group → fail on apply, skip on check |
 

@@ -2,8 +2,8 @@
 # shellcheck disable=SC2016,SC2015  # ${{ }} is literal workflow text; ok/bad never fail
 # The "python-deps" step block (ansible-pr lint, ansible-run, ansible-os-update
 # enumerate, collection-lint): every copy identical, run against a stub `uv`.
-# A uv.lock in uv_project -> `uv sync --locked` (nora only); none -> the legacy
-# requirements file. Plus the wiring around it. Offline: talks to nothing.
+# A uv.lock in uv_project -> `uv sync --locked` (nora only); none -> the step
+# fails (no PyPI path). Plus the wiring around it. Offline: talks to nothing.
 set -uo pipefail
 
 WFS=(.github/workflows/ansible-pr.yml .github/workflows/ansible-run.yml
@@ -28,7 +28,7 @@ echo "uv $* | env=${UV_PROJECT_ENVIRONMENT:-}" >> "$UV_LOG"
 [ -z "${UV_FAIL:-}" ]
 S
 chmod +x "$T/bin/uv"
-mkdir -p "$T/p" "$T/legacy"
+mkdir -p "$T/p"
 cat > "$T/nora.lock" <<'L'
 version = 1
 [[package]]
@@ -51,7 +51,7 @@ run() {  # run <desc> <lock: nora|pypi|none> <want uv log line or FAIL> [ENV=...
   local desc="$1" lock="$2" want="$3"; shift 3
   rm -f "$T/p/uv.lock" "$T/uv.log"; [ "$lock" = none ] || cp "$T/$lock.lock" "$T/p/uv.lock"
   out=$(cd "$T" && env -i PATH="$T/bin:/usr/bin:/bin" UV_LOG="$T/uv.log" DEPS_PROJECT=p DEPS_GROUP= \
-        DEPS_TARGET=system LEGACY_REQUIREMENTS=legacy/req.txt LEGACY_EXTRA= pythonLocation=/opt/py \
+        DEPS_TARGET=system pythonLocation=/opt/py \
         "$@" bash "$T/step.sh" 2>&1); rc=$?
   got=$(cat "$T/uv.log" 2>/dev/null)
   if [ "$want" = FAIL ]; then
@@ -70,10 +70,8 @@ run "lock with a git (ssh) source: refused" git FAIL
 run "lock with another registry: refused" index FAIL
 run "lock with a path source: refused" path FAIL
 run "system target without setup-python: refused" nora FAIL pythonLocation=
-run "no lock: legacy requirements into the system Python" none \
-  "uv pip install --system -r legacy/req.txt | env="
-run "no lock: legacy lint set with ansible into the venv" none \
-  "uv pip install ansible -r legacy/req.txt | env=" DEPS_TARGET=active LEGACY_EXTRA=ansible
+run "no lock: refused, nothing from PyPI" none FAIL
+run "no lock, lint venv: refused" none FAIL DEPS_TARGET=active DEPS_GROUP=lint
 # A failing uv sync must fail the step (set -e), not fall through.
 rm -f "$T/uv.log"; cp "$T/nora.lock" "$T/p/uv.lock"
 if (cd "$T" && env -i PATH="$T/bin:/usr/bin:/bin" UV_LOG="$T/uv.log" UV_FAIL=1 DEPS_PROJECT=p DEPS_TARGET=system \

@@ -10,7 +10,7 @@
 #
 # Path convention: `playbook` and `inventory` are relative to `working_directory`
 # (the Execute step runs with working-directory = inputs.working_directory).
-# `requirements_pip` / `requirements_galaxy` are workspace-root-relative (installed
+# `uv_project` / `requirements_galaxy` are workspace-root-relative (installed
 # before we cd into working_directory).
 name: Ansible Run (reusable)
 
@@ -67,7 +67,7 @@ on:
         type: boolean
         default: false
       checkout_ref:
-        description: "Git ref to check out and run instead of the caller's commit (empty = the caller's commit). Lets a caller run a check-mode plan of an older commit, e.g. a drift check of github.event.before before an apply."
+        description: "Git ref to check out and run instead of the caller's commit (empty = the caller's commit). Lets a caller run a check-mode plan of an older commit, e.g. a drift check of github.event.before before an apply. That commit must carry uv_project/uv.lock: a commit older than its repo's uv migration fails the install step."
         required: false
         type: string
         default: ""
@@ -257,16 +257,14 @@ on:
           (next to ansible.cfg, so ansible/** path filters see a toolchain bump):
           the Ansible toolchain as `[project].dependencies`, nora as the only index
           (`[[tool.uv.index]] name = "maestra"`, default = true; issues-maestra#1649).
-          While it has no uv.lock, requirements_pip is installed from PyPI as before
-          (legacy, removed once every caller has migrated).
         required: false
         type: string
         default: "ansible"
       requirements_pip:
-        description: "Legacy (no uv.lock in uv_project): the runtime requirements file."
+        description: "Deprecated and ignored (issues-maestra#1649): Python packages come from uv_project's uv.lock only. Kept so a caller that still passes it does not break."
         required: false
         type: string
-        default: "ansible/requirements-pip.txt"
+        default: ""
       requirements_galaxy:
         required: false
         type: string
@@ -387,8 +385,6 @@ jobs:
           DEPS_PROJECT: ${{ inputs.uv_project }}
           DEPS_GROUP: ""
           DEPS_TARGET: system
-          LEGACY_REQUIREMENTS: ${{ inputs.requirements_pip }}
-          LEGACY_EXTRA: ""
         run: |
           # >>> python-deps (identical in every ansible workflow; ansible/tests/test-python-deps.sh)
           set -euo pipefail
@@ -418,10 +414,8 @@ jobs:
             fi
             uv sync "${args[@]}"
           else
-            echo "::warning::no ${DEPS_PROJECT}/uv.lock: installing ${LEGACY_REQUIREMENTS} from PyPI (legacy path, removed once every caller has a uv.lock; issues-maestra#1649)"
-            legacy=(-r "$LEGACY_REQUIREMENTS")
-            [ -z "${LEGACY_EXTRA:-}" ] || legacy=("$LEGACY_EXTRA" "${legacy[@]}")
-            if [ "$DEPS_TARGET" = active ]; then uv pip install "${legacy[@]}"; else uv pip install --system "${legacy[@]}"; fi
+            echo "::error::no ${DEPS_PROJECT}/uv.lock: the Ansible toolchain comes from pyproject.toml + uv.lock through nora (input uv_project; issues-maestra#1649)"
+            exit 1
           fi
           # <<< python-deps
 

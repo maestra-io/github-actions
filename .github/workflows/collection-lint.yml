@@ -85,8 +85,6 @@ jobs:
           DEPS_PROJECT: ansible
           DEPS_GROUP: lint
           DEPS_TARGET: system
-          LEGACY_REQUIREMENTS: ""
-          LEGACY_EXTRA: ""
         run: |
           # >>> python-deps (identical in every ansible workflow; ansible/tests/test-python-deps.sh)
           set -euo pipefail
@@ -116,10 +114,8 @@ jobs:
             fi
             uv sync "${args[@]}"
           else
-            echo "::warning::no ${DEPS_PROJECT}/uv.lock: installing ${LEGACY_REQUIREMENTS} from PyPI (legacy path, removed once every caller has a uv.lock; issues-maestra#1649)"
-            legacy=(-r "$LEGACY_REQUIREMENTS")
-            [ -z "${LEGACY_EXTRA:-}" ] || legacy=("$LEGACY_EXTRA" "${legacy[@]}")
-            if [ "$DEPS_TARGET" = active ]; then uv pip install "${legacy[@]}"; else uv pip install --system "${legacy[@]}"; fi
+            echo "::error::no ${DEPS_PROJECT}/uv.lock: the Ansible toolchain comes from pyproject.toml + uv.lock through nora (input uv_project; issues-maestra#1649)"
+            exit 1
           fi
           # <<< python-deps
 
