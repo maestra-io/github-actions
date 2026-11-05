@@ -4,8 +4,11 @@
 # tests/package.json, not on excluded branches), the wiring of e2e-stand (the hot-test
 # conditions plus tests/e2e/, no input, stand-prefix e2e, the static artifact) and e2e (only
 # unless e2e: false, on a stand with a route, advisory unless e2e-required, never holds the image), the
-# Vault credentials (step outputs only, never printed) and the e2e step summary from
-# Playwright JUnit. Runs the inline blocks of the reusable workflow itself.
+# Vault credentials (step outputs only, never printed), the e2e step summary from
+# Playwright JUnit and the release-time e2e-image (its Dockerfile from tests/node_modules, a
+# root workspace's hoisted packages copied in, linked local packages by content; release waits
+# for it only with tests/e2e/).
+# Runs the inline blocks of the reusable workflow itself.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 wf="$here/../.github/workflows/mcf-build.yml"
@@ -92,7 +95,7 @@ eq "$(job e2e needs)" "[version, install, tests-install, e2e-stand]" "e2e needs"
 }
 eq "$(job e2e timeout-minutes)" "60" "e2e timeout"
 for j in image release sourcemaps bake; do
-  case "$(job "$j" needs)" in *e2e*) echo "FAIL $j waits for e2e: it is advisory"; exit 1;; esac
+  if grep -qE '(\[|, )e2e(,|\])' <<<"$(job "$j" needs)"; then echo "FAIL $j waits for e2e: it is advisory"; exit 1; fi
 done
 echo "e2e gate: ok"
 
@@ -120,6 +123,95 @@ has "$e2e" "          ADMINSITE_PASSWORD: \${{ steps.vault.outputs.ADMINSITE_PAS
 has "$e2e" "          ADMINSITE_USERNAME: \${{ steps.vault.outputs.ADMINSITE_USERNAME }}" "username from the Vault step output"
 if grep -nE '(echo|printf|tee|cat|::add-mask::|set -x).*ADMINSITE_' "$wf"; then echo "FAIL a step prints the credentials"; exit 1; fi
 echo "e2e credentials: ok"
+
+eq "$(job e2e-image needs)" "[version, install, tests-install, image]" "e2e-image needs"
+# shellcheck disable=SC2016 # the expressions are matched literally
+{
+  e2e_image_if=$(job e2e-image if)
+  for c in '!cancelled()' "needs.version.outputs.publish == 'true'" "needs.version.outputs.e2e == 'true'" \
+    "needs.install.result == 'success'" "(needs.tests-install.result == 'success' || needs.tests-install.result == 'skipped')" \
+    "needs.image.result == 'success'"; do
+    has "$e2e_image_if" "$c" "e2e-image if"
+  done
+  hasnt "$e2e_image_if" "inputs.e2e" "e2e-image does not depend on the PR e2e input"
+  has "$(job release needs)" "e2e-image" "release waits for e2e-image"
+  has "$(job release if)" "(needs.version.outputs.e2e != 'true' || needs.e2e-image.result == 'success')" "a skipped e2e-image holds nothing"
+}
+ei=$(jobtext e2e-image); deps=$(jobtext deps-image)
+for l in "          repositories: \${{ needs.version.outputs.image }}-e2e" "          context: tests" \
+  "          file: \${{ runner.temp }}/Dockerfile.e2e" \
+  "          tags: \${{ steps.ecr.outputs.registry }}/\${{ needs.version.outputs.image }}-e2e:\${{ needs.version.outputs.release }}" \
+  "          cache-from: type=gha,scope=mcf-e2e-\${{ needs.version.outputs.image }}" \
+  "          cache-to: type=gha,mode=max,ignore-error=true,scope=mcf-e2e-\${{ needs.version.outputs.image }}" \
+  "          image: \${{ steps.ecr.outputs.registry }}/\${{ needs.version.outputs.image }}-e2e" \
+  "          path: *root-node-modules" "          path: tests/node_modules"; do
+  has "$ei" "$l" "e2e-image"
+done
+eq "$(grep -A3 '^          labels: |$' <<<"$ei")" "$(grep -A3 '^          labels: |$' <<<"$deps")" "e2e-image labels as with-deps"
+eq "$(grep -B1 'uses: maestra-io/github-actions/sign-image@' <<<"$ei")" "$(grep -B1 'uses: maestra-io/github-actions/sign-image@' <<<"$deps")" "e2e-image signs best-effort with the with-deps pin"
+eq "$(grep 'uses: maestra-io/github-actions/push-to-aws-ecr-repository@' <<<"$ei")" "$(grep 'uses: maestra-io/github-actions/push-to-aws-ecr-repository@' <<<"$deps")" "e2e-image ECR action pin as with-deps"
+hasnt "$ei" "packages.maestra.io" "e2e-image pulls MCR directly"
+hasnt "$ei" "credHelpers" "e2e-image needs no nora credentials"
+has "$ei" "          package-manager-cache: false" "e2e-image publishes: no package manager cache from setup-node"
+echo "e2e-image wiring: ok"
+
+ctx_prog=$(block e2e-image-context)
+# ctx <repo dir> <layout>; prints the Dockerfile, fails the test when the block fails
+ctx() {
+  (cd "$1" && LAYOUT="$2" RUNNER_TEMP="$1/.tmp" bash -c "set -eo pipefail; mkdir -p \"\$RUNNER_TEMP\"; $ctx_prog") > "$root/ctx.log" 2>&1 \
+    || { echo "FAIL e2e-image-context exited non-zero in $1"; cat "$root/ctx.log"; exit 1; }
+  cat "$1/.tmp/Dockerfile.e2e"
+}
+ctx_fails() { # ctx_fails <repo dir> <layout> <error>
+  if (cd "$1" && LAYOUT="$2" RUNNER_TEMP="$1/.tmp" bash -c "set -eo pipefail; mkdir -p \"\$RUNNER_TEMP\"; $ctx_prog") > "$root/ctx.log" 2>&1; then
+    echo "FAIL e2e-image-context passed in $1"; exit 1
+  fi
+  grep -qF -- "$3" "$root/ctx.log" || { echo "FAIL e2e-image-context in $1: no $3"; cat "$root/ctx.log"; exit 1; }
+}
+pkg() { mkdir -p "$1"; printf '{"name":"%s","version":"%s"}\n' "${1##*/node_modules/}" "$2" > "$1/package.json"; }
+want=$(printf '%s\n' 'FROM mcr.microsoft.com/playwright:v1.56.1-noble' 'WORKDIR /tests' 'RUN chown pwuser:pwuser /tests' \
+  'COPY --chown=pwuser:pwuser node_modules node_modules' 'COPY --chown=pwuser:pwuser --exclude=node_modules . .' \
+  'USER pwuser' 'CMD ["npm","run","e2e:ci"]')
+
+pkg "$lockfile/tests/node_modules/@playwright/test" 1.56.1
+pkg "$lockfile/node_modules/@playwright/test" 1.40.0
+eq "$(ctx "$lockfile" lockfile)" "$want" "Dockerfile.e2e, tests/ with its own lockfile"
+[ ! -e "$lockfile/tests/node_modules/@playwright/test/node_modules" ] || { echo "FAIL lockfile layout copied the root node_modules"; exit 1; }
+
+pkg "$workspace/node_modules/@playwright/test" 1.56.1
+pkg "$workspace/node_modules/dotenv" 17.0.0
+pkg "$workspace/node_modules/eslint" 9.0.0
+pkg "$workspace/tests/node_modules/eslint" 8.57.0
+mkdir -p "$workspace/node_modules/.bin" "$workspace/tests/node_modules/.bin"
+ln -s ../@playwright/test/cli.js "$workspace/node_modules/.bin/playwright"
+ln -s ../eslint/bin/eslint.js "$workspace/node_modules/.bin/eslint"
+ln -s ../eslint/bin/eslint.js "$workspace/tests/node_modules/.bin/eslint"
+ln -s ../tests "$workspace/node_modules/frontend-x-tests"
+mkdir -p "$workspace/packages/helpers"; pkg "$workspace/packages/helpers/node_modules/x" 1.0.0
+printf '{"name":"@x/helpers","version":"2.0.0"}\n' > "$workspace/packages/helpers/package.json"
+mkdir -p "$workspace/node_modules/@x"; ln -s ../../packages/helpers "$workspace/node_modules/@x/helpers"
+ln -s ../missing "$workspace/node_modules/dangling"
+eq "$(ctx "$workspace" workspace)" "$want" "Dockerfile.e2e, tests/ as a root workspace"
+eq "$(jq -r .version "$workspace/tests/node_modules/@playwright/test/package.json")" "1.56.1" "hoisted @playwright/test copied into tests/node_modules"
+eq "$(jq -r .version "$workspace/tests/node_modules/dotenv/package.json")" "17.0.0" "hoisted package copied"
+eq "$(jq -r .version "$workspace/tests/node_modules/eslint/package.json")" "8.57.0" "tests/node_modules keeps its own version over the root's"
+eq "$(ls "$workspace/tests/node_modules/eslint")" "package.json" "the root's eslint is not copied into the tests/ one"
+eq "$(readlink "$workspace/tests/node_modules/.bin/playwright")" "../@playwright/test/cli.js" "root .bin link copied as a link"
+[ ! -e "$workspace/tests/node_modules/frontend-x-tests" ] && [ ! -L "$workspace/tests/node_modules/frontend-x-tests" ] \
+  || { echo "FAIL the link to the tests workspace itself is copied"; exit 1; }
+[ ! -L "$workspace/tests/node_modules/@x/helpers" ] || { echo "FAIL a local package is copied as its link"; exit 1; }
+eq "$(jq -r .version "$workspace/tests/node_modules/@x/helpers/package.json")" "2.0.0" "a linked local package copied with its contents"
+eq "$(jq -r .version "$workspace/tests/node_modules/@x/helpers/node_modules/x/package.json")" "1.0.0" "a linked local package keeps its own node_modules"
+[ ! -e "$workspace/tests/node_modules/dangling" ] && [ ! -L "$workspace/tests/node_modules/dangling" ] \
+  || { echo "FAIL a dangling link is copied"; exit 1; }
+
+nopw=$(repo no-playwright package.json tests/package.json tests/package-lock.json "$e2e_cfg")
+pkg "$nopw/node_modules/@playwright/test" 1.56.1
+ctx_fails "$nopw" lockfile "::error::no @playwright/test in tests/node_modules"
+pre=$(repo prerelease package.json tests/package.json tests/package-lock.json "$e2e_cfg")
+pkg "$pre/tests/node_modules/@playwright/test" 1.57.0-alpha-2025-10-01
+ctx_fails "$pre" lockfile "has no mcr.microsoft.com/playwright image"
+echo "e2e-image Dockerfile: ok"
 
 summary_prog=$(block e2e-summary)
 # summary <junit fixture name|-> <outcome> <required> [log]; prints the summary

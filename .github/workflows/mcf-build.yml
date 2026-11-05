@@ -3,8 +3,8 @@
 # (issues-maestra#1571). The static files reach the buckets at promotion, by the
 # upload Job of the MCF's own kustomization/, not from here.
 #
-#   version, install (+ codegen) ─► checks, test, build ─► image ─► deps-image ─► release ─► bake
-#                                                    │                                   └─► sourcemaps
+#   version, install (+ codegen) ─► checks, test, build ─► image ─► deps-image, e2e-image ─► release ─► bake
+#                                                    │                                              └─► sourcemaps
 #                                                    ├─► hot-test (pull_request)
 #                                                    ├─► e2e-stand (pull_request, tests/e2e/) ─► e2e (input e2e)
 #                                                    └─► functional (tests/functional/)
@@ -115,6 +115,11 @@
 #             BuildKit with a gha layer cache (scope mcf-deps-<image>): the node_modules layer is reused
 #             while package-lock.json is unchanged, a release uploads the sources layer. After image: ECR tags are immutable,
 #             so a push before checks and tests pass breaks "Re-run all jobs". release waits for it.
+#   e2e-image  tests/ with tests/node_modules (a root workspace's hoisted packages copied in) ->
+#             ECR <image>-e2e:<release> on mcr.microsoft.com/playwright:v<@playwright/test>-noble, user
+#             pwuser, CMD npm run e2e:ci; chart mcf-e2e runs it against ci-gate after the upload at
+#             promotion. Only with tests/e2e/, alongside deps-image (gha cache scope mcf-e2e-<image>);
+#             release waits for it, a skipped one (no tests/e2e/) holds nothing.
 #   release   git tag + GitHub Release <release>; a PR labelled `hotfix` also gets
 #             the marker tag hotfix/<release>.
 #   sourcemaps  the release's source maps -> Datadog US3 (service <mcf>, version <release>,
@@ -139,7 +144,6 @@
 #             on pull_request.
 #
 # Not ported from mcf@3: cyrillic (translation-checker, issues-maestra#1581),
-# the -e2e image (issues-maestra#1573),
 # multi-contour schema loading, and the RU contour jobs (Octopus, phrase, metrics,
 # pipelines release submit, Mindbox Datadog source maps).
 
@@ -1150,10 +1154,107 @@ jobs:
           image: ${{ steps.ecr.outputs.registry }}/${{ needs.version.outputs.image }}-with-deps
           digest: ${{ steps.push.outputs.digest }}
 
+  e2e-image:
+    needs: [version, install, tests-install, image]
+    if: ${{ !cancelled() && needs.version.outputs.publish == 'true' && needs.version.outputs.e2e == 'true' && needs.install.result == 'success' && (needs.tests-install.result == 'success' || needs.tests-install.result == 'skipped') && needs.image.result == 'success' }}
+    runs-on: runs-on=${{ github.run_id }}-e2e-image/pool=small
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write # Teleport join
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          package-manager-cache: false
+      - if: ${{ needs.version.outputs.tests-layout == 'workspace' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: *root-node-modules
+          key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
+          fail-on-cache-miss: true
+      - if: ${{ needs.version.outputs.tests-layout == 'lockfile' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: tests/node_modules
+          key: mcf-tests-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('tests/package-lock.json') }}
+          fail-on-cache-miss: true
+      # Two layers, as in deps-image: node_modules stay in the gha cache while the lockfile does.
+      - name: Dockerfile
+        env:
+          LAYOUT: ${{ needs.version.outputs.tests-layout }}
+        run: |
+          # >>> e2e-image-context (scripts/test-e2e.sh runs this block)
+          if [ "$LAYOUT" = workspace ]; then
+            # The image gets tests/ only: what npm hoisted to the root goes to tests/node_modules.
+            shopt -s nullglob
+            mkdir -p tests/node_modules
+            self=$(readlink -f tests)
+            for d in node_modules/.bin/* node_modules/* node_modules/@*/*; do
+              case "$d" in node_modules/@*/* | node_modules/.bin/*) ;; node_modules/@*) continue ;; esac
+              t="tests/$d"
+              [ ! -e "$t" ] && [ ! -L "$t" ] || continue
+              src=$d
+              # A local package's link is relative to the root node_modules: copy what it points to.
+              if [ -L "$d" ] && [[ "$d" != node_modules/.bin/* ]]; then
+                src=$(readlink -f "$d") || continue
+                [ -e "$src" ] && [ "$src" != "$self" ] || continue
+              fi
+              mkdir -p "${t%/*}"; cp -a "$src" "$t"
+            done
+          fi
+          [ -f tests/node_modules/@playwright/test/package.json ] || { echo "::error::no @playwright/test in tests/node_modules"; exit 1; }
+          v=$(node -p "require(require.resolve('@playwright/test/package.json',{paths:['tests']})).version")
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::@playwright/test $v has no mcr.microsoft.com/playwright image"; exit 1; }
+          {
+            printf 'FROM mcr.microsoft.com/playwright:v%s-noble\nWORKDIR /tests\nRUN chown pwuser:pwuser /tests\n' "$v"
+            printf 'COPY --chown=pwuser:pwuser node_modules node_modules\n'
+            printf 'COPY --chown=pwuser:pwuser --exclude=node_modules . .\n'
+            printf 'USER pwuser\nCMD ["npm","run","e2e:ci"]\n'
+          } > "$RUNNER_TEMP/Dockerfile.e2e"
+          echo "Playwright $v, tests/ ($LAYOUT)"
+          # <<< e2e-image-context
+      - name: ecr login
+        id: ecr
+        uses: maestra-io/github-actions/push-to-aws-ecr-repository@0b488dd7ca11b7bd0d5147b4b4887452a9b9f486 # v1.50.1
+        with:
+          awsRegion: us-west-2
+          repositories: ${{ needs.version.outputs.image }}-e2e
+          targetTag: ${{ needs.version.outputs.release }}
+          teleportToken: ${{ inputs.teleport-token }}
+          push: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: build and push ${{ needs.version.outputs.image }}-e2e:${{ needs.version.outputs.release }}
+        id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: tests
+          file: ${{ runner.temp }}/Dockerfile.e2e
+          provenance: false
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ needs.version.outputs.image }}-e2e:${{ needs.version.outputs.release }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.version.outputs.release }}
+          cache-from: type=gha,scope=mcf-e2e-${{ needs.version.outputs.image }}
+          cache-to: type=gha,mode=max,ignore-error=true,scope=mcf-e2e-${{ needs.version.outputs.image }}
+      - name: sign ${{ needs.version.outputs.image }}-e2e:${{ needs.version.outputs.release }}
+        continue-on-error: true
+        timeout-minutes: 10
+        uses: maestra-io/github-actions/sign-image@bdfea43a7d47149012fa1a488c91e5d6a49b2744 # v1.62.2
+        with:
+          image: ${{ steps.ecr.outputs.registry }}/${{ needs.version.outputs.image }}-e2e
+          digest: ${{ steps.push.outputs.digest }}
+
   # Git tag + GitHub Release BEFORE the bake: bake-oci-manifests checks out the release tag.
   release:
-    needs: [version, image, deps-image]
-    if: ${{ !cancelled() && needs.image.result == 'success' && needs.deps-image.result == 'success' }}
+    needs: [version, image, deps-image, e2e-image]
+    if: ${{ !cancelled() && needs.image.result == 'success' && needs.deps-image.result == 'success' && (needs.version.outputs.e2e != 'true' || needs.e2e-image.result == 'success') }}
     runs-on: runs-on=${{ github.run_id }}-release/pool=small
     timeout-minutes: 5
     permissions:
