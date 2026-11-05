@@ -515,13 +515,18 @@ a `keyring` helper on PATH that mints a fresh GitHub OIDC token whenever uv asks
 (`service-build.yml` passes it too):
 
 ```dockerfile
+# Into the image's own Python (as pip did; --inexact keeps what the base image ships).
 ENV UV_NO_CACHE=1 UV_PYTHON_DOWNLOADS=never UV_COMPILE_BYTECODE=1 UV_INDEX_MAESTRA_USERNAME=token \
-    UV_PROJECT_ENVIRONMENT=/app/.venv PATH=/app/.venv/bin:$PATH
+    UV_PROJECT_ENVIRONMENT=/usr/local
 COPY pyproject.toml uv.lock ./
-RUN --mount=type=secret,id=PRIVATE_PACKAGES_TOKEN,env=UV_INDEX_MAESTRA_PASSWORD,required=true \
-    pip install --no-cache-dir --index-url "https://token:${UV_INDEX_MAESTRA_PASSWORD}@packages.maestra.io/simple/" uv==<pinned> \
- && uv sync --locked --no-dev --no-install-project
+RUN --mount=type=bind,from=ghcr.io/astral-sh/uv:<version>@sha256:<digest>,source=/uv,target=/usr/local/bin/uv \
+    --mount=type=secret,id=PRIVATE_PACKAGES_TOKEN,required=true \
+    UV_INDEX_MAESTRA_PASSWORD="$(cat /run/secrets/PRIVATE_PACKAGES_TOKEN)" \
+    uv sync --locked --inexact --no-dev --no-install-project
 ```
+
+uv is bind-mounted from its image, so nothing of it stays in a layer and no pip is involved (pip
+before 23.1 cannot read nora's PEP 691 `dist-info-metadata` objects).
 
 Test: `scripts/test-uv-nora.sh` (selftest).
 
