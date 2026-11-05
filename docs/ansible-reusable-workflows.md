@@ -29,7 +29,7 @@ Never prefix them with `ansible/`. Only `uv_project` / `requirements_pip` / `req
 `requirements_lint` are workspace-root-relative (they're consumed before the cd).
 
 **Python packages** come from the caller's `pyproject.toml` + `uv.lock` in `uv_project`
-(default: the repo root), through nora only (issues-maestra#1649): the Ansible toolchain is
+(default `ansible`, next to `ansible.cfg`, so an `ansible/**` path filter sees a toolchain bump), through nora only (issues-maestra#1649): the Ansible toolchain is
 `[project].dependencies`, ansible-lint/yamllint are the `lint` dependency group, and nora is
 the only index (`[[tool.uv.index]] name = "maestra"`, `url = "https://packages.maestra.io/simple/"`,
 `default = true`, `[tool.uv] package = false`). The workflows run `uv sync --locked`
@@ -67,7 +67,7 @@ A repo without a `uv.lock` still gets `requirements_pip` / `requirements_lint` f
 | `teleport_join_token` | string | no | `github-actions-infra-deploy` | teleport join token |
 | `teleport_fqdn` | string | no | `teleport.maestra.io:443` | proxy (note: explicit :443) |
 | `python_version` | string | no | `3.14` | uv-installed python |
-| `uv_project` | string | no | `.` | dir of `pyproject.toml` + `uv.lock` (nora only); `uv sync --locked` into setup-python's interpreter |
+| `uv_project` | string | no | `ansible` | dir of `pyproject.toml` + `uv.lock` (nora only); `uv sync --locked` into setup-python's interpreter |
 | `requirements_pip` | string | no | `ansible/requirements-pip.txt` | legacy run-time pip manifest (only without a `uv.lock` in `uv_project`) |
 | `requirements_galaxy` | string | no | `ansible/requirements.yml` | galaxy manifest |
 | `no_hosts_fail_on_apply` | boolean | no | `false` | mssql/ad: empty group → fail on apply, skip on check |

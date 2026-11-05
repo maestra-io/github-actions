@@ -23,8 +23,8 @@ on:
       - "ansible/collections/**"
       - "ansible/.ansible-lint"
       - "ansible/.yamllint"
-      - "pyproject.toml"
-      - "uv.lock"
+      - "ansible/pyproject.toml"
+      - "ansible/uv.lock"
       - "ansible/tests/test-os-update-tail-silence.sh"
       - "ansible/tests/os-update-tail/**"
       - ".github/workflows/collection-lint.yml"
@@ -34,8 +34,8 @@ on:
       - "ansible/collections/**"
       - "ansible/.ansible-lint"
       - "ansible/.yamllint"
-      - "pyproject.toml"
-      - "uv.lock"
+      - "ansible/pyproject.toml"
+      - "ansible/uv.lock"
       - "ansible/tests/test-os-update-tail-silence.sh"
       - "ansible/tests/os-update-tail/**"
       - ".github/workflows/collection-lint.yml"
@@ -77,12 +77,12 @@ jobs:
       # Credentials for nora (packages.maestra.io), the only Python index.
       - uses: maestra-io/github-actions/uv-nora@22ccbf9ff3d76fe13025cbc009d395024f025198 # v1.67.0
 
-      # pyproject.toml + uv.lock at the repo root: `ansible` as the dependency
+      # ansible/pyproject.toml + uv.lock: `ansible` as the dependency
       # (ansible-lint resolves modules against a real installation, and without it
       # every FQCN reads as unknown) and the pinned linters as the `lint` group.
       - name: Install lint deps
         env:
-          DEPS_PROJECT: "."
+          DEPS_PROJECT: ansible
           DEPS_GROUP: lint
           DEPS_TARGET: system
           LEGACY_REQUIREMENTS: ""

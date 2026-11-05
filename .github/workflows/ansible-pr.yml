@@ -55,7 +55,8 @@ on:
         default: "."
       uv_project:
         description: >-
-          Directory (workspace-relative) of the caller's pyproject.toml + uv.lock:
+          Directory (workspace-relative) of the caller's pyproject.toml + uv.lock
+          (next to ansible.cfg, so ansible/** path filters see a toolchain bump):
           the Ansible toolchain as `[project].dependencies`, ansible-lint/yamllint
           as the `lint` dependency group, nora as the only index
           (`[[tool.uv.index]] name = "maestra"`, default = true; issues-maestra#1649).
@@ -64,7 +65,7 @@ on:
           migrated).
         required: false
         type: string
-        default: "."
+        default: "ansible"
       requirements_lint:
         description: "Legacy (no uv.lock in uv_project): lint pins, installed with an unpinned ansible."
         required: false

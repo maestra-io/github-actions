@@ -42,7 +42,7 @@ on:
           Without a uv.lock there, ansible/requirements-pip.txt from PyPI (legacy).
         required: false
         type: string
-        default: "."
+        default: "ansible"
       region:
         required: true
         type: string

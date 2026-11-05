@@ -253,14 +253,15 @@ on:
         default: "3.14"
       uv_project:
         description: >-
-          Directory (workspace-relative) of the caller's pyproject.toml + uv.lock:
+          Directory (workspace-relative) of the caller's pyproject.toml + uv.lock
+          (next to ansible.cfg, so ansible/** path filters see a toolchain bump):
           the Ansible toolchain as `[project].dependencies`, nora as the only index
           (`[[tool.uv.index]] name = "maestra"`, default = true; issues-maestra#1649).
           While it has no uv.lock, requirements_pip is installed from PyPI as before
           (legacy, removed once every caller has migrated).
         required: false
         type: string
-        default: "."
+        default: "ansible"
       requirements_pip:
         description: "Legacy (no uv.lock in uv_project): the runtime requirements file."
         required: false
