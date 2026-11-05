@@ -1,0 +1,38 @@
+name: "Python packages through nora (uv)"
+description: >-
+  Credentials for uv against packages.maestra.io (nora), the only Python index
+  (issues-maestra#1649: versions younger than the hold are not served there).
+  The project declares the index in pyproject.toml as `[[tool.uv.index]]`
+  name = "maestra", default = true; this step exports UV_INDEX_MAESTRA_USERNAME
+  and a `keyring` helper (UV_KEYRING_PROVIDER=subprocess) that hands every uv
+  process a fresh GitHub OIDC token, so a token never expires between steps.
+  Run after astral-sh/setup-uv. Needs `permissions: id-token: write`. For a
+  Docker build, pass the `token` output as the BuildKit secret
+  PRIVATE_PACKAGES_TOKEN (README): it is minted by this step, so run the action
+  right before the build.
+
+inputs:
+  url:
+    description: "nora base URL."
+    required: false
+    default: "https://packages.maestra.io"
+  audience:
+    description: "`aud` of the GitHub OIDC token nora accepts."
+    required: false
+    default: "packages.maestra.io"
+
+outputs:
+  token:
+    description: "The GitHub OIDC token for nora (masked), for the Docker build secret PRIVATE_PACKAGES_TOKEN."
+    value: ${{ steps.uv-nora.outputs.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: uv through nora
+      id: uv-nora
+      shell: bash
+      env:
+        NORA_URL: ${{ inputs.url }}
+        NORA_AUDIENCE: ${{ inputs.audience }}
+      run: bash "${GITHUB_ACTION_PATH}/uv-nora.sh"
