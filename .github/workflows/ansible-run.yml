@@ -203,6 +203,11 @@ on:
         required: false
         type: string
         default: "runs-on=${{ github.run_id }}/runner=t3a-small"
+      vault_export_token:
+        description: "Also export the Vault token of the primary fetch as VAULT_TOKEN (and vault_addr as VAULT_ADDR) to the Execute step, for plays that write to Vault themselves (active-directory-maestra kerberos auth config, issues-maestra#1432). The token lives as long as the role's token_ttl; size that in vault-server values."
+        required: false
+        type: boolean
+        default: false
       extra_env:
         description: "Extra KEY=VALUE lines injected into the Execute step env (may reference secrets already exported to \\$GITHUB_ENV)."
         required: false
@@ -231,6 +236,17 @@ on:
         required: false
         type: string
         default: "teleport.maestra.io:443"
+      teleport_avoid_host:
+        description: >-
+          A Teleport node this job must not route through. Before the play, the
+          runner pins the proxy FQDN in /etc/hosts to its A records MINUS this
+          host's own addresses, so every tsh/tbot dial lands on a proxy that is not
+          on it. A no-op when no proxy address belongs to the host. os-update sets
+          it to the target: on us-iota the proxies run hostNetwork ON the nodes it
+          drains and reboots. Empty = DNS as is.
+        required: false
+        type: string
+        default: ""
       python_version:
         required: false
         type: string
@@ -297,7 +313,7 @@ jobs:
       # No-op off RunsOn (exits when RUNS_ON_RUNNER_NAME is unset), so ARC rows are unaffected.
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - name: Checkout
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Empty = actions/checkout's default (the caller's commit).
           ref: ${{ inputs.checkout_ref }}
@@ -359,8 +375,27 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.ansible/collections
-          key: galaxy-${{ runner.os }}-${{ hashFiles(inputs.requirements_galaxy) }}
+          # "nora": collections cached before Galaxy went through nora (a version
+          # younger than 3 days among them) are not restored.
+          key: galaxy-nora-${{ runner.os }}-${{ hashFiles(inputs.requirements_galaxy) }}
 
+      # Galaxy through nora (packages.maestra.io/ansible/, issues-maestra#1649 s9):
+      # collection versions younger than 3 days are hidden there, so a range like
+      # ">=8.0.0" resolves to the newest mature release. The ANSIBLE_GALAXY_SERVER_*
+      # variables reach every later step: the install below and ansible-lint's own
+      # requirements install. Auth: a GitHub OIDC token as Basic token:<jwt>
+      # (expires in minutes, enough for the install that follows).
+      - name: Galaxy through nora
+        if: ${{ hashFiles(inputs.requirements_galaxy) != '' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const t = await core.getIDToken('packages.maestra.io');
+            core.setSecret(t);
+            core.exportVariable('ANSIBLE_GALAXY_SERVER_LIST', 'nora');
+            core.exportVariable('ANSIBLE_GALAXY_SERVER_NORA_URL', 'https://packages.maestra.io/ansible/');
+            core.exportVariable('ANSIBLE_GALAXY_SERVER_NORA_USERNAME', 'token');
+            core.exportVariable('ANSIBLE_GALAXY_SERVER_NORA_PASSWORD', t);
       - name: Install Galaxy collections/roles
         if: ${{ hashFiles(inputs.requirements_galaxy) != '' }}
         # From working_directory so ansible.cfg's roles_path/collections_path apply —
@@ -439,6 +474,54 @@ jobs:
           proxy: ${{ inputs.teleport_fqdn }}
           token: ${{ inputs.teleport_join_token }}
           certificate-ttl: ${{ inputs.certificate_ttl }}
+
+      # --- Keep the proxy on the target out of the path (os-update) ------
+      # tsh dials <fqdn>:3023 (separate listener mode), which DNS spreads over
+      # every proxy address. On us-iota those are the three k0s nodes' own IPs:
+      # the proxy is hostNetwork there, so a dial that lands on the target rides
+      # the target's proxy pod — evicted by our drain, gone at our reboot — and
+      # with it the delegate's kubectl session. Pinning the FQDN to the OTHER
+      # proxies' addresses takes the target out of every new dial (ssh, inventory
+      # tsh ls, tbot tunnels). Teleport's SSH resumption (tsh proxy ssh, 1-min
+      # window) remains the second layer for a connection that drops anyway.
+      # Fail-open on purpose: a target we cannot ask is one the play cannot
+      # reach either, and an unpinned run is exactly today's behaviour.
+      - name: Keep the Teleport proxy on the target out of the path
+        if: ${{ inputs.teleport_avoid_host != '' }}
+        env:
+          TELEPORT_IDENTITY_FILE: ${{ steps.teleport-auth.outputs.identity-file || steps.teleport-auth-retry.outputs.identity-file }}
+          TELEPORT_PROXY: ${{ inputs.teleport_fqdn }}
+          AVOID_HOST: ${{ inputs.teleport_avoid_host }}
+        run: |
+          # >>> avoid-target-proxy (ansible/tests/test-avoid-target-proxy.sh runs this block)
+          set +e -uo pipefail  # +e: the runner's bash -e would turn an empty grep into a red step
+          fqdn="${TELEPORT_PROXY%:*}"
+          proxy_ips=$(getent ahostsv4 "$fqdn" | awk '{print $1}' | sort -u)
+          target_ips=$(timeout 60 tsh ssh --login=teleport-production "$AVOID_HOST" 'hostname -I' 2>/dev/null \
+            | tr ' ' '\n' | grep -E '^[0-9]+(\.[0-9]+){3}$' | sort -u)
+          if [ -z "$proxy_ips" ] || [ -z "$target_ips" ]; then
+            echo "::warning::could not read the addresses of ${fqdn} or ${AVOID_HOST} — DNS left as is"
+            exit 0
+          fi
+          keep=$(comm -23 <(echo "$proxy_ips") <(echo "$target_ips"))
+          if [ "$keep" = "$proxy_ips" ]; then
+            echo "no ${fqdn} address is on ${AVOID_HOST} — nothing to pin"
+            exit 0
+          fi
+          if [ -z "$keep" ]; then
+            echo "::warning::every ${fqdn} address is on ${AVOID_HOST} — DNS left as is"
+            exit 0
+          fi
+          if ! awk -v h="$fqdn" '{print $1, h}' <<< "$keep" | sudo tee -a /etc/hosts >/dev/null; then
+            echo "::warning::could not write /etc/hosts — DNS left as is"
+            exit 0
+          fi
+          if [ "$(getent ahostsv4 "$fqdn" | awk '{print $1}' | sort -u)" != "$keep" ]; then
+            echo "::warning::/etc/hosts pin for ${fqdn} is not what the resolver returns — check nsswitch"
+            exit 0
+          fi
+          echo "${fqdn} pinned to ${keep//$'\n'/ } (dropped the proxy on ${AVOID_HOST})"
+          # <<< avoid-target-proxy
 
       # --- Mitogen (Linux only) ------------------------------------------
       - name: Configure Mitogen strategy plugin
@@ -635,7 +718,14 @@ jobs:
           role: ${{ inputs.vault_role }}
           jwtGithubAudience: https://github.com/maestra-io
           exportEnv: true
+          exportToken: ${{ inputs.vault_export_token }}
           secrets: ${{ inputs.vault_secrets }}
+
+      - name: Export the Vault address for the play
+        if: ${{ inputs.vault_export_token && inputs.vault_mode != 'none' && inputs.vault_secrets != '' }}
+        env:
+          VAULT_ADDR_INPUT: ${{ inputs.vault_addr }}
+        run: printf 'VAULT_ADDR=%s\n' "$VAULT_ADDR_INPUT" >> "$GITHUB_ENV"
 
       # --- Vault: second source (optional, additive) ---------------------
       # Gated ONLY on vault2_secrets being non-empty -- deliberately not on

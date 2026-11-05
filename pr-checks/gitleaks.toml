@@ -1,7 +1,8 @@
-# Central Gitleaks config of the GitLab gitleaks component (gitlab.mindbox.ru
-# system/components/gitleaks, gitleaks.toml, copied 2026-10-13), used by
-# .github/workflows/pr-checks.yml. Keep in sync by hand; a repo-level
-# .gitleaksignore still applies.
+# LEGACY gitleaks config for callers that pin an older
+# .github/workflows/pr-checks.yml (eventrouter, kube-web-view): its inline gitleaks
+# step reads this path from main. The current pr-checks.yml has no gitleaks step.
+# It keeps the full allowlist that step always had; do not add rules here. It goes
+# away once those repos move to their own gitleaks.yml workflow.
 title = "Gitleaks Configuration"
 minVersion = "v8.25.0"
 
@@ -9,7 +10,7 @@ minVersion = "v8.25.0"
 useDefault = true
 
 [[allowlists]]
-description = "Пути, разрешённые глобально"
+description = "Paths allowed everywhere"
 paths = [
   '''(?i).*\.example$''',
   '''.*test.*''',

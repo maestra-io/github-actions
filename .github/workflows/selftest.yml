@@ -14,8 +14,10 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/ansible-os-update.yml"
+      - ".github/workflows/ansible-run.yml"
       - ".github/workflows/dotnet-service-build.yml"
       - ".github/workflows/frontend-codegen.yml"
+      - ".github/workflows/hot-test-publish.yml"
       - ".github/workflows/mcf-build.yml"
       - ".github/workflows/npm-package-publish.yml"
       - ".github/workflows/nuget-package-publish.yml"
@@ -26,8 +28,14 @@ on:
       - "ci/**"
       - "scripts/**"
       - "push-helm-chart-to-aws-ecr/**"
+      - "sign-image/**"
+      - "tbot-join/**"
+      - "terraform-nora/**"
+      - "nora-image-prewarm/**"
       - ".github/workflows/pr-checks.yml"
       - "pr-checks/**"
+      - ".github/workflows/gitleaks.yml"
+      - "gitleaks/**"
 
 permissions:
   contents: read
@@ -37,7 +45,7 @@ jobs:
     runs-on: runs-on=${{ github.run_id }}-shell/runner=t3a-small
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -53,7 +61,7 @@ jobs:
       - name: dockerfile-from-fix (rewrite, keep, idempotence)
         run: bash scripts/test-dockerfile-from-fix.sh
 
-      - name: npm-lockfile-to-nora (rewrite, keep, idempotence, workflow copy)
+      - name: npm-lockfile-to-nora (rewrite, keep, idempotence, workflow lockfile check)
         run: bash scripts/test-npm-lockfile-to-nora.sh
 
       - name: nuget SDK set (TFM scan, override, workflow copy)
@@ -61,6 +69,24 @@ jobs:
 
       - name: push-helm-chart-to-aws-ecr version resolution
         run: bash scripts/test-helm-chart-version.sh
+
+      - name: push-helm-chart-to-aws-ecr package-and-push step (stub aws/helm)
+        run: bash scripts/test-helm-chart-push.sh
+
+      - name: tbot-join retries (stub tbot; real 5 s / 15 s backoff, ~70 s)
+        run: bash scripts/test-tbot-join.sh
+
+      - name: terraform-nora CLI config and credentials helper (stub curl)
+        run: bash scripts/test-terraform-nora.sh
+
+      - name: go-nora GOPROXY, GOAUTH helper, token output (stub curl)
+        run: bash scripts/test-go-nora.sh
+
+      - name: cargo-nora source replacement, token-from-stdout helper, token output (stub curl)
+        run: bash scripts/test-cargo-nora.sh
+
+      - name: nora-image-prewarm image mapping, flate diff, OIDC round trip (stub)
+        run: python3 nora-image-prewarm/prewarm.py --self-test
 
       - name: nuget build SDK pin (highest TFM, global.json kept/restored, workflow copy)
         run: bash scripts/test-nuget-sdk-pin.sh
@@ -79,12 +105,38 @@ jobs:
       # accepts only the current token; the GitLab-era Dockerfile must reproduce it.
       - name: dotnet-service-build packages token (layer cache, token files, expired-token e2e; workflow copy)
         run: bash scripts/test-dotnet-service-build-cache.sh
+      - name: dotnet-service-build graphql-schemas (.graphqlrc.json discovery, hosts, build contexts, token override, OIDC/auth-jwt/401/HTML/no SDL; stub curl/dotnet; workflow copy)
+        run: bash scripts/test-dotnet-service-build-graphql.sh
 
       - name: service-build image-targets parsing (workflow copy)
         run: bash scripts/test-service-build.sh
+      - name: ecr-push-check (tag absent / same digest / other digest)
+        run: bash scripts/test-ecr-push-check.sh
+      - name: sign-image status, background SBOM, cosign pin, no syft auth env (stub cosign/curl/docker/aws)
+        run: bash scripts/test-sign-image.sh
+
+      - name: hot-test-publish stand names, manifest override, route wait, release bucket check, summary (workflow copy)
+        run: bash scripts/test-hot-test-publish.sh
+      - name: mcf-build static-prefix and manifest inputs (workflow copy)
+        run: bash scripts/test-mcf-build-static.sh
+      - name: mcf-build localization-keys exit code and checks verdict (workflow copy)
+        run: bash scripts/test-mcf-build-localization-keys.sh
+      - name: mcf-build / npm-package-publish eslint --concurrency (workflow copies)
+        run: bash scripts/test-eslint-concurrency.sh
+      - name: mcf-build lockfile in sync with package.json (workflow copy)
+        run: bash scripts/test-lockfile-sync.sh
+
+      - name: mcf-build tests/ detection, http-server wait, functional summary (workflow copy)
+        run: bash scripts/test-functional.sh
+      - name: mcf-build e2e detection, e2e-stand and e2e wiring, credentials, e2e summary (workflow copy)
+        run: bash scripts/test-e2e.sh
+      - name: mcf-build pr gate (needs, verdict; workflow copy)
+        run: bash scripts/test-mcf-build-pr-gate.sh
 
       - name: pr-checks check-encoding and kustomize entry points
         run: bash scripts/test-pr-checks.sh
+      - name: pr-changes (kustomization-only PRs skip build and test)
+        run: bash scripts/test-pr-changes.sh
 
       # warn-as-error must keep tests running on the Microsoft.Testing.Platform
       # runner too (a bare /warnaserror ran zero tests there, exit 5).
@@ -108,6 +160,12 @@ jobs:
       - name: binary-update wiring (a failed host must stay drained)
         run: bash ansible/tests/test-binary-update-wiring.sh
 
+      # The os-update apply leg pins the Teleport FQDN away from the proxy on its
+      # own target (us-iota: proxy hostNetwork on the nodes it reboots). The test
+      # runs the workflow's own step block against stubs.
+      - name: avoid-target-proxy pin (ansible-run.yml)
+        run: bash ansible/tests/test-avoid-target-proxy.sh
+
       # The test carries its own copy of the selector; a change to the workflow
       # that does not update the test would leave the test green and meaningless.
       - name: the test's copy of the selector still matches the workflow
@@ -130,6 +188,18 @@ jobs:
       contents: read
     with:
       ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+  # The gitleaks workflow of the PR head on this repo's own pull requests. Skips
+  # itself outside pull_request. Needs the org secret GITLEAKS_LICENSE
+  # (gitleaks-action exits 1 without it on an org repo).
+  gitleaks:
+    uses: ./.github/workflows/gitleaks.yml
+    secrets: inherit
+    with:
+      ref: ${{ github.event.pull_request.head.sha || github.sha }}
+    permissions:
+      contents: read
+      pull-requests: write
 
   # End to end: the real reusable workflow on a net8.0 + net10.0 solution with no
   # global.json. Each test asserts it runs on its own target's runtime (no

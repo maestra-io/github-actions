@@ -1,6 +1,6 @@
 # Reusable GraphQL codegen job for a frontend whose pipeline is its own (the legacy
-# admin, maestra-io/frontend; issues-maestra#1539, #1571). The same job is the
-# `codegen` job of mcf-build.yml.
+# admin, maestra-io/frontend; issues-maestra#1539, #1571). The same steps are the
+# codegen of the `install` job of mcf-build.yml.
 #
 # Why it is a workflow and not a job in the caller: the auth-jwt client below enforces
 # an exact job_workflow_ref, and a reusable workflow called at @main presents a constant
@@ -28,6 +28,9 @@
 # (auth-jwt-terraform terraform/omega/clients.tf) accepts job_workflow_ref
 # maestra-io/github-actions/.github/workflows/frontend-codegen.yml@refs/heads/main,
 # so callers must use @main.
+#
+# The PR secret scan is not part of this workflow: each repo runs it in its own
+# workflow that calls this repo's reusable secret-scan workflow (see the README).
 name: frontend-codegen
 
 on:
@@ -46,7 +49,7 @@ jobs:
       id-token: write # auth-jwt login
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0

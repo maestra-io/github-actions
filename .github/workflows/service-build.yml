@@ -4,8 +4,13 @@
 # + docker-push-to-all + maestra-bake-oci-manifests + create-gitlab-release, with the
 # repo's own test jobs (issues-maestra#1442 W3, #1568).
 #
-#   version ─► test ─► images (matrix) ─► release ─► bake ─► kargo-refresh
+#   version ─► test ─► images (matrix) ─► release ─► bake
 #   pull_request: version ─► test, checks (pr-checks.yml) ─► pr-gate (the required check)
+#
+# Warehouse refresh: no job here. The GitHub org webhook (workflow_run completed)
+# refreshes every Kargo Warehouse labelled maestra.io/source-repo=<lower-case repo name>
+# (fluxcd iota/us-iota-lw-kube-infra/kargo/webhook-receivers.yaml); Warehouses still
+# poll ECR every 5 min as the fallback.
 #
 # Job names are a contract (required checks, `needs:` in callers): keep them.
 #
@@ -13,7 +18,7 @@
 #
 #   jobs:
 #     build:
-#       uses: maestra-io/github-actions/.github/workflows/service-build.yml@<sha> # vX.Y.Z
+#       uses: maestra-io/github-actions/.github/workflows/service-build.yml@main
 #       permissions: { contents: write, id-token: write }
 #       with:
 #         image-targets: ai-assistant-rnd=
@@ -32,7 +37,7 @@
 #                       (GitLab IMAGE_TARGETS_PAIRS). Empty only with `bake: true`:
 #                       a bake-only repo (GitLab `images: ""`, e.g. a kustomize or
 #                       terraform tree with no image of its own) runs version -> test
-#                       -> release -> bake -> kargo-refresh, no `images` job. <image> is the ECR repository,
+#                       -> release -> bake, no `images` job. <image> is the ECR repository,
 #                       <target> the Dockerfile stage; `image=` (or bare `image`)
 #                       builds the Dockerfile's last stage. As in dotnet-service-build:
 #                       `image=<dockerfile>:<target>` builds from another Dockerfile
@@ -46,9 +51,16 @@
 #                       The token expires within minutes: run `packages-token` (on PATH)
 #                       for a fresh one before each later install, e.g.
 #                       `poetry config http-basic.maestra token "$(packages-token)"`.
-#                       Docker is available (Testcontainers / docker compose).
+#                       Docker is available (Testcontainers / docker compose), and a
+#                       BuildKit builder with the type=gha cache env: an image it builds
+#                       is cached with `docker buildx build --load --cache-from/--cache-to
+#                       type=gha,scope=<x>` (mindbox-airflow Dockerfile_test).
 #   docker-test-target  Dockerfile stage that runs the tests instead (built with the
 #                       build secrets, then `docker run`). Both empty = no tests.
+#   test-shards         Run the tests as N parallel `test (i/N)` jobs (default 1, a
+#                       single `test` job). Each gets SHARD_INDEX (1..N) and SHARD_TOTAL
+#                       (test-command env, docker-test-target `-e`) and picks its part,
+#                       e.g. `playwright test --shard=$SHARD_INDEX/$SHARD_TOTAL`.
 #   python-version      actions/setup-python before test-command (empty = skip).
 #   node-version        actions/setup-node before test-command (empty = skip).
 #   test-env            Extra environment for the tests, KEY=VALUE per line, not
@@ -63,26 +75,30 @@
 #   pr-images           Build the images on pull_request too (default false: a PR runs
 #                       tests only; a broken Dockerfile surfaces in the release on the
 #                       default branch, before anything is pushed).
-#   push                Push images and run release/bake/kargo-refresh (default
+#   push                Push images and run release/bake (default
 #                       true). Never on pull_request. false = build-only dry run.
 #   bake                Bake kustomization/ into <service>-manifests:<release> (default false).
-#   service             Service name for bake and Kargo. Default: repository name.
+#   service             Service name for bake (<service>-manifests). Default: repository name.
 #   bake-path           Passed to bake-oci-manifests (default ./kustomization).
-#   kargo-refresh       Refresh the Kargo Warehouse after bake (default true; only with bake).
-#   kargo-project       Kargo project. Default kargo-<service>.
-#   kargo-warehouse     Warehouse to refresh. Default <service>.
 #   teleport-token      Teleport GitHub join token of the image-push bot (default the
 #                       org-wide image-push-github-actions-maestra-io; empty = per-repo).
-#   kargo-teleport-token  Join token of the kargo-refresh bot
-#                       (default kargo-refresh-github-actions-maestra-io).
 #   packages-url        Package registry (default https://packages.maestra.io, nora).
 #   packages-audience   `aud` of the GitHub OIDC token nora accepts (default packages.maestra.io).
+#   release-version     Release number set by the caller instead of RELEASE_PREFIX.run_number,
+#                       X.Y.Z (e.g. a semantic-release version the caller has already
+#                       tagged and released; the `release` job then finds it and skips).
+#   release-tag-prefix  Prefix of the git tag / GitHub Release (default '': bare `1.1.N`),
+#                       for a second release line in a repo that already tags `1.1.N`
+#                       (e.g. `standard-blocks-v` next to mcf-build). Images and
+#                       <service>-manifests keep the bare release; the prefix also
+#                       gives the line its own concurrency group.
 # Secrets:
 #   private-packages-token  Optional override of the nora OIDC token.
 # Outputs:
-#   release             The release number 1.1.N.
+#   release             The release number (1.1.N, or release-version).
 #
-# Release number: `${vars.RELEASE_PREFIX:-1.1}.${github.run_number}`, exactly as in
+# Release number: `release-version` if set, else
+# `${vars.RELEASE_PREFIX:-1.1}.${github.run_number}`, exactly as in
 # dotnet-service-build.yml (above the GitLab 1.0.N, inside Kargo's `^1`; renaming the
 # caller workflow file restarts run_number, then set RELEASE_PREFIX).
 #
@@ -136,27 +152,24 @@ on:
       bake-path:
         type: string
         default: ./kustomization
-      kargo-refresh:
-        type: boolean
-        default: true
-      kargo-project:
-        type: string
-        default: ""
-      kargo-warehouse:
-        type: string
-        default: ""
       teleport-token:
         type: string
         default: image-push-github-actions-maestra-io
-      kargo-teleport-token:
-        type: string
-        default: kargo-refresh-github-actions-maestra-io
       packages-url:
         type: string
         default: https://packages.maestra.io
       packages-audience:
         type: string
         default: packages.maestra.io
+      release-version:
+        type: string
+        default: ""
+      release-tag-prefix:
+        type: string
+        default: ""
+      test-shards:
+        type: number
+        default: 1
     secrets:
       private-packages-token:
         required: false
@@ -164,11 +177,13 @@ on:
       release:
         value: ${{ jobs.version.outputs.release }}
 
-# One release pipeline per repository at a time; pull requests get their own group
-# and cancel superseded runs. Callers must not reuse the `release-<repo>` group
-# name in their own workflow (same name in caller and callee deadlocks).
+# One release pipeline per repository (and release-tag-prefix) at a time: a second
+# release line would otherwise share mcf-build's `release-<repo>` group, where a newer
+# pending run cancels the older one. Pull requests get their own group and cancel
+# superseded runs. Callers must not reuse the `release-<repo>` group name in their own
+# workflow (same name in caller and callee deadlocks).
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('build-{0}-{1}', github.repository, github.ref) || format('release-{0}', github.repository) }}
+  group: ${{ github.event_name == 'pull_request' && format('build-{0}-{1}', github.repository, github.ref) || format('release-{0}{1}', github.repository, inputs.release-tag-prefix != '' && format(':{0}', inputs.release-tag-prefix) || '') }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -176,15 +191,73 @@ permissions:
 
 env:
   ECR_REGISTRY: 515260921971.dkr.ecr.us-west-2.amazonaws.com
-  TELEPORT_FQDN: teleport.maestra.io:443
 
 jobs:
+  # Pull requests that change only the kustomization tree(s) skip version/test/images:
+  # nothing that is built or tested changed. checks still runs (check-encoding + the
+  # kustomize build of the changed overlays) and pr-gate stays green (skipped jobs pass).
+  # Any doubt (no merge commit, git failure, bake from the repo root) means code=true:
+  # everything runs.
+  changes:
+    runs-on: runs-on=${{ github.run_id }}-changes/pool=small
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      # A push (release) or workflow_dispatch builds everything: code=true without a diff. The job
+      # must still RUN on those events - a skipped `changes` makes every dependent job that has
+      # no `!cancelled()` guard (test, images, release, bake) skip too, which shipped empty green
+      # releases on 2026-10-19.
+      code: ${{ github.event_name == 'pull_request' && steps.c.outputs.code || 'true' }}
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      # The test merge commit and its first parent, the base branch tip (HEAD^1).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ github.event_name == 'pull_request' }}
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: c
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          BAKE_PATH: ${{ inputs.bake-path }}
+          BAKES: ""
+        run: |
+          # >>> pr-changes (scripts/test-pr-changes.sh runs this block)
+          # kustomization trees: bake-path plus the <bake-path> field of every `bakes` line.
+          # Comments are stripped first (a `# src` comment is not a path). A tree that is the repo
+          # root (`.`, `./`, empty) means everything is baked: never skip.
+          raw=$( { printf '%s\n' "$BAKE_PATH"; printf '%s\n' "$BAKES" | sed 's/#.*//' | awk 'NF>=2{print $2}'; } \
+            | sed -E 's#^\./##; s#/+$##; s#^$#.#')
+          dirs=$(grep -vxE '\.?' <<<"$raw" | sort -u || true)
+          root=false; grep -qxE '\.?' <<<"$raw" && root=true
+          files=$(git diff --name-only --no-renames HEAD^1 HEAD 2>/dev/null) || files=""
+          code=true
+          if [ -n "$files" ] && [ -n "$dirs" ] && ! $root; then
+            code=false
+            while IFS= read -r f; do
+              inside=false
+              while IFS= read -r d; do case "$f" in "$d"/*) inside=true; break ;; esac; done <<<"$dirs"
+              if ! $inside; then code=true; break; fi
+            done <<<"$files"
+          fi
+          echo "kustomization trees: $(tr '\n' ' ' <<<"$dirs")"
+          echo "changed files: $(wc -l <<<"$files" | tr -d ' ') -> code=$code"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          # <<< pr-changes
+
   version:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: runs-on=${{ github.run_id }}-version/pool=small
     timeout-minutes: 5
     outputs:
       release: ${{ steps.v.outputs.release }}
+      tag: ${{ steps.v.outputs.tag }}
+      shards: ${{ steps.v.outputs.shards }}
       matrix: ${{ steps.v.outputs.matrix }}
+      legs: ${{ steps.v.outputs.legs }}
+      specs: ${{ steps.v.outputs.specs }}
       images: ${{ steps.v.outputs.images }}
       service: ${{ steps.v.outputs.service }}
       publish: ${{ steps.v.outputs.publish }}
@@ -195,6 +268,9 @@ jobs:
         env:
           PREFIX: ${{ vars.RELEASE_PREFIX }}
           RUN_NUMBER: ${{ github.run_number }}
+          RELEASE_VERSION: ${{ inputs.release-version }}
+          TAG_PREFIX: ${{ inputs.release-tag-prefix }}
+          TEST_SHARDS: ${{ inputs.test-shards }}
           IMAGE_TARGETS: ${{ inputs.image-targets }}
           BAKE: ${{ inputs.bake }}
           DOCKERFILE: ${{ inputs.dockerfile }}
@@ -203,12 +279,31 @@ jobs:
           PUSH: ${{ inputs.push && github.event_name != 'pull_request' }}
           TELEPORT_TOKEN: ${{ inputs.teleport-token }}
         run: |
-          prefix="${PREFIX:-1.1}"
-          case "$prefix" in
-            [0-9]*.[0-9]*) ;;
-            *) echo "::error::vars.RELEASE_PREFIX '$prefix' is not MAJOR.MINOR"; exit 1 ;;
-          esac
-          release="${prefix}.${RUN_NUMBER}"
+          # >>> release (scripts/test-service-build.sh runs this block)
+          if [ -n "$RELEASE_VERSION" ]; then
+            if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::release-version '$RELEASE_VERSION' is not X.Y.Z"; exit 1
+            fi
+            release="$RELEASE_VERSION"
+          else
+            prefix="${PREFIX:-1.1}"
+            case "$prefix" in
+              [0-9]*.[0-9]*) ;;
+              *) echo "::error::vars.RELEASE_PREFIX '$prefix' is not MAJOR.MINOR"; exit 1 ;;
+            esac
+            release="${prefix}.${RUN_NUMBER}"
+          fi
+          if [[ ! "$TAG_PREFIX" =~ ^[A-Za-z0-9._-]*$ ]]; then
+            echo "::error::release-tag-prefix '$TAG_PREFIX' is not [A-Za-z0-9._-]*"; exit 1
+          fi
+          tag="${TAG_PREFIX}${release}"
+          # <<< release
+          # >>> shards (scripts/test-service-build.sh runs this block)
+          if ! [[ "$TEST_SHARDS" =~ ^[0-9]+$ ]] || [ "$TEST_SHARDS" -lt 1 ] || [ "$TEST_SHARDS" -gt 20 ]; then
+            echo "::error::test-shards '$TEST_SHARDS' is not 1..20"; exit 1
+          fi
+          shards=$(seq 1 "$TEST_SHARDS" | jq -sc .)
+          # <<< shards
           # >>> image-targets (scripts/test-service-build.sh runs this block)
           # `image[=target]` / `image=<dockerfile>:<target>[:<context>]`, comma or newline
           # separated -> images matrix. Empty target = last stage. Nothing at all is
@@ -232,7 +327,11 @@ jobs:
           # <<< image-targets
           {
             echo "release=$release"
+            echo "tag=$tag"
+            echo "shards=$shards"
             echo "matrix=$matrix"
+            echo "legs=$(jq -c 'map({image, target})' <<<"$matrix")"
+            echo "specs=$(jq -c 'map({key: .image, value: {dockerfile, context}}) | from_entries' <<<"$matrix")"
             echo "images=$(jq -r 'map(.image) | join(",")' <<<"$matrix")"
             echo "service=${SERVICE:-$REPO_NAME}"
             echo "publish=$PUSH"
@@ -242,17 +341,59 @@ jobs:
 
   test:
     needs: version
-    runs-on: runs-on=${{ github.run_id }}-test/pool=build
+    # One `test` job unless test-shards > 1 (the name is a contract, see the header).
+    name: ${{ inputs.test-shards > 1 && format('test ({0}/{1})', matrix.shard, inputs.test-shards) || 'test' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.version.outputs.shards) }}
+    runs-on: runs-on=${{ github.run_id }}-test-${{ matrix.shard }}/pool=build
     timeout-minutes: 45
+    env:
+      SHARD_INDEX: ${{ matrix.shard }}
+      SHARD_TOTAL: ${{ inputs.test-shards }}
     permissions:
       contents: read
       id-token: write # nora OIDC token
       packages: read  # only for a private-packages-token: GITHUB_TOKEN override (GitHub Packages)
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # Testcontainers, docker compose and BuildKit pull packages.maestra.io images (the
+      # nora pull-through, issues-maestra#1649) with ~/.docker/config.json. nora takes the
+      # OIDC token, which lives minutes: a credential helper mints a fresh one per pull.
+      - name: nora docker credentials
+        env:
+          AUDIENCE: ${{ inputs.packages-audience }}
+          PACKAGES_URL: ${{ inputs.packages-url }}
+        run: |
+          # >>> nora-cred-helper (scripts/test-dotnet-service-build.sh runs this block; all copies equal)
+          bin="$RUNNER_TEMP/nora-bin"; mkdir -p "$bin"
+          # The helper runs in the caller's environment, which tox and other test runners
+          # scrub: the job's OIDC request URL and token go to a 0600 file next to it.
+          ( umask 077; printf 'url=%q\ntoken=%q\naud=%q\n' "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+            "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$AUDIENCE" > "$bin/oidc.env" )
+          cat > "$bin/docker-credential-nora" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          [ "${1:-}" = get ] || exit 0
+          server=$(cat) # docker sends it without a newline
+          . "${BASH_SOURCE[0]%/*}/oidc.env"
+          t=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $token" \
+            "$url&audience=$aud" | jq -r '.value // empty')
+          [ -n "$t" ]
+          jq -cn --arg s "$server" --arg t "$t" '{ServerURL: $s, Username: "token", Secret: $t}'
+          EOF
+          chmod 755 "$bin/docker-credential-nora"
+          echo "$bin" >> "$GITHUB_PATH"
+          host="${PACKAGES_URL#*://}"; host="${host%%/*}"
+          cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"; mkdir -p "$(dirname "$cfg")"
+          [ -s "$cfg" ] || echo '{}' > "$cfg"
+          jq --arg h "$host" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+          # <<< nora-cred-helper
 
       - name: mint packages token
         id: token
@@ -308,6 +449,10 @@ jobs:
               | docker login --username AWS --password-stdin "$ECR_REGISTRY"
           fi
 
+      # ISO week for a Dockerfile's `ARG BASE_REFRESH` (README, layer cache): a new value
+      # rebuilds the apt/apk stages the cache would otherwise serve forever.
+      - id: week
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
       # ── Dockerfile stage (GitLab .run-docker-test) ───────────────────────
       - if: ${{ inputs.docker-test-target != '' }}
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -322,23 +467,57 @@ jobs:
         run: |
           # >>> layer-cache (scripts/test-dotnet-service-build-cache.sh runs this block)
           persists='--password|ClearTextPassword|_authToken|http-basic|^[[:space:]]*ARG[[:space:]]+[A-Za-z0-9_]*(TOKEN|PASSWORD)'
-          nocache=false
+          nugetcache='--mount=type=cache,[^[:space:]]*id=nuget(,|[[:space:]]|$)'
+          nocache=false; nocachefilter=""; mountgone=false
+          # BuildKit's default GC drops a cache mount unused for 48 h, its layers live 60 d:
+          # a cached restore layer then leaves the --no-restore RUNs without packages
+          # (NETSDK1064, every rerun too). One --no-cache build refills the mount.
+          if [ "${STICKY:-}" = true ] && grep -Eq -- "$nugetcache" "$DOCKERFILE" 2>/dev/null \
+             && ! grep -qF 'with id "/nuget"' <<<"$(docker buildx du ${BUILDER:+--builder "$BUILDER"} --verbose --filter type=exec.cachemount 2>/dev/null || true)"; then
+            mountgone=true
+          fi
           if [ "${STICKY:-}" = true ] && grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
             # The persistent builder would replay the token layer exactly like the gha
-            # cache does: build this Dockerfile with --no-cache on the sticky disk.
-            echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer: built with --no-cache on the sticky BuildKit disk; scripts/nuget-secret-mount-fix.sh fixes the Dockerfile"
+            # cache does: re-run the stages that write it (--no-cache-filter; stages built
+            # FROM them re-run too). A global --no-cache would also start every NuGet cache
+            # mount empty and keep that one (BuildKit 0.33). A match outside a named stage: --no-cache.
+            nocachefilter=$(python3 -I - "$DOCKERFILE" "$persists" <<'PY'
+          import re, sys
+          pat, hit, named, cur, mounts = re.compile(sys.argv[2].replace('[[:space:]]', r'\s'), re.I), [], True, None, set()
+          for l in re.sub(r'\\\r?\n', ' ', open(sys.argv[1]).read()).splitlines():
+              m = re.match(r'\s*FROM\s+(?:--\S+\s+)*\S+(?:\s+AS\s+(\S+))?', l, re.I)
+              if m:
+                  cur = (m.group(1) or '').lower()
+              elif pat.search(l):
+                  named = named and bool(cur)
+                  hit += [cur] if cur and cur not in hit else []
+              if 'type=cache' in l and 'id=nuget' in l:
+                  mounts.add(cur)
+          # a filtered stage would start its NuGet cache mount empty: --no-cache then
+          print(','.join(hit) if named and not mounts & set(hit) else '')
+          PY
+            )
+            [ -n "$nocachefilter" ] && [ "$mountgone" = false ] || { nocache=true; nocachefilter=""; }
+            echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer: built with ${nocachefilter:+--no-cache-filter }${nocachefilter:---no-cache} on the sticky BuildKit disk; scripts/nuget-secret-mount-fix.sh fixes the Dockerfile"
+            from=""; to=""
+          elif [ "$mountgone" = true ]; then
+            echo "::notice file=${DOCKERFILE}::no NuGet cache mount on the sticky BuildKit disk (new disk or GC): built with --no-cache once to fill it"
             from=""; to=""; nocache=true
           elif [ "${STICKY:-}" = true ]; then
             from=""; to="" # layers live on the job's sticky disk, no gha export/import
           elif grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
             echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer (GitLab-era 'dotnet nuget update source --password'): built WITHOUT the layer cache, a cached layer would replay an expired token. Mount it per RUN instead: --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_<source> (scripts/nuget-secret-mount-fix.sh)."
             from=""; to=""
+          elif grep -Eq -- "$nugetcache" "$DOCKERFILE" 2>/dev/null; then
+            # type=gha exports layers, never cache mounts: an imported restore layer leaves
+            # the --no-restore RUNs of a fresh runner without packages (NETSDK1064).
+            from=""; to=""
           else
             scopes=$(printf '%s\n' "$SCOPES" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . || true)
             from=$(awk '{print "type=gha,scope=" $0}' <<<"$scopes")
-            to="type=gha,mode=max,scope=$(head -n1 <<<"$scopes")"
+            to="type=gha,mode=max,ignore-error=true,scope=$(head -n1 <<<"$scopes")"
           fi
-          { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; echo "nocache=$nocache"; } >> "$GITHUB_OUTPUT"
+          { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; echo "nocache=$nocache"; echo "nocachefilter=$nocachefilter"; } >> "$GITHUB_OUTPUT"
           # <<< layer-cache
       - if: ${{ inputs.docker-test-target != '' }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -348,7 +527,9 @@ jobs:
           target: ${{ inputs.docker-test-target }}
           load: true
           tags: local/${{ inputs.docker-test-target }}:latest
-          build-args: ${{ inputs.build-args }}
+          build-args: |
+            ${{ inputs.build-args }}
+            BASE_REFRESH=${{ steps.week.outputs.week }}
           secrets: ${{ steps.secrets.outputs.value }}
           cache-from: ${{ steps.cache.outputs.from }}
           cache-to: ${{ steps.cache.outputs.to }}
@@ -357,7 +538,7 @@ jobs:
       - if: ${{ inputs.docker-test-target != '' }}
         env:
           TARGET: ${{ inputs.docker-test-target }}
-        run: docker run --rm -e DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=true --env-file "$RUNNER_TEMP/test.env" "local/${TARGET}:latest"
+        run: docker run --rm -e DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=true -e SHARD_INDEX -e SHARD_TOTAL --env-file "$RUNNER_TEMP/test.env" "local/${TARGET}:latest"
 
       # ── test-command on the runner (the repo's GitLab test jobs) ─────────
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' && inputs.python-version != '' }}
@@ -385,6 +566,20 @@ jobs:
           chmod +x "$RUNNER_TEMP/bin/packages-token"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           echo "PACKAGES_AUDIENCE=$AUDIENCE" >> "$GITHUB_ENV"
+      # A test-command that builds an image can cache its layers like the images job:
+      # `docker buildx build --load --cache-from type=gha,scope=<x> --cache-to type=gha,mode=max,scope=<x>`.
+      # That needs a BuildKit builder (plain `docker build` keeps using the default one) and the
+      # Actions runtime env buildx reads for type=gha, which a run step does not see on its own.
+      - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            for (const k of ['ACTIONS_RUNTIME_TOKEN', 'ACTIONS_RUNTIME_URL', 'ACTIONS_CACHE_URL', 'ACTIONS_RESULTS_URL', 'ACTIONS_CACHE_SERVICE_V2']) {
+              if (process.env[k]) core.exportVariable(k, process.env[k]);
+            }
+            core.setSecret(process.env.ACTIONS_RUNTIME_TOKEN);
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
         env:
           PACKAGES_TOKEN: ${{ steps.token.outputs.token }}
@@ -396,9 +591,10 @@ jobs:
         run: echo "::notice::no test-command and no docker-test-target, tests skipped"
 
   images:
-    # Explicit: the matrix carries `dockerfile`/`context` too; the check name stays the
-    # default one (`images (<image>, <target>)`, `images (<image>)` for a last-stage build).
-    name: ${{ matrix.target != '' && format('images ({0}, {1})', matrix.image, matrix.target) || format('images ({0})', matrix.image) }}
+    # No `name`: GitHub appends the matrix values, `images (<image>, <target>)` or
+    # `images (<image>)` for a last-stage build, and a skipped job (pull_request) reads
+    # `images` instead of the raw expression a matrix-based `name` leaves when skipped.
+    # So the matrix carries only image/target; dockerfile/context come from `specs`.
     needs: [version, test]
     # Not on pull_request unless pr-images: images are built (and checked) by the
     # release on the default branch and by the workflow_dispatch dry run.
@@ -412,15 +608,53 @@ jobs:
       contents: read
       id-token: write # nora OIDC token + Teleport join
       packages: read  # see `test`
+    # fail-fast off: one failed image (a Teleport/ECR flake) no longer cancels its
+    # siblings, so "re-run failed jobs" rebuilds only that leg instead of legs that
+    # may already have pushed their immutable tag. `images` still ends `failure`
+    # when any leg fails: `release` (and the bake after it) stays skipped and
+    # `pr gate` red, exactly as before.
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.version.outputs.matrix) }}
+        include: ${{ fromJSON(needs.version.outputs.legs) }}
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # Testcontainers, docker compose and BuildKit pull packages.maestra.io images (the
+      # nora pull-through, issues-maestra#1649) with ~/.docker/config.json. nora takes the
+      # OIDC token, which lives minutes: a credential helper mints a fresh one per pull.
+      - name: nora docker credentials
+        env:
+          AUDIENCE: ${{ inputs.packages-audience }}
+          PACKAGES_URL: ${{ inputs.packages-url }}
+        run: |
+          # >>> nora-cred-helper (scripts/test-dotnet-service-build.sh runs this block; all copies equal)
+          bin="$RUNNER_TEMP/nora-bin"; mkdir -p "$bin"
+          # The helper runs in the caller's environment, which tox and other test runners
+          # scrub: the job's OIDC request URL and token go to a 0600 file next to it.
+          ( umask 077; printf 'url=%q\ntoken=%q\naud=%q\n' "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+            "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$AUDIENCE" > "$bin/oidc.env" )
+          cat > "$bin/docker-credential-nora" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          [ "${1:-}" = get ] || exit 0
+          server=$(cat) # docker sends it without a newline
+          . "${BASH_SOURCE[0]%/*}/oidc.env"
+          t=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $token" \
+            "$url&audience=$aud" | jq -r '.value // empty')
+          [ -n "$t" ]
+          jq -cn --arg s "$server" --arg t "$t" '{ServerURL: $s, Username: "token", Secret: $t}'
+          EOF
+          chmod 755 "$bin/docker-credential-nora"
+          echo "$bin" >> "$GITHUB_PATH"
+          host="${PACKAGES_URL#*://}"; host="${host%%/*}"
+          cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"; mkdir -p "$(dirname "$cfg")"
+          [ -s "$cfg" ] || echo '{}' > "$cfg"
+          jq --arg h "$host" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+          # <<< nora-cred-helper
 
       - name: mint packages token
         id: token
@@ -454,7 +688,7 @@ jobs:
       # account's ECR when the Dockerfile names it (instance role, read only).
       - name: ecr login (base images)
         env:
-          DOCKERFILE: ${{ matrix.dockerfile }}
+          DOCKERFILE: ${{ fromJSON(needs.version.outputs.specs)[matrix.image].dockerfile }}
         run: |
           if grep -qsF "$ECR_REGISTRY" "$DOCKERFILE"; then
             aws ecr get-login-password --region "$(cut -d. -f4 <<< "$ECR_REGISTRY")" \
@@ -466,49 +700,101 @@ jobs:
       - name: layer cache
         id: cache
         env:
-          DOCKERFILE: ${{ matrix.dockerfile }}
+          DOCKERFILE: ${{ fromJSON(needs.version.outputs.specs)[matrix.image].dockerfile }}
           SCOPES: |
             ${{ matrix.image }}
             ${{ inputs.docker-test-target }}
         run: |
           # >>> layer-cache (scripts/test-dotnet-service-build-cache.sh runs this block)
           persists='--password|ClearTextPassword|_authToken|http-basic|^[[:space:]]*ARG[[:space:]]+[A-Za-z0-9_]*(TOKEN|PASSWORD)'
-          nocache=false
+          nugetcache='--mount=type=cache,[^[:space:]]*id=nuget(,|[[:space:]]|$)'
+          nocache=false; nocachefilter=""; mountgone=false
+          # BuildKit's default GC drops a cache mount unused for 48 h, its layers live 60 d:
+          # a cached restore layer then leaves the --no-restore RUNs without packages
+          # (NETSDK1064, every rerun too). One --no-cache build refills the mount.
+          if [ "${STICKY:-}" = true ] && grep -Eq -- "$nugetcache" "$DOCKERFILE" 2>/dev/null \
+             && ! grep -qF 'with id "/nuget"' <<<"$(docker buildx du ${BUILDER:+--builder "$BUILDER"} --verbose --filter type=exec.cachemount 2>/dev/null || true)"; then
+            mountgone=true
+          fi
           if [ "${STICKY:-}" = true ] && grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
             # The persistent builder would replay the token layer exactly like the gha
-            # cache does: build this Dockerfile with --no-cache on the sticky disk.
-            echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer: built with --no-cache on the sticky BuildKit disk; scripts/nuget-secret-mount-fix.sh fixes the Dockerfile"
+            # cache does: re-run the stages that write it (--no-cache-filter; stages built
+            # FROM them re-run too). A global --no-cache would also start every NuGet cache
+            # mount empty and keep that one (BuildKit 0.33). A match outside a named stage: --no-cache.
+            nocachefilter=$(python3 -I - "$DOCKERFILE" "$persists" <<'PY'
+          import re, sys
+          pat, hit, named, cur, mounts = re.compile(sys.argv[2].replace('[[:space:]]', r'\s'), re.I), [], True, None, set()
+          for l in re.sub(r'\\\r?\n', ' ', open(sys.argv[1]).read()).splitlines():
+              m = re.match(r'\s*FROM\s+(?:--\S+\s+)*\S+(?:\s+AS\s+(\S+))?', l, re.I)
+              if m:
+                  cur = (m.group(1) or '').lower()
+              elif pat.search(l):
+                  named = named and bool(cur)
+                  hit += [cur] if cur and cur not in hit else []
+              if 'type=cache' in l and 'id=nuget' in l:
+                  mounts.add(cur)
+          # a filtered stage would start its NuGet cache mount empty: --no-cache then
+          print(','.join(hit) if named and not mounts & set(hit) else '')
+          PY
+            )
+            [ -n "$nocachefilter" ] && [ "$mountgone" = false ] || { nocache=true; nocachefilter=""; }
+            echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer: built with ${nocachefilter:+--no-cache-filter }${nocachefilter:---no-cache} on the sticky BuildKit disk; scripts/nuget-secret-mount-fix.sh fixes the Dockerfile"
+            from=""; to=""
+          elif [ "$mountgone" = true ]; then
+            echo "::notice file=${DOCKERFILE}::no NuGet cache mount on the sticky BuildKit disk (new disk or GC): built with --no-cache once to fill it"
             from=""; to=""; nocache=true
           elif [ "${STICKY:-}" = true ]; then
             from=""; to="" # layers live on the job's sticky disk, no gha export/import
           elif grep -Eiq -- "$persists" "$DOCKERFILE" 2>/dev/null; then
             echo "::warning file=${DOCKERFILE}::${DOCKERFILE} writes the packages token into an image layer (GitLab-era 'dotnet nuget update source --password'): built WITHOUT the layer cache, a cached layer would replay an expired token. Mount it per RUN instead: --mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_<source> (scripts/nuget-secret-mount-fix.sh)."
             from=""; to=""
+          elif grep -Eq -- "$nugetcache" "$DOCKERFILE" 2>/dev/null; then
+            # type=gha exports layers, never cache mounts: an imported restore layer leaves
+            # the --no-restore RUNs of a fresh runner without packages (NETSDK1064).
+            from=""; to=""
           else
             scopes=$(printf '%s\n' "$SCOPES" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . || true)
             from=$(awk '{print "type=gha,scope=" $0}' <<<"$scopes")
-            to="type=gha,mode=max,scope=$(head -n1 <<<"$scopes")"
+            to="type=gha,mode=max,ignore-error=true,scope=$(head -n1 <<<"$scopes")"
           fi
-          { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; echo "nocache=$nocache"; } >> "$GITHUB_OUTPUT"
+          { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; echo "nocache=$nocache"; echo "nocachefilter=$nocachefilter"; } >> "$GITHUB_OUTPUT"
           # <<< layer-cache
 
-      # Built into the local daemon as local/<image>:<release>, then pushed by the
-      # shared push-to-aws-ecr-repository action: it creates the repository
-      # IMMUTABLE_WITH_EXCLUSION with the org pull policy and logs in through the
-      # Teleport image-push bot (no static AWS keys).
+      # Built once into the BuildKit builder (type=image, no daemon load), then the
+      # shared push-to-aws-ecr-repository action logs in through the Teleport
+      # image-push bot and creates the repository (IMMUTABLE_WITH_EXCLUSION, org
+      # pull policy), and a second, fully cached build pushes from BuildKit: it
+      # uploads only the layers ECR is missing. The old `load: true` + `docker push`
+      # re-uploaded every layer from the runner's fresh daemon (data-mesh-algs-413,
+      # 22.10.2026: 2.3 GB a release for 3 MB of change, 100 s of load + 3 min of push).
+      # SOURCE_DATE_EPOCH pins the image timestamps to the commit, so the same
+      # commit rebuilds to the same manifest digest: a re-run of a failed job finds
+      # its own image under the immutable tag and skips the push.
+      - name: source date epoch
+        id: epoch
+        run: echo "value=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
+      # ISO week for a Dockerfile's `ARG BASE_REFRESH` (README, layer cache): a new value
+      # rebuilds the apt/apk stages the cache would otherwise serve forever. One value per
+      # job: the push build below must hit the cache of the first build.
+      - id: week
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
       - name: build ${{ matrix.image }} (${{ matrix.target }})
+        id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.value }}
         with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
+          context: ${{ fromJSON(needs.version.outputs.specs)[matrix.image].context }}
+          file: ${{ fromJSON(needs.version.outputs.specs)[matrix.image].dockerfile }}
           target: ${{ matrix.target }}
-          load: true
-          push: false
+          provenance: false
+          outputs: type=image,push=false
           tags: local/${{ matrix.image }}:${{ needs.version.outputs.release }}
           build-args: |
             revision=${{ needs.version.outputs.release }} (${{ github.sha }})
             release=${{ needs.version.outputs.release }} (${{ github.sha }})
             ${{ inputs.build-args }}
+            BASE_REFRESH=${{ steps.week.outputs.week }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
@@ -516,19 +802,83 @@ jobs:
           secrets: ${{ steps.secrets.outputs.value }}
           cache-from: ${{ steps.cache.outputs.from }}
           cache-to: ${{ steps.cache.outputs.to }}
-
-      - name: push ${{ matrix.image }}:${{ needs.version.outputs.release }}
+      - name: ecr login
+        id: ecr
         if: ${{ needs.version.outputs.publish == 'true' }}
-        uses: maestra-io/github-actions/push-to-aws-ecr-repository@v1
+        uses: maestra-io/github-actions/push-to-aws-ecr-repository@4810e33793d010b8ff485d52a0798d48fc7df5a6 # v1.46.1
         with:
           awsRegion: us-west-2
           repositories: ${{ matrix.image }}
-          localTag: ${{ needs.version.outputs.release }}
           targetTag: ${{ needs.version.outputs.release }}
           teleportToken: ${{ needs.version.outputs.teleport-token }}
+          push: false
+      - name: ${{ matrix.image }}:${{ needs.version.outputs.release }} already in ECR?
+        id: existing
+        if: ${{ needs.version.outputs.publish == 'true' }}
+        env:
+          IMAGE: ${{ matrix.image }}
+          RELEASE: ${{ needs.version.outputs.release }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          AWS_REGION: us-west-2
+        run: |
+          # >>> ecr-push-check (scripts/test-ecr-push-check.sh runs this block)
+          # Idempotent re-run: the immutable tag may already hold this run's image from an
+          # earlier attempt. Same digest (SOURCE_DATE_EPOCH makes the rebuild reproducible)
+          # = pushed already: skip. Another digest would end in ECR TAG_INVALID: fail and say what to do.
+          [ -n "$DIGEST" ] || { echo "::error::no image digest from the build step"; exit 1; }
+          if ! out=$(aws ecr describe-images --repository-name "$IMAGE" --image-ids imageTag="$RELEASE" --output json 2>&1); then
+            if grep -qE 'ImageNotFoundException|RepositoryNotFoundException' <<<"$out"; then echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+            echo "::error::cannot read ${IMAGE}:${RELEASE} from ECR: $out"; exit 1
+          fi
+          existing=$(jq -r '.imageDetails[0].imageDigest // empty' <<<"$out")
+          if [ "$existing" = "$DIGEST" ]; then
+            echo "${IMAGE}:${RELEASE} is already in ECR (${DIGEST}): push skipped"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::${IMAGE}:${RELEASE} already exists in ECR (${existing:-<none>}) and is not the image built now (${DIGEST}); tags are immutable. Dispatch the release workflow again: it takes the next release number."
+            exit 1
+          fi
+          # <<< ecr-push-check
+      - name: push ${{ matrix.image }}:${{ needs.version.outputs.release }}
+        id: push
+        if: ${{ needs.version.outputs.publish == 'true' && steps.existing.outputs.skip != 'true' }}
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.value }}
+        with:
+          context: ${{ fromJSON(needs.version.outputs.specs)[matrix.image].context }}
+          file: ${{ fromJSON(needs.version.outputs.specs)[matrix.image].dockerfile }}
+          target: ${{ matrix.target }}
+          provenance: false
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ matrix.image }}:${{ needs.version.outputs.release }}
+          build-args: |
+            revision=${{ needs.version.outputs.release }} (${{ github.sha }})
+            release=${{ needs.version.outputs.release }} (${{ github.sha }})
+            ${{ inputs.build-args }}
+            BASE_REFRESH=${{ steps.week.outputs.week }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.version.outputs.release }}
+          secrets: ${{ steps.secrets.outputs.value }}
+          cache-from: ${{ steps.cache.outputs.from }}
+      # Keyless cosign signature + CycloneDX SBOM attestation of the pushed digest,
+      # stored as OCI referrers next to the image. Best-effort: never fails the
+      # release (sign-image/action.yml, issues-maestra#1648); capped at 10 min so a
+      # slow Fulcio/Rekor/syft never times out the job that pushed the image.
+      - name: sign ${{ matrix.image }}:${{ needs.version.outputs.release }}
+        if: ${{ needs.version.outputs.publish == 'true' }}
+        continue-on-error: true
+        timeout-minutes: 10
+        uses: maestra-io/github-actions/sign-image@21da9a74395b7d6fb7dfa71ba2805c280d11fe32 # v1.64.2
+        with:
+          image: ${{ steps.ecr.outputs.registry }}/${{ matrix.image }}
+          digest: ${{ steps.push.outputs.digest || steps.build.outputs.digest }}
 
   # Git tag + GitHub Release BEFORE the bake: bake-oci-manifests checks out the
-  # release tag. Bare `1.1.N`, same shape as create-gitlab-release.
+  # release tag. Bare `1.1.N`, same shape as create-gitlab-release (or
+  # <release-tag-prefix>1.1.N).
   # Bake-only (no image-targets): `images` is skipped, so the gate is explicit.
   release:
     needs: [version, test, images]
@@ -543,14 +893,14 @@ jobs:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE: ${{ needs.version.outputs.release }}
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
           # Idempotent for a re-run of failed jobs (same run_number, same release).
-          if gh release view "$RELEASE" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "release $RELEASE already exists"; exit 0
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $TAG already exists"; exit 0
           fi
-          gh release create "$RELEASE" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "$RELEASE" --generate-notes
+          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "$TAG" --generate-notes
 
   bake:
     needs: [version, release]
@@ -563,106 +913,17 @@ jobs:
       id-token: write # Teleport join + cosign keyless
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: maestra-io/github-actions/bake-oci-manifests@v1
+      - uses: maestra-io/github-actions/bake-oci-manifests@51406ce83f8edcdad634eb971da1dd54f0e5b54f # v1.64.0
         with:
           service: ${{ needs.version.outputs.service }}
           images: ${{ needs.version.outputs.images }}
           tag: ${{ needs.version.outputs.release }}
+          ref: ${{ needs.version.outputs.tag }}
           bake-path: ${{ inputs.bake-path }}
           teleport-token: ${{ needs.version.outputs.teleport-token }}
 
-  # Instant freight: POST /v1beta1/projects/<p>/warehouses/<w>/refresh on Kargo
-  # (us-iota-lw-kube-infra) instead of the Warehouse's 5m poll. Reached from the
-  # AWS runner through Teleport, nothing on iota runs for it:
-  #   1. tbot (github join, bot github-actions-kargo-refresh) writes a kubeconfig
-  #      for us-iota-lw-kube-infra and a client certificate for the Teleport app
-  #      `kargo` (kargo.teleport.maestra.io), in one oneshot run;
-  #   2. kubectl mints a 10-minute token of ServiceAccount kargo/kargo-ci-github
-  #      (the bot may do nothing else on the cluster);
-  #   3. curl with the app certificate + that bearer. Kargo checks `get` on the
-  #      Warehouse as kargo-ci-github (fluxcd ClusterRole kargo-ci-github-refresher),
-  #      then applies the annotation with its own client.
-  # Best effort: the bake is done, a failure here only delays freight by <=5m.
-  kargo-refresh:
-    needs: [version, bake]
-    if: ${{ !cancelled() && inputs.bake && inputs.kargo-refresh && needs.version.outputs.publish == 'true' && needs.bake.result == 'success' }}
-    runs-on: runs-on=${{ github.run_id }}-kargo-refresh/pool=small
-    timeout-minutes: 5
-    continue-on-error: true
-    permissions:
-      contents: read
-      id-token: write # Teleport join
-    steps:
-      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - id: tp-version
-        run: |
-          v=$(curl -sf "https://${TELEPORT_FQDN}/webapi/find" | jq -r '.auto_update.tools_version // .server_version')
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-      - uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
-        with:
-          version: ${{ steps.tp-version.outputs.version }}
-          proxy: ${{ env.TELEPORT_FQDN }}
-      - env:
-          TOKEN_NAME: ${{ inputs.kargo-teleport-token }}
-          SERVICE: ${{ needs.version.outputs.service }}
-          PROJECT: ${{ inputs.kargo-project }}
-          WAREHOUSE: ${{ inputs.kargo-warehouse }}
-        run: |
-          out="$(mktemp -d)"
-          cat > "$out/tbot.yaml" <<EOF
-          version: v2
-          proxy_server: ${TELEPORT_FQDN}
-          onboarding:
-            join_method: github
-            token: ${TOKEN_NAME}
-          oneshot: true
-          storage:
-            type: memory
-          services:
-            - type: kubernetes/v2
-              destination:
-                type: directory
-                path: ${out}/kube
-              selectors:
-                - name: us-iota-lw-kube-infra
-            - type: application
-              app_name: kargo
-              destination:
-                type: directory
-                path: ${out}/app
-          EOF
-          mkdir -p "$out/kube" "$out/app"
-          # tbot's heartbeat can hang minutes after the outputs land (see
-          # fluxcd setup-flux-ecr): poll for the files, then stop it.
-          tbot start -c "$out/tbot.yaml" & pid=$!
-          for _ in $(seq 1 30); do
-            [ -s "$out/kube/kubeconfig.yaml" ] && [ -s "$out/app/tlscert" ] && break
-            kill -0 "$pid" 2>/dev/null || break
-            sleep 1
-          done
-          kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
-          [ -s "$out/kube/kubeconfig.yaml" ] && [ -s "$out/app/tlscert" ] \
-            || { echo "::warning::tbot (${TOKEN_NAME}) produced no credentials; freight appears on the next Warehouse poll"; exit 1; }
-
-          bearer=$(kubectl --kubeconfig "$out/kube/kubeconfig.yaml" \
-            --context "teleport.maestra.io-us-iota-lw-kube-infra" \
-            -n kargo create token kargo-ci-github --duration 10m)
-          echo "::add-mask::$bearer"
-          project="${PROJECT:-kargo-${SERVICE}}"
-          warehouse="${WAREHOUSE:-${SERVICE}}"
-          http=$(curl -sS -o "$out/resp" -w '%{http_code}' -X POST \
-            --cert "$out/app/tlscert" --key "$out/app/key" \
-            -H "Authorization: Bearer ${bearer}" \
-            "https://kargo.teleport.maestra.io/v1beta1/projects/${project}/warehouses/${warehouse}/refresh") || http=000
-          if [ "$http" = "200" ]; then
-            echo "Kargo warehouse ${project}/${warehouse} refreshed"
-          else
-            echo "::warning::Kargo warehouse ${project}/${warehouse} refresh failed (HTTP ${http}): $(head -c 300 "$out/resp" 2>/dev/null)"
-            exit 1
-          fi
-
-  # Pull requests only: the shared PR checks (gitleaks on the PR's commits,
-  # check-encoding, kustomize build of a changed overlays tree), then one verdict.
+  # Pull requests only: the shared PR checks (check-encoding, kustomize build of a
+  # changed overlays tree), then one verdict.
   checks:
     if: ${{ github.event_name == 'pull_request' }}
     uses: maestra-io/github-actions/.github/workflows/pr-checks.yml@main
@@ -678,7 +939,7 @@ jobs:
     runs-on: runs-on=${{ github.run_id }}-pr-gate/pool=small
     timeout-minutes: 5
     steps:
-      - uses: runs-on/action@v2.5.0
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - env:
           RESULTS: ${{ toJSON(needs.*.result) }}
         run: |

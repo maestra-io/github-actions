@@ -37,11 +37,13 @@ runs:
         python3 -I "$GITHUB_ACTION_PATH/test-results-to-jsonl.py" "$RESULTS" > "$out/rows.jsonl"
         [ -s "$out/rows.jsonl" ] || { echo "no test results under $RESULTS"; exit 0; }
         # The ingress caps a body at 16 MiB: DirectCRM's shards are ~50k rows a job.
+        # gzip to a file, not a pipe: curl cannot --retry a body read from stdin.
         split -C 4m -d "$out/rows.jsonl" "$out/chunk-"
         for c in "$out"/chunk-*; do
+          gzip -c "$c" > "$c.gz"
           curl -sS --fail-with-body --retry 3 --retry-all-errors -m 60 \
             -H "Authorization: Bearer $CI_TEST_RESULTS_TOKEN" -H 'Content-Type: application/stream+json' \
-            --data-binary "@$c" https://ci-telemetry.iota.maestra.io/ci/test-results
+            -H 'Content-Encoding: gzip' --data-binary "@$c.gz" https://ci-telemetry.iota.maestra.io/ci/test-results
         done
-        echo "ingested $(wc -l < "$out/rows.jsonl") rows ($(ls "$out"/chunk-* | wc -l) requests)"
+        echo "ingested $(wc -l < "$out/rows.jsonl") rows ($(ls "$out"/chunk-*.gz | wc -l) requests)"
         # <<< ingest

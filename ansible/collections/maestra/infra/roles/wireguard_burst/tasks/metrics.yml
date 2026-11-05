@@ -1,0 +1,38 @@
+---
+# Per-slot handshake time and byte counters as node_exporter textfile metrics,
+# refreshed every wireguard_burst_metrics_interval. Slots are labelled by name;
+# public keys never appear in the output.
+# Only make sure it exists: the directory usually belongs to node_exporter's
+# own install (owner, mode), and pinning them here would flip it every run.
+- name: Create the textfile collector directory if missing
+  ansible.builtin.file:
+    path: "{{ wireguard_burst_textfile_dir }}"
+    state: directory  # noqa: risky-file-permissions
+
+- name: Install the metrics collector
+  ansible.builtin.template:
+    src: wireguard-burst-metrics.py.j2
+    dest: /usr/local/sbin/wireguard-burst-metrics
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the collector service and timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: /etc/systemd/system/{{ item }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - wireguard-burst-metrics.service
+    - wireguard-burst-metrics.timer
+  register: wireguard_burst_metrics_units
+
+- name: Start the metrics timer
+  ansible.builtin.systemd:
+    name: wireguard-burst-metrics.timer
+    enabled: true
+    state: started
+    daemon_reload: "{{ wireguard_burst_metrics_units is changed }}"
+  when: not ansible_check_mode
