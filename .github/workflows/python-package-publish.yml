@@ -16,6 +16,11 @@
 # That is the GitLab 0.0.<CI_PIPELINE_IID + offset> scheme (maestra-io/ml-commons):
 # set the offset so GitHub versions continue above the imported ones.
 #
+# Tools (uv, poetry, twine) and every dependency come from packages.maestra.io only
+# (issues-maestra#1649): uv is set up first, `uv-nora` gives it the OIDC keyring
+# helper, poetry and twine run as uv tools resolved through nora. A test-command
+# installs with `uv sync --locked` (pyproject [[tool.uv.index]] name = "maestra").
+#
 # Auth: the run's GitHub OIDC token (`aud` packages.maestra.io), sent by twine as
 # the HTTP Basic password; nora verifies the JWT on Basic as well as on Bearer
 # (nora MAESTRA.md, auth matrix "GitHub Actions"), so no stored secret and the
@@ -29,6 +34,7 @@
 # Inputs:
 #   python-version    Default 3.12.
 #   build-tool        poetry | uv (default poetry).
+#   uv-version        uv for the build, the tools and the test-command (default 0.13.6).
 #   test-command      Shell command run after the build (default empty = none);
 #                     installing the package's deps is up to the command.
 #   repository-url    twine upload target (default https://packages.maestra.io/simple/).
@@ -59,6 +65,9 @@ on:
       build-tool:
         type: string
         default: poetry
+      uv-version:
+        type: string
+        default: "0.13.6"
       test-command:
         type: string
         default: ""
@@ -136,8 +145,14 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ inputs.python-version }}
-      - if: ${{ inputs.build-tool == 'uv' }}
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: ${{ inputs.uv-version }}
+          enable-cache: false
+      # uv's keyring helper: a fresh nora OIDC token whenever uv asks (the token lives minutes).
+      - uses: maestra-io/github-actions/uv-nora@22ccbf9ff3d76fe13025cbc009d395024f025198 # v1.67.0
+        with:
+          audience: ${{ inputs.packages-audience }}
 
       - name: build
         env:
@@ -145,10 +160,13 @@ jobs:
           PREFIX: ${{ inputs.version-prefix }}
           RUN_NUMBER: ${{ github.run_number }}
           OFFSET: ${{ inputs.build-number-offset }}
+          # The uv-nora helper answers for this URL; the user name selects it.
+          TOOLS_INDEX: https://token@packages.maestra.io/simple/
         run: |
           v=""; [ -z "$PREFIX" ] || v="${PREFIX}$((RUN_NUMBER + OFFSET))"
           case "$TOOL" in
-            poetry) pipx install poetry && { [ -z "$v" ] || poetry version "$v"; } && poetry build ;;
+            poetry) uv tool install --default-index "$TOOLS_INDEX" poetry \
+                && { [ -z "$v" ] || poetry version "$v"; } && poetry build ;;
             uv) { [ -z "$v" ] || uv version --frozen "$v"; } && uv build ;;
             *) echo "::error::build-tool must be poetry or uv, got '$TOOL'"; exit 1 ;;
           esac
@@ -177,6 +195,7 @@ jobs:
         env:
           TOKEN: ${{ secrets.packages-token || steps.token.outputs.token }}
           URL: ${{ inputs.repository-url }}
+          TOOLS_INDEX: https://token@packages.maestra.io/simple/
         run: |
           # pypi-upload: begin
           export TWINE_USERNAME=token TWINE_PASSWORD="$TOKEN" TWINE_REPOSITORY_URL="$URL"
@@ -188,7 +207,7 @@ jobs:
               echo "skip $file: already on ${URL%/}/${project}/"
               continue
             fi
-            if ! out=$(pipx run --spec twine==6.2.0 twine upload --non-interactive "$f" 2>&1); then
+            if ! out=$(uvx --default-index "$TOOLS_INDEX" --from twine==6.2.0 twine upload --non-interactive "$f" 2>&1); then
               echo "$out"
               grep -q '409 Conflict' <<<"$out" || exit 1
               echo "skip $file: 409, uploaded by an earlier run"
