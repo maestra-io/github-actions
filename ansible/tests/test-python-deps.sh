@@ -41,6 +41,11 @@ wheels = [
 ]
 L
 sed 's|https://packages.maestra.io/files/six-1.17.0-py2|https://files.pythonhosted.org/packages/b7/ce/six-1.17.0-py2|' "$T/nora.lock" > "$T/pypi.lock"
+sed 's|https://packages.maestra.io/files/six-1.17.0-py2|https://packages-maestra.io/files/six-1.17.0-py2|' "$T/nora.lock" > "$T/lookalike.lock"
+sed 's|^source = .*|source = { git = "ssh://git@github.com/x/six.git?rev=1#abc" }|' "$T/nora.lock" > "$T/git.lock"
+sed 's|^source = .*|source = { registry = "https://pypi.org/simple" }|' "$T/nora.lock" > "$T/index.lock"
+sed 's|^source = .*|source = { path = "../six" }|' "$T/nora.lock" > "$T/path.lock"
+printf '[[package]]\nname = "p"\nversion = "0"\nsource = { virtual = "." }\n' >> "$T/nora.lock"
 
 run() {  # run <desc> <lock: nora|pypi|none> <want uv log line or FAIL> [ENV=...]
   local desc="$1" lock="$2" want="$3"; shift 3
@@ -60,6 +65,10 @@ run "lock: sync into setup-python's interpreter, inexact" nora \
 run "lock + lint group into the active venv" nora \
   "uv sync --locked --no-install-project --project p --group lint --active | env=" DEPS_GROUP=lint DEPS_TARGET=active
 run "lock naming files.pythonhosted.org: refused, uv never runs" pypi FAIL
+run "lock naming a look-alike host (packages-maestra.io): refused" lookalike FAIL
+run "lock with a git (ssh) source: refused" git FAIL
+run "lock with another registry: refused" index FAIL
+run "lock with a path source: refused" path FAIL
 run "system target without setup-python: refused" nora FAIL pythonLocation=
 run "no lock: legacy requirements into the system Python" none \
   "uv pip install --system -r legacy/req.txt | env="

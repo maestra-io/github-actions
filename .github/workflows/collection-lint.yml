@@ -91,9 +91,18 @@ jobs:
           # >>> python-deps (identical in every ansible workflow; ansible/tests/test-python-deps.sh)
           set -euo pipefail
           if [ -f "${DEPS_PROJECT}/uv.lock" ]; then
-            # nora only: a lock that names any other host is refused, never followed.
-            if other=$(grep -oE 'https?://[^/"]+' "${DEPS_PROJECT}/uv.lock" | sort -u | grep -vx 'https://packages.maestra.io'); then
-              echo "::error file=${DEPS_PROJECT}/uv.lock::uv.lock names hosts other than packages.maestra.io: ${other//$'\n'/ }"
+            # nora only: every package source is the nora registry (or the project
+            # itself), every URL is on packages.maestra.io. Anything else (another
+            # index, git, ssh, a path, a direct URL) is refused, never followed.
+            lock="${DEPS_PROJECT}/uv.lock"
+            if bad=$(grep -E '^source = ' "$lock" | sort -u | grep -vxF \
+                  -e 'source = { registry = "https://packages.maestra.io/simple/" }' \
+                  -e 'source = { virtual = "." }' -e 'source = { editable = "." }'); then
+              echo "::error file=${lock}::uv.lock has sources other than the nora registry: ${bad//$'\n'/ }"
+              exit 1
+            fi
+            if other=$(grep -oE '[a-z+]+://[^/"]+' "$lock" | sort -u | grep -vxF 'https://packages.maestra.io'); then
+              echo "::error file=${lock}::uv.lock names hosts other than packages.maestra.io: ${other//$'\n'/ }"
               exit 1
             fi
             args=(--locked --no-install-project --project "$DEPS_PROJECT")
