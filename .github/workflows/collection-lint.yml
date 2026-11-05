@@ -23,7 +23,8 @@ on:
       - "ansible/collections/**"
       - "ansible/.ansible-lint"
       - "ansible/.yamllint"
-      - "ansible/requirements-lint.txt"
+      - "ansible/pyproject.toml"
+      - "ansible/uv.lock"
       - "ansible/tests/test-os-update-tail-silence.sh"
       - "ansible/tests/os-update-tail/**"
       - ".github/workflows/collection-lint.yml"
@@ -33,13 +34,15 @@ on:
       - "ansible/collections/**"
       - "ansible/.ansible-lint"
       - "ansible/.yamllint"
-      - "ansible/requirements-lint.txt"
+      - "ansible/pyproject.toml"
+      - "ansible/uv.lock"
       - "ansible/tests/test-os-update-tail-silence.sh"
       - "ansible/tests/os-update-tail/**"
       - ".github/workflows/collection-lint.yml"
 
 permissions:
   contents: read
+  id-token: write # uv-nora: a GitHub OIDC token is the credential for packages.maestra.io
 
 jobs:
   lint:
@@ -66,10 +69,59 @@ jobs:
         with:
           python-version: "3.14"
 
-      # `ansible` alongside the pinned linters: ansible-lint resolves modules
-      # against a real installation, and without it every FQCN reads as unknown.
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: "0.13.6"
+          enable-cache: false
+
+      # Credentials for nora (packages.maestra.io), the only Python index.
+      - uses: maestra-io/github-actions/uv-nora@22ccbf9ff3d76fe13025cbc009d395024f025198 # v1.67.0
+
+      # ansible/pyproject.toml + uv.lock: `ansible` as the dependency
+      # (ansible-lint resolves modules against a real installation, and without it
+      # every FQCN reads as unknown) and the pinned linters as the `lint` group.
       - name: Install lint deps
-        run: pip install --disable-pip-version-check ansible -r ansible/requirements-lint.txt
+        env:
+          DEPS_PROJECT: ansible
+          DEPS_GROUP: lint
+          DEPS_TARGET: system
+          LEGACY_REQUIREMENTS: ""
+          LEGACY_EXTRA: ""
+        run: |
+          # >>> python-deps (identical in every ansible workflow; ansible/tests/test-python-deps.sh)
+          set -euo pipefail
+          if [ -f "${DEPS_PROJECT}/uv.lock" ]; then
+            # nora only: every package source is the nora registry (or the project
+            # itself), every URL is on packages.maestra.io. Anything else (another
+            # index, git, ssh, a path, a direct URL) is refused, never followed.
+            lock="${DEPS_PROJECT}/uv.lock"
+            if bad=$(grep -E '^source = ' "$lock" | sort -u | grep -vxF \
+                  -e 'source = { registry = "https://packages.maestra.io/simple/" }' \
+                  -e 'source = { virtual = "." }' -e 'source = { editable = "." }'); then
+              echo "::error file=${lock}::uv.lock has sources other than the nora registry: ${bad//$'\n'/ }"
+              exit 1
+            fi
+            if other=$(grep -oE '[a-z+]+://[^/"]+' "$lock" | sort -u | grep -vxF 'https://packages.maestra.io'); then
+              echo "::error file=${lock}::uv.lock names hosts other than packages.maestra.io: ${other//$'\n'/ }"
+              exit 1
+            fi
+            args=(--locked --no-install-project --project "$DEPS_PROJECT")
+            [ -z "${DEPS_GROUP:-}" ] || args+=(--group "$DEPS_GROUP")
+            if [ "$DEPS_TARGET" = active ]; then
+              args+=(--active)
+            else
+              # setup-python's interpreter, as `pip install --system` did; --inexact keeps its pip.
+              export UV_PROJECT_ENVIRONMENT="${pythonLocation:?actions/setup-python must run first}"
+              args+=(--inexact)
+            fi
+            uv sync "${args[@]}"
+          else
+            echo "::warning::no ${DEPS_PROJECT}/uv.lock: installing ${LEGACY_REQUIREMENTS} from PyPI (legacy path, removed once every caller has a uv.lock; issues-maestra#1649)"
+            legacy=(-r "$LEGACY_REQUIREMENTS")
+            [ -z "${LEGACY_EXTRA:-}" ] || legacy=("$LEGACY_EXTRA" "${legacy[@]}")
+            if [ "$DEPS_TARGET" = active ]; then uv pip install "${legacy[@]}"; else uv pip install --system "${legacy[@]}"; fi
+          fi
+          # <<< python-deps
 
       - name: yamllint
         working-directory: ansible

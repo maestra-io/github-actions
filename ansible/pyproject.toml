@@ -1,0 +1,22 @@
+# The Python toolchain of collection-lint.yml (ansible/collections/maestra/infra).
+# nora is the only index (issues-maestra#1649); `uv sync --locked --group lint`.
+[project]
+name = "github-actions-ansible"
+version = "0"
+requires-python = "==3.14.*"
+# ansible-lint resolves modules against a real installation.
+dependencies = ["ansible"]
+
+[dependency-groups]
+lint = [
+    "ansible-lint==26.10.1",
+    "yamllint==1.38.0",
+]
+
+[tool.uv]
+package = false
+
+[[tool.uv.index]]
+name = "maestra"
+url = "https://packages.maestra.io/simple/"
+default = true
