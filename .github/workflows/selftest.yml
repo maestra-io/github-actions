@@ -173,8 +173,8 @@ jobs:
         run: bash ansible/tests/test-avoid-target-proxy.sh
 
       # The Python install of every Ansible workflow: the caller's uv.lock through
-      # nora only, the legacy requirements file while it has none (issues-maestra#1649).
-      - name: python-deps block (uv.lock through nora, legacy requirements)
+      # nora only, and no install at all without one (issues-maestra#1649).
+      - name: python-deps block (uv.lock through nora only)
         run: bash ansible/tests/test-python-deps.sh
 
       # The test carries its own copy of the selector; a change to the workflow
