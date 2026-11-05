@@ -1043,7 +1043,7 @@ jobs:
       - name: sign ${{ needs.version.outputs.image }}:${{ needs.version.outputs.release }}
         continue-on-error: true
         timeout-minutes: 10
-        uses: maestra-io/github-actions/sign-image@bdfea43a7d47149012fa1a488c91e5d6a49b2744 # v1.62.2
+        uses: maestra-io/github-actions/sign-image@2e631204b1f1d565e2cbbd4f280f3068fbeabfc7 # v1.65.0
         with:
           image: ${{ steps.ecr.outputs.registry }}/${{ needs.version.outputs.image }}
           digest: ${{ steps.push.outputs.digest }}
@@ -1149,7 +1149,7 @@ jobs:
       - name: sign ${{ needs.version.outputs.image }}-with-deps:${{ needs.version.outputs.release }}
         continue-on-error: true
         timeout-minutes: 10
-        uses: maestra-io/github-actions/sign-image@bdfea43a7d47149012fa1a488c91e5d6a49b2744 # v1.62.2
+        uses: maestra-io/github-actions/sign-image@2e631204b1f1d565e2cbbd4f280f3068fbeabfc7 # v1.65.0
         with:
           image: ${{ steps.ecr.outputs.registry }}/${{ needs.version.outputs.image }}-with-deps
           digest: ${{ steps.push.outputs.digest }}
@@ -1246,7 +1246,7 @@ jobs:
       - name: sign ${{ needs.version.outputs.image }}-e2e:${{ needs.version.outputs.release }}
         continue-on-error: true
         timeout-minutes: 10
-        uses: maestra-io/github-actions/sign-image@bdfea43a7d47149012fa1a488c91e5d6a49b2744 # v1.62.2
+        uses: maestra-io/github-actions/sign-image@2e631204b1f1d565e2cbbd4f280f3068fbeabfc7 # v1.65.0
         with:
           image: ${{ steps.ecr.outputs.registry }}/${{ needs.version.outputs.image }}-e2e
           digest: ${{ steps.push.outputs.digest }}
