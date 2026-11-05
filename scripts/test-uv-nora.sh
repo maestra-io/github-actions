@@ -11,7 +11,8 @@ mkdir -p "$root/bin" "$root/tmp"
 cat > "$root/bin/curl" <<'STUB'
 #!/usr/bin/env bash
 [[ " $* " == *" -H Authorization: bearer req-token "* ]] || { echo "bad auth header: $*" >&2; exit 22; }
-[[ "${*: -1}" == "https://idtok.example/x?api-version=2.0&audience=packages.maestra.io" ]] || { echo "bad url: ${*: -1}" >&2; exit 22; }
+[[ " $* " == *" --get "*" --data-urlencode audience=packages.maestra.io "* ]] || { echo "bad audience: $*" >&2; exit 22; }
+[[ "${*: -1}" == "https://idtok.example/x?api-version=2.0" ]] || { echo "bad url: ${*: -1}" >&2; exit 22; }
 [ -z "${CURL_LOG:-}" ] || echo called >> "$CURL_LOG"
 echo '{"value":"eyJ.stub.jwt"}'
 STUB

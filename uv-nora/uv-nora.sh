@@ -17,15 +17,15 @@ cat > "$dir/keyring" <<SH
 set -euo pipefail
 [ "\${1:-}" = get ] || exit 1
 case "\${2:-}" in "$url"/*|"$url") ;; *) exit 1 ;; esac
-token=\$(curl -fsS --retry 3 -H "Authorization: bearer \${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \\
-  "\${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=$NORA_AUDIENCE" | jq -r .value)
+token=\$(curl -fsS --retry 3 --get -H "Authorization: bearer \${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \\
+  --data-urlencode "audience=$NORA_AUDIENCE" "\${ACTIONS_ID_TOKEN_REQUEST_URL}" | jq -r .value)
 [ -n "\$token" ] && [ "\$token" != null ] || { echo "uv-nora: no OIDC token" >&2; exit 1; }
 printf '%s\n' "\$token"
 SH
 chmod +x "$dir/keyring"
 
-token=$(curl -fsS --retry 3 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-  "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${NORA_AUDIENCE}" | jq -r .value)
+token=$(curl -fsS --retry 3 --get -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+  --data-urlencode "audience=${NORA_AUDIENCE}" "${ACTIONS_ID_TOKEN_REQUEST_URL}" | jq -r .value)
 [ -n "$token" ] && [ "$token" != null ] || { echo "::error::uv-nora: no OIDC token" >&2; exit 1; }
 echo "::add-mask::$token"
 
