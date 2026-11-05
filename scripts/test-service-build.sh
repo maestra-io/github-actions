@@ -59,3 +59,22 @@ for bad in 0 21 -1 x ""; do
   if shards "$bad" >/dev/null 2>&1; then echo "FAIL test-shards '$bad': accepted"; exit 1; fi
 done
 echo "service-build shards: ok"
+
+# test-command uv credentials: the keyring helper answers nora URLs with a fresh
+# packages-token and nothing else; UV_* exported.
+uv_prog=$(sed -n '/# >>> uv-keyring/,/# <<< uv-keyring/p' "$wf" | sed 's/^          //')
+[ -n "$uv_prog" ] || { echo "uv-keyring block not found in $wf"; exit 1; }
+uvt=$(mktemp -d); trap 'rm -rf "$uvt"' EXIT
+mkdir -p "$uvt/bin"
+printf '#!/usr/bin/env bash\nprintf tok-1\n' > "$uvt/bin/packages-token"; chmod +x "$uvt/bin/packages-token"
+RUNNER_TEMP="$uvt" GITHUB_ENV="$uvt/env" PACKAGES_URL=https://packages.maestra.io/ bash -c "set -eo pipefail; $uv_prog"
+eq "$(cat "$uvt/env")" $'UV_KEYRING_PROVIDER=subprocess\nUV_INDEX_MAESTRA_USERNAME=token' "uv env"
+kr() { PATH="$uvt/bin:$PATH" "$uvt/bin/keyring" "$@"; }
+t1=$(kr get https://packages.maestra.io/simple/ token); t2=$(kr get https://packages.maestra.io/simple/six/six-1.17.0.tar.gz token)
+case "$t1" in tok-*) ;; *) echo "FAIL keyring index url: $t1"; exit 1 ;; esac
+case "$t2" in tok-*) ;; *) echo "FAIL keyring file url: $t2"; exit 1 ;; esac
+for bad in "get https://pypi.org/simple/ token" "get https://packages.maestra.io.evil.example/simple/ token" "set https://packages.maestra.io/simple/ token"; do
+  # shellcheck disable=SC2086
+  if kr $bad >/dev/null 2>&1; then echo "FAIL keyring answered: $bad"; exit 1; fi
+done
+echo "service-build uv keyring: ok"

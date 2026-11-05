@@ -63,6 +63,12 @@
 #                       e.g. `playwright test --shard=$SHARD_INDEX/$SHARD_TOTAL`.
 #   python-version      actions/setup-python before test-command (empty = skip).
 #   node-version        actions/setup-node before test-command (empty = skip).
+#   uv-version          astral-sh/setup-uv with this uv version before test-command
+#                       (empty = skip). test-command always gets uv credentials for
+#                       packages.maestra.io: UV_INDEX_MAESTRA_USERNAME=token and a `keyring`
+#                       helper (UV_KEYRING_PROVIDER=subprocess) that mints a fresh token
+#                       whenever uv asks, so `uv sync --locked` needs no token handling
+#                       (pyproject.toml: [[tool.uv.index]] name = "maestra", default = true).
 #   test-env            Extra environment for the tests, KEY=VALUE per line, not
 #                       secret (shown in the log); exported to test-command and passed
 #                       with --env-file to the docker-test-target container. Images on
@@ -126,6 +132,9 @@ on:
         type: string
         default: ""
       node-version:
+        type: string
+        default: ""
+      uv-version:
         type: string
         default: ""
       test-env:
@@ -549,11 +558,17 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ inputs.node-version }}
+      - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' && inputs.uv-version != '' }}
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: ${{ inputs.uv-version }}
+          enable-cache: false
       # The GitHub OIDC token lives minutes: a test-command that installs packages more
       # than once (tox envs) mints a fresh one with `packages-token` before each install.
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
         env:
           AUDIENCE: ${{ inputs.packages-audience }}
+          PACKAGES_URL: ${{ inputs.packages-url }}
         run: |
           mkdir -p "$RUNNER_TEMP/bin"
           cat > "$RUNNER_TEMP/bin/packages-token" <<'SH'
@@ -564,6 +579,20 @@ jobs:
           printf '%s' "$t"
           SH
           chmod +x "$RUNNER_TEMP/bin/packages-token"
+          # >>> uv-keyring (scripts/test-service-build.sh runs this block)
+          # uv (UV_KEYRING_PROVIDER=subprocess) runs `keyring get <url> <user>` after nora's
+          # 401: a fresh token per uv process, for nora's own URLs only (maestra-io/github-actions uv-nora).
+          host="${PACKAGES_URL%/}"
+          cat > "$RUNNER_TEMP/bin/keyring" <<SH
+          #!/usr/bin/env bash
+          set -euo pipefail
+          [ "\${1:-}" = get ] || exit 1
+          case "\${2:-}" in "$host"/*|"$host") ;; *) exit 1 ;; esac
+          packages-token; echo
+          SH
+          chmod +x "$RUNNER_TEMP/bin/keyring"
+          { echo "UV_KEYRING_PROVIDER=subprocess"; echo "UV_INDEX_MAESTRA_USERNAME=token"; } >> "$GITHUB_ENV"
+          # <<< uv-keyring
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           echo "PACKAGES_AUDIENCE=$AUDIENCE" >> "$GITHUB_ENV"
       # A test-command that builds an image can cache its layers like the images job:
