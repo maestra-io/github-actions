@@ -713,7 +713,9 @@ admin of ci-gate.
   cache; for a `tests` workspace of the root (no `tests/package-lock.json`) the root cache is
   restored and every package npm hoisted to the root `node_modules` (and its `.bin` links) is
   copied into `tests/node_modules`, those already there kept (a linked local package by its
-  contents; the workspace's link to `tests/` itself is skipped). Base
+  contents; the workspace's link to `tests/` itself is skipped). A copied package resolves its
+  dependencies from `tests/node_modules` first, so a version `tests/` pins differently from the
+  root wins there; a repo that hits this gives `tests/` its own lockfile. Base
   `mcr.microsoft.com/playwright:v<X>-noble`, `<X>` the installed `@playwright/test` (pulled from
   MCR directly, no nora), `WORKDIR /tests`, user `pwuser`, `CMD ["npm","run","e2e:ci"]`; the
   `node_modules` and the sources are separate layers in the gha cache (scope `mcf-e2e-<image>`).
