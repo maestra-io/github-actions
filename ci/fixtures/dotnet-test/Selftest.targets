@@ -1,0 +1,15 @@
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <DefineConstants Condition="'$(SelftestWarn)' == 'cs'">$(DefineConstants);SELFTEST_WARN</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../Tests.cs" />
+  </ItemGroup>
+  <Target Name="SelftestMsbuildWarning" BeforeTargets="CoreCompile" Condition="'$(SelftestWarn)' == 'msbuild'">
+    <Warning Code="SELFTEST1" Text="MSBuild-level warning" />
+  </Target>
+</Project>

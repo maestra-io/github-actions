@@ -1,0 +1,28 @@
+# {{ ansible_managed }}
+# Dedicated burst gateway: the public leg answers WireGuard only, through its
+# own routing table selected by source address; the default route of the host
+# itself stays on the LAN. Merged by interface id with the cloud-init file.
+network:
+  version: 2
+  ethernets:
+{% if wireguard_burst_wan_address | length > 0 %}
+    {{ wireguard_burst_wan_interface }}:
+{% if wireguard_burst_wan_match | length > 0 %}
+      match: {{ wireguard_burst_wan_match | to_json }}
+      set-name: {{ wireguard_burst_wan_interface }}
+{% endif %}
+      dhcp4: false
+      addresses:
+        - {{ wireguard_burst_wan_address }}
+      routes:
+        - to: default
+          via: {{ wireguard_burst_wan_gateway }}
+          table: {{ wireguard_burst_wan_table }}
+      routing-policy:
+        - from: {{ wireguard_burst_wan_address | split('/') | first }}
+          table: {{ wireguard_burst_wan_table }}
+{% endif %}
+{% if (wireguard_burst_lan_mtu | int) > 0 %}
+    {{ wireguard_burst_lan_interface }}:
+      mtu: {{ wireguard_burst_lan_mtu }}
+{% endif %}

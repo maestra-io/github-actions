@@ -14,7 +14,7 @@
 #       branches: [main]
 #   jobs:
 #     chart:
-#       uses: maestra-io/github-actions/.github/workflows/helm-chart.yml@<sha> # vX.Y.Z
+#       uses: maestra-io/github-actions/.github/workflows/helm-chart.yml@main
 #       permissions: { contents: read, id-token: write }
 #
 # Inputs:
@@ -26,6 +26,9 @@
 # Lint/unittest values: <chart-path>/ci/values.yaml or ci/test-values.yaml, as
 # in GitLab. Not ported: helm-diff MR comment, kind `helm template --validate`,
 # metrics-validation, publish-dev label, the RU Yandex registry push.
+#
+# The PR secret scan is not part of this workflow: each repo runs it in its own
+# workflow that calls this repo's reusable secret-scan workflow (see the README).
 
 name: helm-chart
 
@@ -52,11 +55,11 @@ permissions:
 jobs:
   check:
     if: ${{ github.event_name == 'pull_request' }}
-    runs-on: runs-on=${{ github.run_id }}/pool=small
+    runs-on: runs-on=${{ github.run_id }}-check/pool=small
     timeout-minutes: 10
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
@@ -106,17 +109,17 @@ jobs:
 
   release:
     if: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
-    runs-on: runs-on=${{ github.run_id }}/pool=small
+    runs-on: runs-on=${{ github.run_id }}-release/pool=small
     timeout-minutes: 10
     permissions:
       contents: read
       id-token: write # Teleport join -> AWS
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
         with:
           version: ${{ inputs.helm-version }}
-      - uses: maestra-io/github-actions/push-helm-chart-to-aws-ecr@v1
+      - uses: maestra-io/github-actions/push-helm-chart-to-aws-ecr@4810e33793d010b8ff485d52a0798d48fc7df5a6 # v1.46.1
         with:
           chartPath: ${{ inputs.chart-path }}

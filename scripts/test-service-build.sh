@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+#
+# Self-check for service-build.yml `version`: image-targets -> images matrix
+# (Dockerfile and build context per image, empty target, bare image). Runs the
+# inline block of the reusable workflow itself (it cannot read repo files).
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+wf="$here/../.github/workflows/service-build.yml"
+prog=$(sed -n '/# >>> image-targets/,/# <<< image-targets/p' "$wf" | sed 's/^          //')
+[ -n "$prog" ] || { echo "image-targets block not found in $wf"; exit 1; }
+
+run() { IMAGE_TARGETS="$1" DOCKERFILE="${2:-Dockerfile}" BAKE="${3:-false}" bash -c "set -eo pipefail; $prog"$'\n''echo "$matrix"'; }
+eq() { [ "$1" = "$2" ] || { printf 'FAIL %s\n  got:  %s\n  want: %s\n' "$3" "$1" "$2"; exit 1; }; }
+fails() { if run "$1" >/dev/null 2>&1; then echo "FAIL $2: accepted"; exit 1; fi; }
+
+# Existing callers: same images and targets, default Dockerfile, repo-root context.
+eq "$(run "a_services=services,a_worker=worker")" '[{"image":"a_services","dockerfile":"Dockerfile","target":"services","context":"."},{"image":"a_worker","dockerfile":"Dockerfile","target":"worker","context":"."}]' "pairs"
+eq "$(run $'web=\nbare')" '[{"image":"web","dockerfile":"Dockerfile","target":"","context":"."},{"image":"bare","dockerfile":"Dockerfile","target":"","context":"."}]' "last stage"
+eq "$(run "x=t" docker/App.Dockerfile)" '[{"image":"x","dockerfile":"docker/App.Dockerfile","target":"t","context":"."}]' "dockerfile input"
+
+# Other Dockerfiles and build contexts.
+eq "$(run $'api=api\ntank=Dockerfile.quiz-tank:app\nstatic=deploy/static.Dockerfile::dist\nlast=Dockerfile.x:')" '[{"image":"api","dockerfile":"Dockerfile","target":"api","context":"."},{"image":"tank","dockerfile":"Dockerfile.quiz-tank","target":"app","context":"."},{"image":"static","dockerfile":"deploy/static.Dockerfile","target":"","context":"dist"},{"image":"last","dockerfile":"Dockerfile.x","target":"","context":"."}]' "dockerfiles"
+
+fails "" "empty"
+fails $' ,\n' "blank"
+
+# Bake-only repo (GitLab images: ""): empty image-targets with bake: true, empty matrix.
+eq "$(run "" Dockerfile true)" '[]' "bake-only"
+eq "$(run $' \n' Dockerfile true)" '[]' "bake-only blank"
+eq "$(run "x=t" Dockerfile true)" '[{"image":"x","dockerfile":"Dockerfile","target":"t","context":"."}]' "bake with images"
+fails "=t" "no image"
+fails "x=:t" "empty dockerfile"
+fails "x=a:b:c:d" "four fields"
+echo "service-build image-targets: ok"
+
+# release: release-version wins over RELEASE_PREFIX.run_number and must be X.Y.Z.
+rel_prog=$(sed -n '/# >>> release/,/# <<< release/p' "$wf" | sed 's/^          //')
+[ -n "$rel_prog" ] || { echo "release block not found in $wf"; exit 1; }
+rel() { RELEASE_VERSION="$1" PREFIX="${2:-}" TAG_PREFIX="${3:-}" RUN_NUMBER=7 bash -c "set -eo pipefail; $rel_prog"$'\n''echo "$release $tag"'; }
+eq "$(rel "")" "1.1.7 1.1.7" "default prefix"
+eq "$(rel "" 2.3)" "2.3.7 2.3.7" "RELEASE_PREFIX"
+eq "$(rel 4.220.0 2.3)" "4.220.0 4.220.0" "release-version"
+eq "$(rel "" "" standard-blocks-v)" "1.1.7 standard-blocks-v1.1.7" "release-tag-prefix"
+for bad in 4.220 v4.220.0 4.220.0-beta "4.220.0 " $'4.220.0\nx=1'; do
+  if rel "$bad" >/dev/null 2>&1; then echo "FAIL release-version '$bad': accepted"; exit 1; fi
+done
+for bad in "a b" "a/b" $'a\nx=1' 'a;b'; do
+  if rel "" "" "$bad" >/dev/null 2>&1; then echo "FAIL release-tag-prefix '$bad': accepted"; exit 1; fi
+done
+echo "service-build release: ok"
+
+# shards: test-shards -> matrix of shard indexes, 1..20.
+sh_prog=$(sed -n '/# >>> shards/,/# <<< shards/p' "$wf" | sed 's/^          //')
+[ -n "$sh_prog" ] || { echo "shards block not found in $wf"; exit 1; }
+shards() { TEST_SHARDS="$1" bash -c "set -eo pipefail; $sh_prog"$'\n''echo "$shards"'; }
+eq "$(shards 1)" "[1]" "one shard"
+eq "$(shards 4)" "[1,2,3,4]" "four shards"
+for bad in 0 21 -1 x ""; do
+  if shards "$bad" >/dev/null 2>&1; then echo "FAIL test-shards '$bad': accepted"; exit 1; fi
+done
+echo "service-build shards: ok"

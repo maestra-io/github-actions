@@ -5,7 +5,7 @@
 #
 #   jobs:
 #     package:
-#       uses: maestra-io/github-actions/.github/workflows/python-package-publish.yml@<sha> # vX.Y.Z
+#       uses: maestra-io/github-actions/.github/workflows/python-package-publish.yml@main
 #       permissions: { contents: read, id-token: write }
 #       with:
 #         build-tool: poetry
@@ -44,6 +44,9 @@
 #   packages-audience `aud` of the GitHub OIDC token nora accepts (default packages.maestra.io).
 # Secrets:
 #   packages-token    Optional nora `nra_` API token with write access; overrides OIDC.
+#
+# The PR secret scan is not part of this workflow: each repo runs it in its own
+# workflow that calls this repo's reusable secret-scan workflow (see the README).
 
 name: python-package-publish
 
@@ -87,16 +90,49 @@ permissions:
 
 jobs:
   package:
-    runs-on: runs-on=${{ github.run_id }}/pool=small
+    runs-on: runs-on=${{ github.run_id }}-package/pool=small
     timeout-minutes: 20
     permissions:
       contents: read
       id-token: write # nora OIDC token (upload)
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Testcontainers, docker compose and BuildKit pull packages.maestra.io images (the
+      # nora pull-through, issues-maestra#1649) with ~/.docker/config.json. nora takes the
+      # OIDC token, which lives minutes: a credential helper mints a fresh one per pull.
+      - name: nora docker credentials
+        env:
+          AUDIENCE: ${{ inputs.packages-audience }}
+          PACKAGES_URL: ${{ inputs.repository-url }}
+        run: |
+          # >>> nora-cred-helper (scripts/test-dotnet-service-build.sh runs this block; all copies equal)
+          bin="$RUNNER_TEMP/nora-bin"; mkdir -p "$bin"
+          # The helper runs in the caller's environment, which tox and other test runners
+          # scrub: the job's OIDC request URL and token go to a 0600 file next to it.
+          ( umask 077; printf 'url=%q\ntoken=%q\naud=%q\n' "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+            "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$AUDIENCE" > "$bin/oidc.env" )
+          cat > "$bin/docker-credential-nora" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          [ "${1:-}" = get ] || exit 0
+          server=$(cat) # docker sends it without a newline
+          . "${BASH_SOURCE[0]%/*}/oidc.env"
+          t=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $token" \
+            "$url&audience=$aud" | jq -r '.value // empty')
+          [ -n "$t" ]
+          jq -cn --arg s "$server" --arg t "$t" '{ServerURL: $s, Username: "token", Secret: $t}'
+          EOF
+          chmod 755 "$bin/docker-credential-nora"
+          echo "$bin" >> "$GITHUB_PATH"
+          host="${PACKAGES_URL#*://}"; host="${host%%/*}"
+          cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"; mkdir -p "$(dirname "$cfg")"
+          [ -s "$cfg" ] || echo '{}' > "$cfg"
+          jq --arg h "$host" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+          # <<< nora-cred-helper
+
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ inputs.python-version }}

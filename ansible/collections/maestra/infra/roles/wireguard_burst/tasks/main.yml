@@ -1,0 +1,17 @@
+---
+# Order: validate -> tunnel (keys, interface, peers) -> metrics -> gateway
+# (sysctl, networkd, netplan, nftables, FRR). The tunnel exists before FRR
+# references it.
+
+- name: Validate the inputs
+  ansible.builtin.import_tasks: validate.yml
+
+- name: WireGuard interface, keys and peers
+  ansible.builtin.import_tasks: wireguard.yml
+
+- name: Per-slot WireGuard metrics for node_exporter
+  ansible.builtin.import_tasks: metrics.yml
+  when: wireguard_burst_textfile_dir | length > 0
+
+- name: Gateway (sysctl, nftables, FRR)
+  ansible.builtin.import_tasks: gateway.yml

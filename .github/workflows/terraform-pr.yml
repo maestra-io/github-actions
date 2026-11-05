@@ -26,6 +26,9 @@
 # (plan-<region>-<env>-<site>[<suffix>].txt — prefix/extension stripping, so
 # any suffix is tolerated). Change detection: !('No changes.' ||
 # 'Your infrastructure matches the configuration.').
+#
+# The PR secret scan is not part of this workflow: each repo runs it in its own
+# workflow that calls this repo's reusable secret-scan workflow (see the README).
 name: Terraform PR (reusable)
 
 on:
@@ -59,10 +62,10 @@ on:
         type: boolean
         default: false
       runs_on:
-        description: "Default runner label for the plan-matrix jobs; a per-row runs_on in `envs` wins. fmt and the comment job run on RunsOn t3a-small."
+        description: "Default runner label for the plan-matrix jobs; a per-row runs_on in `envs` wins. Empty = RunsOn t3a-small under a per-leg label: legs sharing one label steal each other's runners (issues-maestra#1556). fmt and the comment job run on RunsOn t3a-small."
         required: false
         type: string
-        default: "runs-on=${{ github.run_id }}/runner=t3a-small"
+        default: ""
       mask_sensitive_jq_path:
         description: "Workflow-wide default; per-row override wins"
         required: false
@@ -108,12 +111,12 @@ jobs:
     name: Format check
     # RunsOn t3a-small (issues-maestra#1556): seconds of work on every PR push
     # of every consumer repo; was ubuntu-slim.
-    runs-on: runs-on=${{ github.run_id }}/runner=t3a-small
+    runs-on: runs-on=${{ github.run_id }}-fmt/runner=t3a-small
     permissions:
       contents: read
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
@@ -151,7 +154,7 @@ jobs:
       api_tunnel: ${{ inputs.api_tunnel }}
       node_ssh_tunnels: ${{ inputs.node_ssh_tunnels }}
       node_ssh_direct: ${{ inputs.node_ssh_direct }}
-      runs_on: ${{ matrix.env.runs_on || inputs.runs_on }}
+      runs_on: ${{ matrix.env.runs_on || inputs.runs_on || format('runs-on={0}-plan-{1}/runner=t3a-small', github.run_id, strategy.job-index) }}
       mask_sensitive_jq_path: ${{ matrix.env.mask_sensitive_jq_path || inputs.mask_sensitive_jq_path }}
       extra_workload_identities: ${{ matrix.env.extra_workload_identities || inputs.extra_workload_identities }}
       extra_env: ${{ matrix.env.extra_env || inputs.extra_env }}
@@ -164,7 +167,7 @@ jobs:
     name: Update PR comment
     needs: [fmt, plan]
     if: ${{ always() && github.event_name == 'pull_request' }}
-    runs-on: runs-on=${{ github.run_id }}/runner=t3a-small # see `fmt`
+    runs-on: runs-on=${{ github.run_id }}-comment/runner=t3a-small # see `fmt`
     # NO job-level permissions block here: a CALLED workflow may not request
     # permissions the caller didn't grant (the source repos' standalone
     # terraform-pr had `actions: read` here -> as a reusable this made GitHub

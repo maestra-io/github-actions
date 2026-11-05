@@ -1,5 +1,10 @@
 # Fixture for service-build-selftest.yml: a second Dockerfile with a named stage.
 FROM docker.io/library/busybox:1.37 AS worker
 RUN echo worker > /stage
+# The packages token as the workflow hands it to the build (secret files, header
+# "Registry token"): NUGET_CREDENTIALS in NuGet's env-credential format.
+RUN --mount=type=secret,id=NUGET_CREDENTIALS,env=NUGET_CREDENTIALS,required=true \
+    --mount=type=secret,id=PRIVATE_PACKAGES_TOKEN,required=true \
+    sh -c 't=$(cat /run/secrets/PRIVATE_PACKAGES_TOKEN) && [ -n "$t" ] && [ "$NUGET_CREDENTIALS" = "Username=ci;Password=$t" ]'
 FROM worker AS other
 RUN echo other > /stage

@@ -16,6 +16,9 @@
 # Log filenames carry the inventory_group_suffix (plan-<r>-<e>-<s><suffix>.log), so per-role
 # rows (e.g. haproxy _haproxy_public vs _haproxy_api) each get their own table row; the
 # commenter's parsing is prefix/extension stripping, so any suffix is tolerated.
+#
+# The PR secret scan is not part of this workflow: each repo runs it in its own
+# workflow that calls this repo's reusable secret-scan workflow (see the README).
 name: Ansible PR (reusable)
 
 on:
@@ -80,10 +83,10 @@ on:
         type: string
         default: ""
       runs_on:
-        description: "Default runner label for the check-matrix jobs; a per-row runs_on in `envs` wins. Rows target different environments whose runners must not cross (omicron rows -> us-omicron-lw-runners; omega rows -> omega's own set). Lint and the comment job run on RunsOn t3a-small."
+        description: "Default runner label for the check-matrix jobs; a per-row runs_on in `envs` wins. Empty = RunsOn t3a-small under a per-leg label: legs sharing one label steal each other's runners (issues-maestra#1556). Rows target different environments whose runners must not cross (omicron rows -> us-omicron-lw-runners; omega rows -> omega's own set). Lint and the comment job run on RunsOn t3a-small."
         required: false
         type: string
-        default: "runs-on=${{ github.run_id }}/runner=t3a-small"
+        default: ""
       extra_run_args:
         description: "Extra ansible-playbook args (workflow-wide default; per-row extra_run_args in `envs` wins)"
         required: false
@@ -115,10 +118,10 @@ jobs:
   lint:
     # RunsOn t3a-small (issues-maestra#1556): ~50 s of work on every PR push of
     # nine consumer repos; was ubuntu-slim.
-    runs-on: runs-on=${{ github.run_id }}/runner=t3a-small
+    runs-on: runs-on=${{ github.run_id }}-lint/runner=t3a-small
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # uv-managed Python instead of actions/setup-python: on the bare slim
       # image setup-python downloads + copies a toolcache Python (~21s); uv
       # fetches a standalone build in ~2s. The venv lives in runner.temp, NOT
@@ -141,7 +144,26 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.ansible/collections
-          key: galaxy-${{ runner.os }}-${{ hashFiles(inputs.requirements_galaxy) }}
+          # "nora": collections cached before Galaxy went through nora (a version
+          # younger than 3 days among them) are not restored.
+          key: galaxy-nora-${{ runner.os }}-${{ hashFiles(inputs.requirements_galaxy) }}
+      # Galaxy through nora (packages.maestra.io/ansible/, issues-maestra#1649 s9):
+      # collection versions younger than 3 days are hidden there, so a range like
+      # ">=8.0.0" resolves to the newest mature release. The ANSIBLE_GALAXY_SERVER_*
+      # variables reach every later step: the install below and ansible-lint's own
+      # requirements install. Auth: a GitHub OIDC token as Basic token:<jwt>
+      # (expires in minutes, enough for the install that follows).
+      - name: Galaxy through nora
+        if: ${{ hashFiles(inputs.requirements_galaxy) != '' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const t = await core.getIDToken('packages.maestra.io');
+            core.setSecret(t);
+            core.exportVariable('ANSIBLE_GALAXY_SERVER_LIST', 'nora');
+            core.exportVariable('ANSIBLE_GALAXY_SERVER_NORA_URL', 'https://packages.maestra.io/ansible/');
+            core.exportVariable('ANSIBLE_GALAXY_SERVER_NORA_USERNAME', 'token');
+            core.exportVariable('ANSIBLE_GALAXY_SERVER_NORA_PASSWORD', t);
       - name: Install Galaxy collections/roles
         if: ${{ hashFiles(inputs.requirements_galaxy) != '' }}
         # From working_directory so ansible.cfg's roles_path/collections_path apply
@@ -208,13 +230,13 @@ jobs:
       requirements_pip: ${{ inputs.requirements_pip }}
       requirements_galaxy: ${{ inputs.requirements_galaxy }}
       python_version: ${{ inputs.python_version }}
-      runs_on: ${{ matrix.env.runs_on || inputs.runs_on }}
+      runs_on: ${{ matrix.env.runs_on || inputs.runs_on || format('runs-on={0}-check-{1}/runner=t3a-small', github.run_id, strategy.job-index) }}
       artifact_name: ansible-check-${{ matrix.env.region }}-${{ matrix.env.environment }}-${{ matrix.env.site }}${{ matrix.env.inventory_group_suffix || '' }}
 
   comment:
     needs: check
     if: ${{ always() && github.event_name == 'pull_request' }}
-    runs-on: runs-on=${{ github.run_id }}/runner=t3a-small # see `lint`
+    runs-on: runs-on=${{ github.run_id }}-comment/runner=t3a-small # see `lint`
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - name: Download all check logs (flat)

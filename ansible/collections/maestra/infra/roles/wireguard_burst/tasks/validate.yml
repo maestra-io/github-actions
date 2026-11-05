@@ -1,0 +1,27 @@
+---
+- name: Assert the role inputs are complete
+  ansible.builtin.assert:
+    that:
+      - wireguard_burst_address | length > 0
+      - wireguard_burst_slots | length > 0
+      - wireguard_burst_slots | rejectattr('name', 'defined') | list | length == 0
+      - wireguard_burst_slots | rejectattr('ip', 'defined') | list | length == 0
+      - wireguard_burst_slots | rejectattr('pubkey', 'defined') | list | length == 0
+      - (wireguard_burst_slots | map(attribute='ip') | unique | list | length) == (wireguard_burst_slots | length)
+      - (wireguard_burst_slots | map(attribute='pubkey') | unique | list | length) == (wireguard_burst_slots | length)
+      # The host's own address on a slot IP would be delivered locally, never routed to the slot.
+      - (wireguard_burst_address | split('/') | first) not in (wireguard_burst_slots | map(attribute='ip') | list)
+    fail_msg: >-
+      wireguard_burst_address must be set and not a slot IP,
+      and wireguard_burst_slots a non-empty list of {name, ip, pubkey} with unique ip and pubkey.
+    quiet: true
+
+- name: Assert the gateway has its uplinks
+  ansible.builtin.assert:
+    that:
+      - wireguard_burst_bgp_router_id | length > 0
+      - wireguard_burst_bgp_uplinks | length > 0
+      - wireguard_burst_bgp_accept | length > 0
+      - wireguard_burst_wan_address | length == 0 or wireguard_burst_wan_gateway | length > 0
+    fail_msg: "the gateway needs wireguard_burst_bgp_router_id, wireguard_burst_bgp_uplinks and wireguard_burst_bgp_accept (and wireguard_burst_wan_gateway with a WAN address)."
+    quiet: true

@@ -45,14 +45,14 @@ concurrency:
 jobs:
   release:
     name: Tag and release
-    runs-on: runs-on=${{ github.run_id }}/runner=t3a-small
+    runs-on: runs-on=${{ github.run_id }}-release/runner=t3a-small
     timeout-minutes: 10
     permissions:
       # Push the tag and publish the release. Everything else stays read-only.
       contents: write
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The version is computed from tags and from the commit range since
           # the previous one; a shallow clone has neither.
@@ -67,14 +67,28 @@ jobs:
         id: version
         run: ci/next-version.sh >> "$GITHUB_OUTPUT"
 
+      # A re-run after a failed alias push (13.10.2026, run 38446486253: v1.24.0
+      # created, `v1` rejected by GitHub) must still move the major alias, or
+      # consumers on `@v1` keep the previous release.
       - name: Nothing to release
         if: steps.version.outputs.release != 'true'
+        env:
+          NEXT: ${{ steps.version.outputs.next }}
         run: |
+          set -euo pipefail
           {
             echo "### No release"
             echo
-            echo "HEAD already carries \`${{ steps.version.outputs.next }}\`."
+            echo "HEAD already carries \`${NEXT}\`."
           } >> "$GITHUB_STEP_SUMMARY"
+          major="${NEXT%%.*}"
+          if [ "$(git rev-parse "${major}^{commit}" 2>/dev/null || true)" != "$(git rev-parse HEAD)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -f -a "$major" -m "${major} -> ${NEXT}"
+            git push -f origin "$major"
+            echo "Moved \`${major}\` to \`${NEXT}\` (it lagged)." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Create and push the tag
         if: steps.version.outputs.release == 'true'
