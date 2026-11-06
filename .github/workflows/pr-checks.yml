@@ -28,12 +28,19 @@
 #                   under it changed (Flux builds the same trees from <service>-manifests;
 #                   the bake only packs them, so a broken overlay otherwise surfaces in
 #                   the cluster).
+#   image-signatures  the images a change under kustomize-path adds to the built overlays,
+#                   judged by kyverno-cli with the policy the clusters enforce
+#                   (pr-checks/check-image-signatures.py). Runs after the kustomize step
+#                   and downloads Kyverno only when such an image exists. A rejected image
+#                   is a warning until image-signatures-enforce is on.
 #
 # Inputs:
 #   check-encoding       default true.
 #   encoding-extensions  default txt,xml,json,config,cs,csproj,sln (the component's).
 #   kustomize            default true.
 #   kustomize-path       default kustomization.
+#   image-signatures     default true. Needs the kustomize step.
+#   image-signatures-enforce  default false: a rejected image warns. true fails the job.
 #   ref                  ref of maestra-io/github-actions the scripts are read from
 #                        (default main; set it when testing a branch).
 #   gitleaks             DEPRECATED, ignored: the scan is the repo's own gitleaks.yml
@@ -65,6 +72,12 @@ on:
       kustomize-path:
         type: string
         default: kustomization
+      image-signatures:
+        type: boolean
+        default: true
+      image-signatures-enforce:
+        type: boolean
+        default: false
       ref:
         type: string
         default: main
@@ -75,6 +88,9 @@ permissions:
 env:
   KUSTOMIZE_VERSION: v5.8.3
   KUSTOMIZE_SHA256: cb9e31198d3f63b44848bd0afc4c8efc56e6cfef9c93a4a39a211940e6decd61
+  # The version kyverno-image-signatures is tested with (fluxcd, kyverno-signature-tests).
+  KYVERNO_VERSION: v1.19.2
+  KYVERNO_SHA256: 357eaf1df8bc24ddd5a73979fadeaae6a032e8710f11af264229756e4956bf4a
 
 jobs:
   checks:
@@ -138,3 +154,36 @@ jobs:
             fi
           done
           exit $failed
+
+      - name: image signatures (changed overlays tree)
+        if: ${{ !cancelled() && inputs.kustomize && inputs.image-signatures }}
+        env:
+          KPATH: ${{ inputs.kustomize-path }}
+          ENFORCE: ${{ inputs.image-signatures-enforce }}
+        run: |
+          set -euo pipefail
+          # The kustomize step installs the binary only when something changed under KPATH.
+          if [ ! -x "$RUNNER_TEMP/kustomize" ]; then echo "nothing changed under $KPATH"; exit 0; fi
+          check=$PWD/.pr-checks/pr-checks/check-image-signatures.py
+          policy=$PWD/.pr-checks/pr-checks/image-signatures-policy.yaml
+          entry_points=$PWD/.pr-checks/pr-checks/kustomize-entry-points.sh
+          # An overlay that does not build is the kustomize step's verdict, not this one's.
+          build_all() {
+            [ -d "$KPATH" ] || return 0
+            for ep in $(bash "$entry_points" "$KPATH"); do
+              "$RUNNER_TEMP/kustomize" build --load-restrictor LoadRestrictionsNone "$ep" 2>/dev/null || true
+            done
+          }
+          build_all > "$RUNNER_TEMP/head.yaml"
+          git worktree add --quiet --detach "$RUNNER_TEMP/base" HEAD^1
+          (cd "$RUNNER_TEMP/base" && build_all) > "$RUNNER_TEMP/base.yaml"
+          python3 -I "$check" list "$policy" "$RUNNER_TEMP/head.yaml" "$RUNNER_TEMP/base.yaml" > "$RUNNER_TEMP/images"
+          if [ ! -s "$RUNNER_TEMP/images" ]; then echo "no new image the policy covers"; exit 0; fi
+          cat "$RUNNER_TEMP/images"
+          curl -fsSL -o "$RUNNER_TEMP/kyverno.tar.gz" \
+            "https://github.com/kyverno/kyverno/releases/download/${KYVERNO_VERSION}/kyverno-cli_${KYVERNO_VERSION}_linux_x86_64.tar.gz"
+          echo "${KYVERNO_SHA256}  $RUNNER_TEMP/kyverno.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/kyverno.tar.gz" -C "$RUNNER_TEMP" kyverno
+          flag=()
+          if [ "$ENFORCE" = true ]; then flag=(--enforce); fi
+          python3 -I "$check" verify "$policy" "$RUNNER_TEMP/kyverno" "${flag[@]}" < "$RUNNER_TEMP/images"
