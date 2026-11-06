@@ -766,7 +766,8 @@ admin of ci-gate.
   dependencies from `tests/node_modules` first, so a version `tests/` pins differently from the
   root wins there; a repo that hits this gives `tests/` its own lockfile. Base
   `mcr.microsoft.com/playwright:v<X>-noble`, `<X>` the installed `@playwright/test` (pulled from
-  MCR directly, no nora), `WORKDIR /tests`, user `pwuser`, `CMD ["npm","run","e2e:ci"]`; the
+  MCR directly), its global npm replaced by the npm of `DEPS_BASE` (pulled through nora; the
+  npm of an older Playwright image bundles a vulnerable `tar`, 1.62.1 ships 7.5.15), `WORKDIR /tests`, user `pwuser`, `CMD ["npm","run","e2e:ci"]`; the
   `node_modules` and the sources are separate layers in the gha cache (scope `mcf-e2e-<image>`).
   Labels and the best-effort signature as `-with-deps`.
 - **Release gate.** `release` waits for `e2e-image` when the repo has `tests/e2e/`: a failed bake
