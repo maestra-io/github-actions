@@ -500,6 +500,9 @@ echo "ok runtime tests stage: copies the packages of obj/project.assets.json, no
 # ── 4. NuGet cache mount on the Magic Cache (test job, docker-test-target) ─────────
 seed=$(block nuget-mount-seed "$wf"); extract=$(block nuget-mount-extract "$wf")
 [ -n "$seed" ] && [ -n "$extract" ] || { echo "nuget-mount-seed/extract block not found in $wf"; exit 1; }
+# The workflow pulls the helper through nora (OIDC credential helper of the test job); this
+# job has no nora token, so the same digest comes from its upstream here.
+seed=${seed//packages.maestra.io\/mcr\//mcr.microsoft.com/}; extract=${extract//packages.maestra.io\/mcr\//mcr.microsoft.com/}
 # Builders of their own (id=nuget as in the workflow, nothing shared with other runs).
 for b in a b c; do
   builders+=("selftest-nuget-mount-$b-$nonce")
