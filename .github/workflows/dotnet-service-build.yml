@@ -811,7 +811,7 @@ jobs:
           # STAMP keeps the RUN out of the layer cache. Never --no-cache: it starts every
           # cache mount empty (header, Registry token).
           printf 'FROM %s\nARG STAMP\nRUN --mount=type=cache,id=nuget,target=/m,sharing=locked --mount=type=bind,target=/s cp -R /s/. /m/\n' \
-              mcr.microsoft.com/azurelinux/busybox:1.36@sha256:f395e5c5642ddbdfb10e04ef3d4d13610315606719ffcb2255d3182e2a066c33 \
+              packages.maestra.io/mcr/azurelinux/busybox:1.36@sha256:f395e5c5642ddbdfb10e04ef3d4d13610315606719ffcb2255d3182e2a066c33 \
             | docker buildx build ${BUILDER:+--builder "$BUILDER"} --progress plain --build-arg "STAMP=$(date +%s%N)" -f - "$DIR"
           echo "NuGet cache mount: restored $(find "$DIR" -mindepth 2 -maxdepth 2 -type d | wc -l) package versions"
           # <<< nuget-mount-seed
@@ -840,7 +840,7 @@ jobs:
           # >>> nuget-mount-extract (scripts/test-dotnet-service-build-cache.sh runs this block)
           rm -rf "$DIR"; mkdir -p "$DIR"
           printf 'FROM %s AS m\nARG STAMP\nRUN --mount=type=cache,id=nuget,target=/m,sharing=locked mkdir /o && cp -R /m/. /o/\nFROM scratch\nCOPY --from=m /o /\n' \
-              mcr.microsoft.com/azurelinux/busybox:1.36@sha256:f395e5c5642ddbdfb10e04ef3d4d13610315606719ffcb2255d3182e2a066c33 \
+              packages.maestra.io/mcr/azurelinux/busybox:1.36@sha256:f395e5c5642ddbdfb10e04ef3d4d13610315606719ffcb2255d3182e2a066c33 \
             | docker buildx build ${BUILDER:+--builder "$BUILDER"} --progress plain --build-arg "STAMP=$(date +%s%N)" \
                 --output "type=local,dest=$DIR" -f - "$(mktemp -d)"
           n=$(find "$DIR" -mindepth 2 -maxdepth 2 -type d | wc -l)
