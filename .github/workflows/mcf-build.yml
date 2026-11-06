@@ -117,8 +117,10 @@
 #             so a push before checks and tests pass breaks "Re-run all jobs". release waits for it.
 #   e2e-image  tests/ with tests/node_modules (a root workspace's hoisted packages copied in) ->
 #             ECR <image>-e2e:<release> on mcr.microsoft.com/playwright:v<@playwright/test>-noble, user
-#             pwuser, CMD npm run e2e:ci; chart mcf-e2e runs it against ci-gate after the upload at
-#             promotion. Only with tests/e2e/, alongside deps-image (gha cache scope mcf-e2e-<image>);
+#             pwuser, CMD npm run e2e:ci, the base's global npm replaced by DEPS_BASE's (an older
+#             Playwright image ships an npm whose bundled tar has a CRITICAL CVE); chart mcf-e2e
+#             runs it against ci-gate after the upload at promotion. Only with tests/e2e/,
+#             alongside deps-image (gha cache scope mcf-e2e-<image>);
 #             release waits for it, a skipped one (no tests/e2e/) holds nothing.
 #   release   git tag + GitHub Release <release>; a PR labelled `hotfix` also gets
 #             the marker tag hotfix/<release>.
@@ -1167,6 +1169,38 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Testcontainers, docker compose and BuildKit pull packages.maestra.io images (the
+      # nora pull-through, issues-maestra#1649) with ~/.docker/config.json. nora takes the
+      # OIDC token, which lives minutes: a credential helper mints a fresh one per pull.
+      - name: nora docker credentials
+        env:
+          AUDIENCE: ${{ inputs.packages-audience }}
+          PACKAGES_URL: ${{ inputs.packages-url }}
+        run: |
+          # >>> nora-cred-helper (scripts/test-dotnet-service-build.sh runs this block; all copies equal)
+          bin="$RUNNER_TEMP/nora-bin"; mkdir -p "$bin"
+          # The helper runs in the caller's environment, which tox and other test runners
+          # scrub: the job's OIDC request URL and token go to a 0600 file next to it.
+          ( umask 077; printf 'url=%q\ntoken=%q\naud=%q\n' "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+            "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$AUDIENCE" > "$bin/oidc.env" )
+          cat > "$bin/docker-credential-nora" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          [ "${1:-}" = get ] || exit 0
+          server=$(cat) # docker sends it without a newline
+          . "${BASH_SOURCE[0]%/*}/oidc.env"
+          t=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $token" \
+            "$url&audience=$aud" | jq -r '.value // empty')
+          [ -n "$t" ]
+          jq -cn --arg s "$server" --arg t "$t" '{ServerURL: $s, Username: "token", Secret: $t}'
+          EOF
+          chmod 755 "$bin/docker-credential-nora"
+          echo "$bin" >> "$GITHUB_PATH"
+          host="${PACKAGES_URL#*://}"; host="${host%%/*}"
+          cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"; mkdir -p "$(dirname "$cfg")"
+          [ -s "$cfg" ] || echo '{}' > "$cfg"
+          jq --arg h "$host" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+          # <<< nora-cred-helper
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ inputs.node-version }}
@@ -1188,6 +1222,9 @@ jobs:
         env:
           LAYOUT: ${{ needs.version.outputs.tests-layout }}
         run: |
+          # The helper above covers packages-url; DEPS_BASE's host stays fixed whatever that is.
+          cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+          jq --arg h "${DEPS_BASE%%/*}" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
           # >>> e2e-image-context (scripts/test-e2e.sh runs this block)
           if [ "$LAYOUT" = workspace ]; then
             # The image gets tests/ only: what npm hoisted to the root goes to tests/node_modules.
@@ -1210,8 +1247,13 @@ jobs:
           [ -f tests/node_modules/@playwright/test/package.json ] || { echo "::error::no @playwright/test in tests/node_modules"; exit 1; }
           v=$(node -p "require(require.resolve('@playwright/test/package.json',{paths:['tests']})).version")
           [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::@playwright/test $v has no mcr.microsoft.com/playwright image"; exit 1; }
+          # The base's global npm bundles its own tar and friends, frozen with that Playwright image
+          # (v1.62.1: tar 7.5.15, CVE-2026-59873): DEPS_BASE's npm, which Renovate moves, replaces it.
           {
-            printf 'FROM mcr.microsoft.com/playwright:v%s-noble\nWORKDIR /tests\nRUN chown pwuser:pwuser /tests\n' "$v"
+            printf 'FROM %s AS npm\n' "$DEPS_BASE"
+            printf 'FROM mcr.microsoft.com/playwright:v%s-noble\n' "$v"
+            printf 'RUN rm -rf /usr/lib/node_modules/npm\nCOPY --from=npm /usr/local/lib/node_modules/npm /usr/lib/node_modules/npm\n'
+            printf 'WORKDIR /tests\nRUN chown pwuser:pwuser /tests\n'
             printf 'COPY --chown=pwuser:pwuser node_modules node_modules\n'
             printf 'COPY --chown=pwuser:pwuser --exclude=node_modules . .\n'
             printf 'USER pwuser\nCMD ["npm","run","e2e:ci"]\n'

@@ -150,26 +150,29 @@ done
 eq "$(grep -A3 '^          labels: |$' <<<"$ei")" "$(grep -A3 '^          labels: |$' <<<"$deps")" "e2e-image labels as with-deps"
 eq "$(grep -B1 'uses: maestra-io/github-actions/sign-image@' <<<"$ei")" "$(grep -B1 'uses: maestra-io/github-actions/sign-image@' <<<"$deps")" "e2e-image signs best-effort with the with-deps pin"
 eq "$(grep 'uses: maestra-io/github-actions/push-to-aws-ecr-repository@' <<<"$ei")" "$(grep 'uses: maestra-io/github-actions/push-to-aws-ecr-repository@' <<<"$deps")" "e2e-image ECR action pin as with-deps"
-hasnt "$ei" "packages.maestra.io" "e2e-image pulls MCR directly"
-hasnt "$ei" "credHelpers" "e2e-image needs no nora credentials"
+hasnt "$ei" "FROM packages.maestra.io" "e2e-image pulls the Playwright base from MCR directly"
+has "$ei" "          # >>> nora-cred-helper (scripts/test-dotnet-service-build.sh runs this block; all copies equal)" "e2e-image pulls DEPS_BASE through nora"
+has "$ei" "          jq --arg h \"\${DEPS_BASE%%/*}\" '.credHelpers[\$h] = \"nora\"' \"\$cfg\" > \"\$cfg.t\" && mv \"\$cfg.t\" \"\$cfg\"" "e2e-image nora credentials for DEPS_BASE's host"
 has "$ei" "          package-manager-cache: false" "e2e-image publishes: no package manager cache from setup-node"
 echo "e2e-image wiring: ok"
 
 ctx_prog=$(block e2e-image-context)
 # ctx <repo dir> <layout>; prints the Dockerfile, fails the test when the block fails
 ctx() {
-  (cd "$1" && LAYOUT="$2" RUNNER_TEMP="$1/.tmp" bash -c "set -eo pipefail; mkdir -p \"\$RUNNER_TEMP\"; $ctx_prog") > "$root/ctx.log" 2>&1 \
+  (cd "$1" && DEPS_BASE='node:24-slim@sha256:0' LAYOUT="$2" RUNNER_TEMP="$1/.tmp" bash -c "set -eo pipefail; mkdir -p \"\$RUNNER_TEMP\"; $ctx_prog") > "$root/ctx.log" 2>&1 \
     || { echo "FAIL e2e-image-context exited non-zero in $1"; cat "$root/ctx.log"; exit 1; }
   cat "$1/.tmp/Dockerfile.e2e"
 }
 ctx_fails() { # ctx_fails <repo dir> <layout> <error>
-  if (cd "$1" && LAYOUT="$2" RUNNER_TEMP="$1/.tmp" bash -c "set -eo pipefail; mkdir -p \"\$RUNNER_TEMP\"; $ctx_prog") > "$root/ctx.log" 2>&1; then
+  if (cd "$1" && DEPS_BASE='node:24-slim@sha256:0' LAYOUT="$2" RUNNER_TEMP="$1/.tmp" bash -c "set -eo pipefail; mkdir -p \"\$RUNNER_TEMP\"; $ctx_prog") > "$root/ctx.log" 2>&1; then
     echo "FAIL e2e-image-context passed in $1"; exit 1
   fi
   grep -qF -- "$3" "$root/ctx.log" || { echo "FAIL e2e-image-context in $1: no $3"; cat "$root/ctx.log"; exit 1; }
 }
 pkg() { mkdir -p "$1"; printf '{"name":"%s","version":"%s"}\n' "${1##*/node_modules/}" "$2" > "$1/package.json"; }
-want=$(printf '%s\n' 'FROM mcr.microsoft.com/playwright:v1.56.1-noble' 'WORKDIR /tests' 'RUN chown pwuser:pwuser /tests' \
+want=$(printf '%s\n' 'FROM node:24-slim@sha256:0 AS npm' 'FROM mcr.microsoft.com/playwright:v1.56.1-noble' \
+  'RUN rm -rf /usr/lib/node_modules/npm' 'COPY --from=npm /usr/local/lib/node_modules/npm /usr/lib/node_modules/npm' \
+  'WORKDIR /tests' 'RUN chown pwuser:pwuser /tests' \
   'COPY --chown=pwuser:pwuser node_modules node_modules' 'COPY --chown=pwuser:pwuser --exclude=node_modules . .' \
   'USER pwuser' 'CMD ["npm","run","e2e:ci"]')
 
