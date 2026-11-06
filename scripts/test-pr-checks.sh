@@ -50,13 +50,22 @@ sig="$root/pr-checks/check-image-signatures.py"
 good=public.ecr.aws/gravitational/tbot-distroless@sha256:$(printf 'a%.0s' {1..64})
 bad=public.ecr.aws/gravitational/tbot-distroless@sha256:$(printf 'b%.0s' {1..64})
 other=docker.io/library/alpine@sha256:$(printf 'c%.0s' {1..64})
+tag_only=public.ecr.aws/gravitational/tag-only@sha256:$(printf 'd%.0s' {1..64})
 cat > policy.yaml <<EOF
-imageReferences:
-  - "public.ecr.aws/gravitational/tbot-distroless@*"
-  - "public.ecr.aws/gravitational/tbot-distroless:*"
+spec:
+  rules:
+    - name: teleport
+      verifyImages:
+        - imageReferences:
+            - "public.ecr.aws/gravitational/tbot-distroless@*"
+    - name: teleport-tag-refs
+      verifyImages:
+        - imageReferences:
+            - "public.ecr.aws/gravitational/tbot-distroless:*"
+            - "public.ecr.aws/gravitational/tag-only:*"
 EOF
 printf 'image: %s\n' "$good" > base.yaml
-{ printf 'image: %s\n' "$good"; printf '  image: "%s"\n' "${bad/@/:18.11.8@}"; printf 'image: %s\n' "$other"; } > head.yaml
+{ printf 'image: %s\n' "$good"; printf '  image: "%s"\n' "${bad/@/:18.11.8@}"; printf 'image: %s\n' "$other"; printf 'image: %s\n' "$tag_only"; } > head.yaml
 got=$(python3 -I "$sig" list policy.yaml head.yaml base.yaml)
 [ "$got" = "$bad" ] && echo "ok   list: new covered ref, tag dropped" || { echo "FAIL list: '$got', want '$bad'"; fail=1; }
 # A file, not $(...): a lone newline would pass here and still trigger the Kyverno download.

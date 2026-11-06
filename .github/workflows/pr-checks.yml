@@ -167,16 +167,21 @@ jobs:
           check=$PWD/.pr-checks/pr-checks/check-image-signatures.py
           policy=$PWD/.pr-checks/pr-checks/image-signatures-policy.yaml
           entry_points=$PWD/.pr-checks/pr-checks/kustomize-entry-points.sh
-          # An overlay that does not build is the kustomize step's verdict, not this one's.
+          # build_all <overlays to leave out> <file for the ones that fail>. An overlay that
+          # does not build on the PR is the kustomize step's verdict, not this one's.
           build_all() {
             [ -d "$KPATH" ] || return 0
             for ep in $(bash "$entry_points" "$KPATH"); do
-              "$RUNNER_TEMP/kustomize" build --load-restrictor LoadRestrictionsNone "$ep" 2>/dev/null || true
+              if grep -qxF "$ep" "$1"; then echo "no baseline for $ep: its base does not build" >&2; continue; fi
+              "$RUNNER_TEMP/kustomize" build --load-restrictor LoadRestrictionsNone "$ep" 2>/dev/null || echo "$ep" >> "$2"
             done
           }
-          build_all > "$RUNNER_TEMP/head.yaml"
+          # The base first: an overlay that fails there has no baseline, and every image in
+          # it would look new. One the base does not have at all is new, and is judged.
+          : > "$RUNNER_TEMP/base-failed"
           git worktree add --quiet --detach "$RUNNER_TEMP/base" HEAD^1
-          (cd "$RUNNER_TEMP/base" && build_all) > "$RUNNER_TEMP/base.yaml"
+          (cd "$RUNNER_TEMP/base" && build_all /dev/null "$RUNNER_TEMP/base-failed") > "$RUNNER_TEMP/base.yaml"
+          build_all "$RUNNER_TEMP/base-failed" /dev/null > "$RUNNER_TEMP/head.yaml"
           python3 -I "$check" list "$policy" "$RUNNER_TEMP/head.yaml" "$RUNNER_TEMP/base.yaml" > "$RUNNER_TEMP/images"
           if [ ! -s "$RUNNER_TEMP/images" ]; then echo "no new image the policy covers"; exit 0; fi
           cat "$RUNNER_TEMP/images"
