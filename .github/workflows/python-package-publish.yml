@@ -167,7 +167,9 @@ jobs:
           case "$TOOL" in
             poetry) uv tool install --default-index "$TOOLS_INDEX" poetry \
                 && { [ -z "$v" ] || poetry version "$v"; } && poetry build ;;
-            uv) { [ -z "$v" ] || uv version --frozen "$v"; } && uv build ;;
+            # --no-sync, not --frozen: uv.lock records the project's own version, so a
+            # frozen bump would fail every later `uv sync --locked` (the test-command).
+            uv) { [ -z "$v" ] || uv version --no-sync "$v"; } && uv build ;;
             *) echo "::error::build-tool must be poetry or uv, got '$TOOL'"; exit 1 ;;
           esac
           ls -1 dist
