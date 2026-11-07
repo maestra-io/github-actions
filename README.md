@@ -286,7 +286,7 @@ dropped the step.
 
 ## Bake OCI manifests artifact
 
-Bakes a microservice's `kustomization/` tree into an OCI artifact at `${ECR_REGISTRY}/<service>-manifests:<tag>`, cosign-keyless-signs the digest, and verifies the pulled artifact contains no leftover `${APP_PACKAGE_VERSION_TO_BE_REPLACED}` placeholders. This is the GitHub-side half of the **OCI + Kargo** deploy pattern documented in [`maestra-io/fluxcd/docs/microservice-deployment.md`](https://github.com/maestra-io/fluxcd/blob/main/docs/microservice-deployment.md).
+Bakes a microservice's `kustomization/` tree into an OCI artifact at `${ECR_REGISTRY}/<service>-manifests:<tag>`, cosign-keyless-signs the digest before `<tag>` exists (push under the non-semver staging tag `bake-<tag>-<sha>`, sign, `cosign verify` with the identity the clusters check, then tag; the staging tag stays; a failed sign leaves no `<tag>` for Kargo, [issues-maestra#1680](https://github.com/maestra-io/issues-maestra/issues/1680)), and verifies the pulled artifact contains no leftover `${APP_PACKAGE_VERSION_TO_BE_REPLACED}` placeholders. This is the GitHub-side half of the **OCI + Kargo** deploy pattern documented in [`maestra-io/fluxcd/docs/microservice-deployment.md`](https://github.com/maestra-io/fluxcd/blob/main/docs/microservice-deployment.md).
 
 ### Usage
 

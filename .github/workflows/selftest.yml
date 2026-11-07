@@ -30,6 +30,7 @@ on:
       - "ci/**"
       - "scripts/**"
       - "push-helm-chart-to-aws-ecr/**"
+      - "bake-oci-manifests/**"
       - "sign-image/**"
       - "tbot-join/**"
       - "terraform-nora/**"
@@ -75,6 +76,9 @@ jobs:
 
       - name: push-helm-chart-to-aws-ecr package-and-push step (stub aws/helm)
         run: bash scripts/test-helm-chart-push.sh
+
+      - name: bake-oci-manifests staging tag, re-run reuse, publish after sign (stub aws/flux)
+        run: bash scripts/test-bake-oci-manifests.sh
 
       - name: tbot-join retries (stub tbot; real 5 s / 15 s backoff, ~70 s)
         run: bash scripts/test-tbot-join.sh
