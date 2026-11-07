@@ -77,6 +77,9 @@ jobs:
       - name: push-helm-chart-to-aws-ecr package-and-push step (stub aws/helm)
         run: bash scripts/test-helm-chart-push.sh
 
+      - name: push-helm-chart-to-aws-ecr sign + verify step (stub aws/cosign)
+        run: bash scripts/test-helm-chart-sign.sh
+
       - name: bake-oci-manifests staging tag, re-run reuse, publish after sign (stub aws/flux)
         run: bash scripts/test-bake-oci-manifests.sh
 
