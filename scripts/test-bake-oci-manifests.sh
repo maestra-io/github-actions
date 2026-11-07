@@ -33,7 +33,7 @@ STUB
 cat > "$dir/bin/flux" <<'STUB'
 #!/usr/bin/env bash
 echo "flux $*" >> "$CALLS"
-if [ "$1" = pull ]; then cp "$TREE"/* "$5"/; else echo '{"digest":"sha256:new"}'; fi
+if [ "$1" = pull ]; then [ -z "${STUB_PULL_FAIL:-}" ] || exit 1; cp "$TREE"/* "$5"/; else echo '{"digest":"sha256:new"}'; fi
 STUB
 chmod +x "$dir/bin/aws" "$dir/bin/flux"
 
@@ -82,6 +82,11 @@ mkdir -p "$dir/tree2"; echo b > "$dir/tree2/f"
 run push.sh "bake-1.2.3-abc=abc" TREE="$dir/tree2"
 expect stage-other-tree "rc != 0" [ "$rc" -ne 0 ]
 expect stage-other-tree "no push" lacks "flux push"
+
+run push.sh "bake-1.2.3-abc=abc" STUB_PULL_FAIL=1
+expect pull-fails "rc != 0" [ "$rc" -ne 0 ]
+expect pull-fails "says the pull failed" grep -q "cannot pull x-manifests:bake-1.2.3-abc" "$dir/stdout"
+expect pull-fails "not blamed on another bake" bash -c "! grep -q 'not this bake' '$dir/stdout'"
 
 run publish.sh "bake-1.2.3-abc=abc" STUB_DIGEST_TAG=bake-1.2.3-abc DIGEST=sha256:bake-1.2.3-abc
 expect publish "rc 0" [ "$rc" -eq 0 ]

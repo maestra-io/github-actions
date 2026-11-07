@@ -375,15 +375,20 @@ runs:
         # Prints the digest of ${IMAGE_MANIFESTS}:$1 when it was baked from this
         # commit with this tree, nothing when the tag is absent; fails otherwise.
         reuse() {
-          local existing digest revision prev
+          # Called as `$(reuse …) || exit 1`, where errexit is off: every failure
+          # returns explicitly, so it is never mistaken for an absent or foreign tag.
+          local existing n digest revision prev
           existing=$(aws ecr batch-get-image --region "$AWS_REGION" --repository-name "$IMAGE_MANIFESTS" \
             --image-ids "imageTag=$1" --accepted-media-types application/vnd.oci.image.manifest.v1+json \
             --output json) || { echo "::error::cannot read ${IMAGE_MANIFESTS}:$1 from ECR" >&2; return 1; }
-          [ "$(jq '.images | length' <<<"$existing")" -gt 0 ] || return 0
-          digest=$(jq -r '.images[0].imageId.imageDigest' <<<"$existing")
-          revision=$(jq -r '.images[0].imageManifest | fromjson | .annotations["org.opencontainers.image.revision"] // empty' <<<"$existing")
+          n=$(jq -e '.images | length' <<<"$existing") || { echo "::error::cannot parse ECR answer for ${IMAGE_MANIFESTS}:$1" >&2; return 1; }
+          [ "$n" -gt 0 ] || return 0
+          digest=$(jq -er '.images[0].imageId.imageDigest' <<<"$existing") \
+            && revision=$(jq -r '.images[0].imageManifest | fromjson | .annotations["org.opencontainers.image.revision"] // empty' <<<"$existing") \
+            || { echo "::error::cannot parse the manifest of ${IMAGE_MANIFESTS}:$1" >&2; return 1; }
           prev="$(mktemp -d)"
-          flux pull artifact "oci://${ECR_REGISTRY}/${IMAGE_MANIFESTS}:$1" --output "$prev" >/dev/null
+          flux pull artifact "oci://${ECR_REGISTRY}/${IMAGE_MANIFESTS}:$1" --output "$prev" >/dev/null \
+            || { echo "::error::cannot pull ${IMAGE_MANIFESTS}:$1 from ECR" >&2; return 1; }
           if [ "$revision" = "$GITHUB_SHA" ] && diff -r "$prev" "$BAKE_PATH" >/dev/null; then
             echo "${IMAGE_MANIFESTS}:$1 already baked from ${GITHUB_SHA} with this tree (${digest}): push skipped" >&2
             echo "$digest"
