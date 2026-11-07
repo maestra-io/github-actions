@@ -43,6 +43,7 @@ expect() { local case="$1" what="$2"; shift 2
   if "$@"; then echo "ok   $case: $what"; else echo "FAIL $case: $what"; cat "$dir/calls" "$dir/stdout"; fails=$((fails+1)); fi; }
 has() { grep -q -- "$1" "$dir/calls"; }
 lacks() { ! grep -q -- "$1" "$dir/calls"; }
+lacks_out() { ! grep -q digest= "$dir/out"; }
 
 run no sha
 expect unsigned "rc 0" [ "$rc" -eq 0 ]
@@ -64,6 +65,7 @@ expect sign-fails "rc != 0" [ "$rc" -ne 0 ]
 
 run yes sha STUB_VERIFY_FAIL=yes
 expect verify-fails "rc != 0" [ "$rc" -ne 0 ]
+expect verify-fails "no digest output" lacks_out
 
 [ "$fails" -eq 0 ] || { echo "$fails failure(s)"; exit 1; }
 echo "all passed"
