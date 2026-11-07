@@ -1529,7 +1529,7 @@ jobs:
       id-token: write # Teleport join + cosign keyless
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: maestra-io/github-actions/bake-oci-manifests@51406ce83f8edcdad634eb971da1dd54f0e5b54f # v1.64.0
+      - uses: maestra-io/github-actions/bake-oci-manifests@07b2e09efe4030d748b9d18d7ea52a165df1d584 # v1.71.4
         with:
           service: ${{ needs.version.outputs.service }}
           images: ${{ needs.version.outputs.images }}
@@ -1553,7 +1553,7 @@ jobs:
         include: ${{ fromJSON(needs.version.outputs.bake-matrix) }}
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: maestra-io/github-actions/bake-oci-manifests@51406ce83f8edcdad634eb971da1dd54f0e5b54f # v1.64.0
+      - uses: maestra-io/github-actions/bake-oci-manifests@07b2e09efe4030d748b9d18d7ea52a165df1d584 # v1.71.4
         with:
           service: ${{ matrix.service }}
           images: ${{ matrix.images }}
