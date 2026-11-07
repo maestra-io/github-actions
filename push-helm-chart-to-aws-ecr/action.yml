@@ -217,11 +217,13 @@ runs:
         [[ "$digest" == sha256:* ]] || { echo "::error::no digest for ${REPOSITORY}:${VERSION} (${digest})"; exit 1; }
         ref="${REGISTRY}/${REPOSITORY}@${digest}"
         aws ecr get-login-password | cosign login "$REGISTRY" --username AWS --password-stdin >/dev/null
-        if aws ecr describe-images --repository-name "$REPOSITORY" \
-             --image-ids "imageTag=sha256-${digest#sha256:}.sig" >/dev/null 2>&1; then
+        if err=$(aws ecr describe-images --repository-name "$REPOSITORY" \
+             --image-ids "imageTag=sha256-${digest#sha256:}.sig" 2>&1 >/dev/null); then
           echo "${ref} already signed: sign skipped"
-        else
+        elif [[ "$err" == *ImageNotFoundException* ]]; then
           cosign sign --yes "$ref"
+        else
+          echo "$err" >&2; exit 1
         fi
         cosign verify \
           --certificate-oidc-issuer https://token.actions.githubusercontent.com \

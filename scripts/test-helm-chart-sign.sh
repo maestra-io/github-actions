@@ -15,7 +15,12 @@ echo "aws $*" >> "$CALLS"
 case "$2" in
   describe-images)
     case "$*" in
-      *imageTag=sha256-*.sig*) [ "$STUB_SIGNED" = yes ] ;;
+      *imageTag=sha256-*.sig*)
+        case "$STUB_SIGNED" in
+          yes) ;;
+          err) echo "An error occurred (ThrottlingException)" >&2; exit 254 ;;
+          *) echo "An error occurred (ImageNotFoundException)" >&2; exit 254 ;;
+        esac ;;
       *) [ "$STUB_DIGEST" = none ] && echo None || echo "sha256:abc" ;;
     esac ;;
   get-login-password) echo pw ;;
@@ -66,6 +71,10 @@ expect sign-fails "rc != 0" [ "$rc" -ne 0 ]
 run yes sha STUB_VERIFY_FAIL=yes
 expect verify-fails "rc != 0" [ "$rc" -ne 0 ]
 expect verify-fails "no digest output" lacks_out
+
+run err sha
+expect sig-probe-error "rc != 0" [ "$rc" -ne 0 ]
+expect sig-probe-error "no sign" lacks "cosign sign"
 
 [ "$fails" -eq 0 ] || { echo "$fails failure(s)"; exit 1; }
 echo "all passed"
