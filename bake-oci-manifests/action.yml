@@ -377,10 +377,14 @@ runs:
         reuse() {
           # Called as `$(reuse …) || exit 1`, where errexit is off: every failure
           # returns explicitly, so it is never mistaken for an absent or foreign tag.
-          local existing n digest revision prev
+          local existing failures n digest revision prev
           existing=$(aws ecr batch-get-image --region "$AWS_REGION" --repository-name "$IMAGE_MANIFESTS" \
             --image-ids "imageTag=$1" --accepted-media-types application/vnd.oci.image.manifest.v1+json \
             --output json) || { echo "::error::cannot read ${IMAGE_MANIFESTS}:$1 from ECR" >&2; return 1; }
+          # batch-get-image exits 0 with per-image failures: only ImageNotFound means absent.
+          failures=$(jq -r '[.failures[]? | select(.failureCode != "ImageNotFound") | "\(.failureCode // "unknown"): \(.failureReason // "unknown")"] | join("; ")' <<<"$existing") \
+            || { echo "::error::cannot parse ECR answer for ${IMAGE_MANIFESTS}:$1" >&2; return 1; }
+          [ -z "$failures" ] || { echo "::error::cannot read ${IMAGE_MANIFESTS}:$1 from ECR: $failures" >&2; return 1; }
           n=$(jq -e '.images | length' <<<"$existing") || { echo "::error::cannot parse ECR answer for ${IMAGE_MANIFESTS}:$1" >&2; return 1; }
           [ "$n" -gt 0 ] || return 0
           digest=$(jq -er '.images[0].imageId.imageDigest' <<<"$existing") \

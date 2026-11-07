@@ -26,7 +26,10 @@ case "$2" in
         exit 0
       fi
     done
-    echo '{"images":[]}' ;;
+    case "${STUB_FAILURE:-}" in
+      "") echo '{"images":[]}' ;;
+      *) printf '{"images":[],"failures":[{"failureCode":"%s","failureReason":"stub"}]}' "$STUB_FAILURE" ;;
+    esac ;;
   put-image) f=$(printf '%s\n' "$@" | sed -n 's|^file://||p'); cat "$f" > "$MANIFEST_OUT" ;;
 esac
 STUB
@@ -87,6 +90,15 @@ run push.sh "bake-1.2.3-abc=abc" STUB_PULL_FAIL=1
 expect pull-fails "rc != 0" [ "$rc" -ne 0 ]
 expect pull-fails "says the pull failed" grep -q "cannot pull x-manifests:bake-1.2.3-abc" "$dir/stdout"
 expect pull-fails "not blamed on another bake" bash -c "! grep -q 'not this bake' '$dir/stdout'"
+
+run push.sh "" STUB_FAILURE=ImageNotFound
+expect not-found "rc 0" [ "$rc" -eq 0 ]
+expect not-found "pushes the staging tag" has "flux push artifact oci://reg/x-manifests:bake-1.2.3-abc "
+
+run push.sh "" STUB_FAILURE=KmsError
+expect ecr-failure "rc != 0" [ "$rc" -ne 0 ]
+expect ecr-failure "no push" lacks "flux push"
+expect ecr-failure "names the failure" grep -q "KmsError: stub" "$dir/stdout"
 
 run publish.sh "bake-1.2.3-abc=abc" STUB_DIGEST_TAG=bake-1.2.3-abc DIGEST=sha256:bake-1.2.3-abc
 expect publish "rc 0" [ "$rc" -eq 0 ]
