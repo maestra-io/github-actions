@@ -181,7 +181,10 @@ workflows (`service-build.yml`, `dotnet-service-build.yml`, `mcf-build.yml`) bui
 `outputs: type=image,push=false`, call this action with `push: false`, and push with a second,
 fully cached `docker/build-push-action` run (`push: true`, tag `${registry}/<repository>:<tag>`).
 `SOURCE_DATE_EPOCH` (the commit time) keeps the manifest digest reproducible, so a re-run finds
-its own image under the immutable tag and skips the push instead of failing on `TAG_INVALID`:
+its own image under the immutable tag and skips the push instead of failing on `TAG_INVALID`.
+A rebuild with another digest is also skipped (the stored image is kept) when the stored
+image's `org.opencontainers.image.revision` label is this commit, e.g. a retry after a spot
+interruption killed the job after its push; any other image under the tag fails the job:
 
 ```yaml
 - uses: docker/build-push-action@v7.4.0

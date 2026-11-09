@@ -853,7 +853,10 @@ jobs:
           # >>> ecr-push-check (scripts/test-ecr-push-check.sh runs this block)
           # Idempotent re-run: the immutable tag may already hold this run's image from an
           # earlier attempt. Same digest (SOURCE_DATE_EPOCH makes the rebuild reproducible)
-          # = pushed already: skip. Another digest would end in ECR TAG_INVALID: fail and say what to do.
+          # = pushed already: skip. Another digest built from this commit (its config label
+          # org.opencontainers.image.revision = GITHUB_SHA: a retry after a spot interruption
+          # that rebuilt non-reproducibly) = skip and keep the pushed image. Anything else would
+          # end in ECR TAG_INVALID: fail and say what to do.
           [ -n "$DIGEST" ] || { echo "::error::no image digest from the build step"; exit 1; }
           if ! out=$(aws ecr describe-images --repository-name "$IMAGE" --image-ids imageTag="$RELEASE" --output json 2>&1); then
             if grep -qE 'ImageNotFoundException|RepositoryNotFoundException' <<<"$out"; then echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0; fi
@@ -862,9 +865,24 @@ jobs:
           existing=$(jq -r '.imageDetails[0].imageDigest // empty' <<<"$out")
           if [ "$existing" = "$DIGEST" ]; then
             echo "${IMAGE}:${RELEASE} is already in ECR (${DIGEST}): push skipped"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
+            printf 'skip=true\ndigest=%s\n' "$existing" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          revision=""
+          if [ -n "$existing" ] \
+            && manifest=$(aws ecr batch-get-image --repository-name "$IMAGE" --image-ids imageDigest="$existing" \
+                 --accepted-media-types application/vnd.oci.image.manifest.v1+json application/vnd.docker.distribution.manifest.v2+json \
+                 --query 'images[0].imageManifest' --output text) \
+            && config=$(jq -er '.config.digest' <<<"$manifest") \
+            && url=$(aws ecr get-download-url-for-layer --repository-name "$IMAGE" --layer-digest "$config" --query downloadUrl --output text) \
+            && blob=$(curl -sfL --retry 3 "$url"); then
+            revision=$(jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' <<<"$blob" || true)
+          fi
+          if [ -n "$GITHUB_SHA" ] && [ "$revision" = "$GITHUB_SHA" ]; then
+            echo "${IMAGE}:${RELEASE} is already in ECR (${existing}), built from this commit ${GITHUB_SHA} by an earlier attempt (rebuild: ${DIGEST}): push skipped"
+            printf 'skip=true\ndigest=%s\n' "$existing" >> "$GITHUB_OUTPUT"
           else
-            echo "::error::${IMAGE}:${RELEASE} already exists in ECR (${existing:-<none>}) and is not the image built now (${DIGEST}); tags are immutable. Dispatch the release workflow again: it takes the next release number."
+            echo "::error::${IMAGE}:${RELEASE} already exists in ECR (${existing:-<none>}, revision ${revision:-unknown}) and is not the image built now (${DIGEST}, revision ${GITHUB_SHA}); tags are immutable. Dispatch the release workflow again: it takes the next release number."
             exit 1
           fi
           # <<< ecr-push-check
@@ -903,7 +921,7 @@ jobs:
         uses: maestra-io/github-actions/sign-image@21da9a74395b7d6fb7dfa71ba2805c280d11fe32 # v1.64.2
         with:
           image: ${{ steps.ecr.outputs.registry }}/${{ matrix.image }}
-          digest: ${{ steps.push.outputs.digest || steps.build.outputs.digest }}
+          digest: ${{ steps.push.outputs.digest || steps.existing.outputs.digest || steps.build.outputs.digest }}
 
   # Git tag + GitHub Release BEFORE the bake: bake-oci-manifests checks out the
   # release tag. Bare `1.1.N`, same shape as create-gitlab-release (or
