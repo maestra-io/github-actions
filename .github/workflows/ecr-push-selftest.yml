@@ -15,6 +15,8 @@ on:
     paths:
       - ".github/workflows/ecr-push-selftest.yml"
       - ".github/workflows/service-build.yml"
+      - ".github/workflows/dotnet-service-build.yml"
+      - "scripts/test-ecr-push-check.sh"
       - "push-to-aws-ecr-repository/**"
       - "sign-image/**"
 jobs:
@@ -165,6 +167,41 @@ jobs:
           provenance: false
           push: true
           tags: ${{ steps.ecr.outputs.registry }}/${{ env.REPOSITORY }}:${{ env.TAG }}-b
+      # Retry after a non-reproducible rebuild: the tag holds an image of THIS commit
+      # (revision label = github.sha) with another digest -> skip and keep the stored one.
+      - name: push c as ${{ env.TAG }}-c (labelled with this commit)
+        id: push-c
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.value }}
+        with:
+          context: ${{ runner.temp }}/ctx-a
+          provenance: false
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.REPOSITORY }}:${{ env.TAG }}-c
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+      - name: b against the tag of c (expect skip, same commit)
+        env:
+          IMAGE: ${{ env.REPOSITORY }}
+          RELEASE: ${{ env.TAG }}-c
+          DIGEST: ${{ steps.build-b.outputs.digest }}
+          STORED: ${{ steps.push-c.outputs.digest }}
+          AWS_REGION: us-west-2
+        run: |
+          [ "$DIGEST" != "$STORED" ] || { echo "::error::b and c built to the same digest"; exit 1; }
+          : > "$RUNNER_TEMP/out"; GITHUB_OUTPUT="$RUNNER_TEMP/out" bash -eo pipefail "$RUNNER_TEMP/check.sh"
+          grep -q '^skip=true$' "$RUNNER_TEMP/out"
+          grep -qx "digest=$STORED" "$RUNNER_TEMP/out" || { echo "::error::check did not hand on the stored digest $STORED"; cat "$RUNNER_TEMP/out"; exit 1; }
+      - name: b against the tag of c from another commit (expect fail)
+        env:
+          IMAGE: ${{ env.REPOSITORY }}
+          RELEASE: ${{ env.TAG }}-c
+          DIGEST: ${{ steps.build-b.outputs.digest }}
+          AWS_REGION: us-west-2
+        run: |
+          : > "$RUNNER_TEMP/out"
+          if GITHUB_SHA=0000000000000000000000000000000000000000 GITHUB_OUTPUT="$RUNNER_TEMP/out" bash -eo pipefail "$RUNNER_TEMP/check.sh" > "$RUNNER_TEMP/check.log" 2>&1; then echo "::error::check accepted an image of another commit"; exit 1; fi
+          grep -q 'already exists in ECR' "$RUNNER_TEMP/check.log" || { echo "::error::check failed for another reason:"; cat "$RUNNER_TEMP/check.log"; exit 1; }
       - name: a and b share every layer but the last
         env:
           AWS_REGION: us-west-2
