@@ -12,6 +12,11 @@ mkdir -p "$dir"
 # GOAUTH helper (GOAUTH holds its path; `command` in `go help goauth` is a placeholder):
 # run by every `go` process before its first fetch, and again with
 # the URL as argument after a 4xx (an expired token): each run mints a new token.
+# Its URL line is the origin, not $url/go: Go 1.24 looks a credential up by the full
+# request URL, then by the bare host only (cmd/go loadCredential, fixed in 1.25), so a
+# /go prefix never matched and every fetch went out without the header (401).
+rest="${url#*://}"
+origin="${url%%://*}://${rest%%/*}"
 helper="$dir/goauth"
 cat > "$helper" <<SH
 #!/usr/bin/env bash
@@ -19,7 +24,7 @@ set -euo pipefail
 token=\$(curl -fsS --retry 3 -H "Authorization: bearer \${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \\
   "\${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=$NORA_AUDIENCE" | jq -r .value)
 [ -n "\$token" ] && [ "\$token" != null ] || { echo "go-nora: no OIDC token" >&2; exit 1; }
-printf '%s/go\n\nAuthorization: Basic %s\n\n' "$url" "\$(printf 'token:%s' "\$token" | base64 | tr -d '\\n')"
+printf '%s\n\nAuthorization: Basic %s\n\n' "$origin" "\$(printf 'token:%s' "\$token" | base64 | tr -d '\\n')"
 SH
 chmod +x "$helper"
 
