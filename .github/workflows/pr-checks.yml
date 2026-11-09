@@ -245,4 +245,5 @@ jobs:
             || { echo "::error::no AWS credentials for the ECR chart pull: the networkPolicy gate cannot render the chart"; exit 1; }
           mapfile -t eps < <(bash .pr-checks/pr-checks/kustomize-entry-points.sh "$KPATH")
           KUSTOMIZE="$RUNNER_TEMP/kustomize" HELM="$RUNNER_TEMP/helm" KUBECONFORM="$RUNNER_TEMP/kubeconform" \
-            python3 -I .pr-checks/pr-checks/check-network-policy.py --kustomize-path "$KPATH" --charts-dir "$RUNNER_TEMP/charts" "${eps[@]}"
+            python3 -I .pr-checks/pr-checks/check-network-policy.py --kustomize-path "$KPATH" --charts-dir "$RUNNER_TEMP/charts" \
+              --ecr-registry "$ECR_REGISTRY" "${eps[@]}"

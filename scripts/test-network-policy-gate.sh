@@ -24,7 +24,9 @@ pin() { sed -n "s/^  $1: //p" "$wf"; }
 # tool <env var> <name> <url> <sha256> <tar member> [strip]
 tool() {
 	local var=$1 name=$2 url=$3 sha=$4 member=$5 strip=${6:-0}
-	if command -v "$name" >/dev/null; then export "$var=$(command -v "$name")"; return; fi
+	# Pinned download, as the pr-checks step; a binary on PATH is used only as an explicit
+	# override (HELM=/path/to/helm …, for a macOS run with local tools).
+	if [ -n "${!var:-}" ]; then export "${var?}"; return; fi
 	curl -fsSL -o "$work/$name.tgz" "$url"
 	echo "$sha  $work/$name.tgz" | sha256sum -c - >/dev/null
 	tar -xzf "$work/$name.tgz" -C "$work" --strip-components="$strip" "$member"
