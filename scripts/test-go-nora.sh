@@ -25,7 +25,9 @@ helper="$root/tmp/go-nora/goauth"
 printf 'GOPROXY=https://packages.maestra.io/go\nGOAUTH=%s\n' "$helper" | diff - "$root/env" || fail "GITHUB_ENV"
 [ "$(cat "$root/out")" = "token=eyJ.stub.jwt" ] || fail "output: $(cat "$root/out")"
 grep -q '::add-mask::eyJ.stub.jwt' "$root/log" || fail "token not masked"
-want=$(printf 'https://packages.maestra.io/go\n\nAuthorization: Basic %s\n' "$(printf 'token:eyJ.stub.jwt' | base64 | tr -d '\n')")
+# The URL line is the origin: Go 1.24 never matches a credential stored under a path
+# prefix (https://packages.maestra.io/go), so go 1.24 sent no header and got 401.
+want=$(printf 'https://packages.maestra.io\n\nAuthorization: Basic %s\n' "$(printf 'token:eyJ.stub.jwt' | base64 | tr -d '\n')")
 got=$(env PATH="$root/bin:$PATH" "${oidc[@]}" "$helper")
 [ "$got" = "$want" ] || fail "helper: $got"
 # The retry form (URL argument, the 4xx response on stdin) answers the same way.
