@@ -15,6 +15,8 @@ mkdir -p "$dir"
 # Its URL line is the origin, not $url/go: Go 1.24 looks a credential up by the full
 # request URL, then by the bare host only (cmd/go loadCredential, fixed in 1.25), so a
 # /go prefix never matched and every fetch went out without the header (401).
+# The whole origin is nora's (iota IngressRoute nora/nora: every path on packages.maestra.io
+# goes to nora), and the token's aud is that host, which only nora accepts.
 rest="${url#*://}"
 origin="${url%%://*}://${rest%%/*}"
 helper="$dir/goauth"
