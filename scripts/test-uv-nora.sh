@@ -10,9 +10,15 @@ root=$(mktemp -d); trap 'rm -rf "$root"' EXIT
 mkdir -p "$root/bin" "$root/tmp"
 cat > "$root/bin/curl" <<'STUB'
 #!/usr/bin/env bash
+if [[ "${*: -1}" == */api/oidc/session ]]; then  # nora, or the local index below
+  [[ " $* " == *" -X POST -H Authorization: Bearer eyJ.stub.jwt "* ]] || { echo "bad exchange: $*" >&2; exit 22; }
+  [ -z "${SESSION_CODE:-}" ] || { printf '{"error":"x"}\n%s' "$SESSION_CODE"; exit 0; }
+  printf '{"token":"nrs_1_stub"}\n200'; exit 0
+fi
 [[ " $* " == *" -H Authorization: bearer req-token "* ]] || { echo "bad auth header: $*" >&2; exit 22; }
-[[ " $* " == *" --get "*" --data-urlencode audience=packages.maestra.io "* ]] || { echo "bad audience: $*" >&2; exit 22; }
-[[ "${*: -1}" == "https://idtok.example/x?api-version=2.0" ]] || { echo "bad url: ${*: -1}" >&2; exit 22; }
+# The keyring helper mints with --get; the token output (nora-session.sh) with &audience=.
+[[ " $* " == *" --get "*" --data-urlencode audience=packages.maestra.io "* && "${*: -1}" == "https://idtok.example/x?api-version=2.0" ]] ||
+  [[ "${*: -1}" == "https://idtok.example/x?api-version=2.0&audience=packages.maestra.io" ]] || { echo "bad url: $*" >&2; exit 22; }
 [ -z "${CURL_LOG:-}" ] || echo called >> "$CURL_LOG"
 echo '{"value":"eyJ.stub.jwt"}'
 STUB
@@ -29,8 +35,8 @@ run https://packages.maestra.io/
 helper="$root/tmp/uv-nora/bin/keyring"
 printf 'UV_KEYRING_PROVIDER=subprocess\nUV_INDEX_MAESTRA_USERNAME=token\n' | diff - "$root/env" || fail "GITHUB_ENV"
 [ "$(cat "$root/path")" = "$root/tmp/uv-nora/bin" ] || fail "GITHUB_PATH: $(cat "$root/path")"
-[ "$(cat "$root/out")" = "token=eyJ.stub.jwt" ] || fail "output: $(cat "$root/out")"
-grep -q '::add-mask::eyJ.stub.jwt' "$root/log" || fail "token not masked"
+[ "$(cat "$root/out")" = "token=nrs_1_stub" ] || fail "output: $(cat "$root/out")"
+grep -q '::add-mask::nrs_1_stub' "$root/log" || fail "token not masked"
 kr() { env PATH="$root/bin:$PATH" "${oidc[@]}" "$helper" "$@"; }
 [ "$(kr get https://packages.maestra.io/simple/ token)" = eyJ.stub.jwt ] || fail "helper index url"
 [ "$(kr get https://packages.maestra.io/simple/six/six-1.17.0-py2.py3-none-any.whl token)" = eyJ.stub.jwt ] || fail "helper file url"

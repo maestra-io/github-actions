@@ -404,6 +404,27 @@ Vault app join for PR hot-test stands) and `maestra-io/dockerfiles` `.github/wor
 
 Tested by [`scripts/test-tbot-join.sh`](scripts/test-tbot-join.sh) (stub `tbot`, run by `selftest`).
 
+## A nora credential for a long build (`nora-session`)
+
+A GitHub OIDC token lives ~5 minutes, and nora checks `exp`. A credential written once
+(Maven `settings.xml`, `.npmrc`, bower, a Docker build secret) needs a longer one: the action
+exchanges the job's OIDC token at nora (`POST /api/oidc/session`) for a session token, `nrs_…`,
+with the token's role and namespace scope, that lives 1 hour (issues-maestra#1649). The
+`token` outputs of `go-nora`, `cargo-nora` and `uv-nora` are such session tokens; their
+GOAUTH / credential / keyring helpers still mint a fresh OIDC token on every call. A nora
+without the exchange (404) or a provider without sessions (403) gets the OIDC token, with a
+warning; any other answer fails the step. Needs `id-token: write`.
+
+```yaml
+  - uses: maestra-io/github-actions/nora-session@<40-hex sha> # vX.Y.Z
+    id: nora
+  - run: mvn -s ci-settings.xml -B verify   # <password>${env.NORA_TOKEN}</password>
+    env:
+      NORA_TOKEN: ${{ steps.nora.outputs.token }}
+```
+
+Tested by [`scripts/test-nora-session.sh`](scripts/test-nora-session.sh) (stub `curl`, run by `selftest`).
+
 ## Terraform providers through nora (`terraform-nora`)
 
 Every `registry.terraform.io` provider installs from `https://packages.maestra.io/terraform/`
@@ -451,7 +472,7 @@ steps:
   - uses: maestra-io/github-actions/cargo-nora@<40-hex sha> # vX.Y.Z
     id: nora
   - run: go test ./...        # cargo test --locked
-  # An image build: right after the action (its token is minted there).
+  # An image build: within the hour (the token is a nora session token, see nora-session).
   - uses: docker/build-push-action@<sha>
     with:
       secrets: PRIVATE_PACKAGES_TOKEN=${{ steps.nora.outputs.token }}

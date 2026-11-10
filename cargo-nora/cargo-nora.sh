@@ -35,9 +35,11 @@ index = "sparse+$url/cargo/index/"
 credential-provider = ["cargo:token-from-stdout", "$helper"]
 TOML
 
-token=$(curl -fsS --retry 3 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-  "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${NORA_AUDIENCE}" | jq -r .value)
-[ -n "$token" ] && [ "$token" != null ] || { echo "::error::cargo-nora: no OIDC token" >&2; exit 1; }
+# The token output is a session token (nora-session.sh): a Docker build secret is read
+# once, long after a raw JWT expired.
+# shellcheck source=SCRIPTDIR/../nora-session/nora-session.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../nora-session/nora-session.sh"
+token=$(nora_token "$url" "$NORA_AUDIENCE") || { echo "::error::cargo-nora: no OIDC token" >&2; exit 1; }
 echo "::add-mask::$token"
 echo "token=$token" >> "$GITHUB_OUTPUT"
 echo "cargo: crates from $url/cargo (config $cargo_home/config.toml)"

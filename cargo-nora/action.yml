@@ -20,7 +20,7 @@ inputs:
 
 outputs:
   token:
-    description: "The GitHub OIDC token for nora (masked), for the Docker build secret PRIVATE_PACKAGES_TOKEN."
+    description: "A nora session token (masked, 1 h, nora-session), for the Docker build secret PRIVATE_PACKAGES_TOKEN."
     value: ${{ steps.cargo-nora.outputs.token }}
 
 runs:
