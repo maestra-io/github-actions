@@ -46,10 +46,10 @@
 #   dockerfile          Default Dockerfile path (default Dockerfile, context = repo root);
 #                       also the Dockerfile of docker-test-target.
 #   test-command        Bash run on the runner from the repo root (the GitLab test
-#                       jobs). Gets PACKAGES_TOKEN (GitHub OIDC token nora accepts as
-#                       Basic `token:<it>`), PACKAGES_URL and the test-env variables.
-#                       The token expires within minutes: run `packages-token` (on PATH)
-#                       for a fresh one before each later install, e.g.
+#                       jobs). Gets PACKAGES_TOKEN (nora session token, 1 h, nora takes it
+#                       as Basic `token:<it>`), PACKAGES_URL and the test-env variables.
+#                       `packages-token` (on PATH) prints a fresh GitHub OIDC token
+#                       (~5 min) for a later install, e.g.
 #                       `poetry config http-basic.maestra token "$(packages-token)"`.
 #                       Docker is available (Testcontainers / docker compose), and a
 #                       BuildKit builder with the type=gha cache env: an image it builds
@@ -99,7 +99,7 @@
 #                       <service>-manifests keep the bare release; the prefix also
 #                       gives the line its own concurrency group.
 # Secrets:
-#   private-packages-token  Optional override of the nora OIDC token.
+#   private-packages-token  Optional override of the nora session token.
 # Outputs:
 #   release             The release number (1.1.N, or release-version).
 #
@@ -404,15 +404,30 @@ jobs:
           jq --arg h "$host" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
           # <<< nora-cred-helper
 
+      # The GitHub OIDC token lives ~5 min: a build or test that runs longer (mvn
+      # dependency:go-offline) got 401 mid-way. nora's session token lives 1 h (issues-maestra#1649).
+      - name: packages token override
+        id: override
+        env:
+          OVERRIDE: ${{ secrets.private-packages-token }}
+        run: echo "set=${OVERRIDE:+true}" >> "$GITHUB_OUTPUT"
+      - name: nora session token
+        id: session
+        if: ${{ steps.override.outputs.set != 'true' }}
+        uses: maestra-io/github-actions/nora-session@1b6e07a656e9eb1045ba563d4b9394631ecaa640 # v1.74.0
+        with:
+          url: ${{ inputs.packages-url }}
+          audience: ${{ inputs.packages-audience }}
       - name: mint packages token
         id: token
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           OVERRIDE: ${{ secrets.private-packages-token }}
-          AUDIENCE: ${{ inputs.packages-audience }}
+          SESSION: ${{ steps.session.outputs.token }}
         with:
           script: |
-            const t = process.env.OVERRIDE || await core.getIDToken(process.env.AUDIENCE);
+            const t = process.env.OVERRIDE || process.env.SESSION;
+            if (!t) core.setFailed('no packages token');
             core.setSecret(t);
             core.setOutput('token', t);
 
@@ -685,15 +700,30 @@ jobs:
           jq --arg h "$host" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
           # <<< nora-cred-helper
 
+      # The GitHub OIDC token lives ~5 min: a build or test that runs longer (mvn
+      # dependency:go-offline) got 401 mid-way. nora's session token lives 1 h (issues-maestra#1649).
+      - name: packages token override
+        id: override
+        env:
+          OVERRIDE: ${{ secrets.private-packages-token }}
+        run: echo "set=${OVERRIDE:+true}" >> "$GITHUB_OUTPUT"
+      - name: nora session token
+        id: session
+        if: ${{ steps.override.outputs.set != 'true' }}
+        uses: maestra-io/github-actions/nora-session@1b6e07a656e9eb1045ba563d4b9394631ecaa640 # v1.74.0
+        with:
+          url: ${{ inputs.packages-url }}
+          audience: ${{ inputs.packages-audience }}
       - name: mint packages token
         id: token
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           OVERRIDE: ${{ secrets.private-packages-token }}
-          AUDIENCE: ${{ inputs.packages-audience }}
+          SESSION: ${{ steps.session.outputs.token }}
         with:
           script: |
-            const t = process.env.OVERRIDE || await core.getIDToken(process.env.AUDIENCE);
+            const t = process.env.OVERRIDE || process.env.SESSION;
+            if (!t) core.setFailed('no packages token');
             core.setSecret(t);
             core.setOutput('token', t);
 
