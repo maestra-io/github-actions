@@ -412,7 +412,8 @@ exchanges the job's OIDC token at nora (`POST /api/oidc/session`) for a session 
 with the token's role and namespace scope, that lives 1 hour (issues-maestra#1649). The
 `token` outputs of `go-nora`, `cargo-nora` and `uv-nora` are such session tokens; their
 GOAUTH / credential / keyring helpers still mint a fresh OIDC token on every call. A nora
-without the exchange gets the OIDC token, with a warning. Needs `id-token: write`.
+without the exchange (404) or a provider without sessions (403) gets the OIDC token, with a
+warning; any other answer fails the step. Needs `id-token: write`.
 
 ```yaml
   - uses: maestra-io/github-actions/nora-session@<40-hex sha> # vX.Y.Z

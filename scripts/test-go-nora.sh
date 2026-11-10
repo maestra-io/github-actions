@@ -11,8 +11,8 @@ cat > "$root/bin/curl" <<'STUB'
 #!/usr/bin/env bash
 if [[ "${*: -1}" == https://packages.maestra.io/api/oidc/session ]]; then
   [[ " $* " == *" -X POST -H Authorization: Bearer eyJ.stub.jwt "* ]] || { echo "bad exchange: $*" >&2; exit 22; }
-  [ -z "${NO_SESSION:-}" ] || exit 22
-  echo '{"token":"nrs_1_stub"}'; exit 0
+  [ -z "${SESSION_CODE:-}" ] || { printf '{"error":"x"}\n%s' "$SESSION_CODE"; exit 0; }
+  printf '{"token":"nrs_1_stub"}\n200'; exit 0
 fi
 [[ " $* " == *" -H Authorization: bearer req-token "* ]] || { echo "bad auth header: $*" >&2; exit 22; }
 [[ "${*: -1}" == "https://idtok.example/x?api-version=2.0&audience=packages.maestra.io" ]] || { echo "bad url: ${*: -1}" >&2; exit 22; }
@@ -51,10 +51,10 @@ fi
 
 # A nora without the session exchange: the raw JWT, with a warning.
 env -i PATH="$root/bin:$PATH" HOME="$root" RUNNER_TEMP="$root/tmp" GITHUB_ENV="$root/env2" GITHUB_OUTPUT="$root/out2" \
-  NORA_URL=https://packages.maestra.io NORA_AUDIENCE=packages.maestra.io NO_SESSION=1 "${oidc[@]}" \
+  NORA_URL=https://packages.maestra.io NORA_AUDIENCE=packages.maestra.io SESSION_CODE=404 "${oidc[@]}" \
   bash "$script" > "$root/log2" 2>&1 || fail "run without exchange: $(cat "$root/log2")"
 [ "$(cat "$root/out2")" = "token=eyJ.stub.jwt" ] || fail "fallback output: $(cat "$root/out2")"
-grep -q '::warning::nora session exchange' "$root/log2" || fail "fallback not warned"
+grep -q '::warning::nora at .* gives no session (HTTP 404)' "$root/log2" || fail "fallback not warned"
 
 # Refusal: no id-token permission.
 mkdir -p "$root/noid"

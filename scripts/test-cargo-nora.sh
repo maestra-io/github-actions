@@ -11,8 +11,8 @@ cat > "$root/bin/curl" <<'STUB'
 #!/usr/bin/env bash
 if [[ "${*: -1}" == https://packages.maestra.io/api/oidc/session ]]; then
   [[ " $* " == *" -X POST -H Authorization: Bearer eyJ.stub.jwt "* ]] || { echo "bad exchange: $*" >&2; exit 22; }
-  [ -z "${NO_SESSION:-}" ] || exit 22
-  echo '{"token":"nrs_1_stub"}'; exit 0
+  [ -z "${SESSION_CODE:-}" ] || { printf '{"error":"x"}\n%s' "$SESSION_CODE"; exit 0; }
+  printf '{"token":"nrs_1_stub"}\n200'; exit 0
 fi
 [[ " $* " == *" -H Authorization: bearer req-token "* ]] || { echo "bad auth header: $*" >&2; exit 22; }
 [[ "${*: -1}" == "https://idtok.example/x?api-version=2.0&audience=packages.maestra.io" ]] || { echo "bad url: ${*: -1}" >&2; exit 22; }
