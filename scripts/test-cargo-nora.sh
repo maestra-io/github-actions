@@ -9,6 +9,11 @@ root=$(mktemp -d); trap 'rm -rf "$root"' EXIT
 mkdir -p "$root/bin" "$root/tmp"
 cat > "$root/bin/curl" <<'STUB'
 #!/usr/bin/env bash
+if [[ "${*: -1}" == https://packages.maestra.io/api/oidc/session ]]; then
+  [[ " $* " == *" -X POST -H Authorization: Bearer eyJ.stub.jwt "* ]] || { echo "bad exchange: $*" >&2; exit 22; }
+  [ -z "${NO_SESSION:-}" ] || exit 22
+  echo '{"token":"nrs_1_stub"}'; exit 0
+fi
 [[ " $* " == *" -H Authorization: bearer req-token "* ]] || { echo "bad auth header: $*" >&2; exit 22; }
 [[ "${*: -1}" == "https://idtok.example/x?api-version=2.0&audience=packages.maestra.io" ]] || { echo "bad url: ${*: -1}" >&2; exit 22; }
 echo '{"value":"eyJ.stub.jwt"}'
@@ -26,8 +31,8 @@ cfg="$root/.cargo/config.toml"
 grep -qxF 'replace-with = "nora"' "$cfg" || fail "no source replacement"
 grep -qxF 'registry = "sparse+https://packages.maestra.io/cargo/index/"' "$cfg" || fail "source registry"
 grep -qxF "credential-provider = [\"cargo:token-from-stdout\", \"$helper\"]" "$cfg" || fail "credential provider"
-[ "$(cat "$root/out")" = "token=eyJ.stub.jwt" ] || fail "output: $(cat "$root/out")"
-grep -qxF "::add-mask::eyJ.stub.jwt" "$root/log" || fail "token not masked"
+[ "$(cat "$root/out")" = "token=nrs_1_stub" ] || fail "output: $(cat "$root/out")"
+grep -qxF "::add-mask::nrs_1_stub" "$root/log" || fail "token not masked"
 got=$(env PATH="$root/bin:$PATH" "${oidc[@]}" "$helper")
 [ "$got" = "$want" ] || fail "helper: $got"
 

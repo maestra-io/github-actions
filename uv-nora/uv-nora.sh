@@ -24,9 +24,11 @@ printf '%s\n' "\$token"
 SH
 chmod +x "$dir/keyring"
 
-token=$(curl -fsS --retry 3 --get -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-  --data-urlencode "audience=${NORA_AUDIENCE}" "${ACTIONS_ID_TOKEN_REQUEST_URL}" | jq -r .value)
-[ -n "$token" ] && [ "$token" != null ] || { echo "::error::uv-nora: no OIDC token" >&2; exit 1; }
+# The token output is a session token (nora-session.sh): a Docker build secret is read
+# once, long after a raw JWT expired.
+# shellcheck source=SCRIPTDIR/../nora-session/nora-session.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../nora-session/nora-session.sh"
+token=$(nora_token "$url" "$NORA_AUDIENCE") || { echo "::error::uv-nora: no OIDC token" >&2; exit 1; }
 echo "::add-mask::$token"
 
 echo "$dir" >> "$GITHUB_PATH"

@@ -30,9 +30,11 @@ printf '%s\n\nAuthorization: Basic %s\n\n' "$origin" "\$(printf 'token:%s' "\$to
 SH
 chmod +x "$helper"
 
-token=$(curl -fsS --retry 3 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-  "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${NORA_AUDIENCE}" | jq -r .value)
-[ -n "$token" ] && [ "$token" != null ] || { echo "::error::go-nora: no OIDC token" >&2; exit 1; }
+# The token output is a session token (nora-session.sh): a Docker build secret is read
+# once, long after a raw JWT expired.
+# shellcheck source=SCRIPTDIR/../nora-session/nora-session.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../nora-session/nora-session.sh"
+token=$(nora_token "$url" "$NORA_AUDIENCE") || { echo "::error::go-nora: no OIDC token" >&2; exit 1; }
 echo "::add-mask::$token"
 
 {

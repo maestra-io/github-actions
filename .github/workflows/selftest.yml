@@ -35,6 +35,9 @@ on:
       - "tbot-join/**"
       - "terraform-nora/**"
       - "uv-nora/**"
+      - "go-nora/**"
+      - "cargo-nora/**"
+      - "nora-session/**"
       - "nora-image-prewarm/**"
       - ".github/workflows/pr-checks.yml"
       - "pr-checks/**"
@@ -88,6 +91,9 @@ jobs:
 
       - name: terraform-nora CLI config and credentials helper (stub curl)
         run: bash scripts/test-terraform-nora.sh
+
+      - name: nora-session JWT exchanged for a session token, fallback, refusal (stub curl)
+        run: bash scripts/test-nora-session.sh
 
       - name: go-nora GOPROXY, GOAUTH helper, token output (stub curl)
         run: bash scripts/test-go-nora.sh
