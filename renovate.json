@@ -63,7 +63,7 @@
       "semanticCommitScope": "deps"
     },
     {
-      "description": "Keep this repo's own cadence: the daily preset groups the updates into renovate/daily and renovate/daily-review, this rule (after the preset's rules) puts its schedule back. Weekly, Monday 00-06: these workflows are a shared library, one review and one release tag a week.",
+      "description": "Keep this repo's own cadence: the daily preset groups the updates into renovate/daily and renovate/daily-review, this rule (after the preset's rules) puts its schedule back. Weekly, Monday 00:00-06:59 in this repo's timezone (Europe/Lisbon), the window the github-actions and ansible-lint rules already had: these workflows are a shared library, one review and one release tag a week.",
       "matchPackageNames": [
         "*"
       ],
