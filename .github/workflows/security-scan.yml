@@ -1,0 +1,166 @@
+# Reusable scheduled security scan of a repository's default branch: the GitHub port of
+# the GitLab "Daily security scan (gitleaks, trivy, opengrep)" pipeline schedule that the
+# IDP terraform set up on every project (branch special/schedule-security-pipelines,
+# components system/components/{gitleaks,trivy,opengrep}, maestra-io/issues-maestra#1649).
+# Three jobs, the same scans with the same flags:
+#
+#   gitleaks   `gitleaks git` over the last 50 commits plus `gitleaks dir` over the whole
+#              tree, with the central gitleaks/gitleaks.toml of this repo (as gitleaks.yml).
+#              Accepted findings: `.gitleaksignore` (fingerprint) or `gitleaks:allow` inline.
+#   trivy      `trivy fs --severity HIGH,CRITICAL` (vulnerabilities and secrets) of the tree.
+#              Accepted findings: `.trivyignore` at the repo root.
+#   opengrep   `opengrep scan --severity=ERROR --taint-intrafile` with the security rules
+#              of semgrep/semgrep-rules (branch `release`, `category: security`, no
+#              `secrets/`: the rule set the GitLab opengrep-ci image bakes in).
+#              Accepted findings: `nosemgrep: <rule-id>` inline or `.semgrepignore`.
+#
+# GitLab sent the reports to DefectDojo and stayed green; DefectDojo is not reachable from
+# GitHub and the org has no code scanning, so here a finding turns its job red and the
+# accepted ones live in the repo, reviewed like code. Job logs carry the findings
+# (gitleaks redacted).
+#
+# The binaries come from GitHub Releases through nora (packages.maestra.io/github/, release
+# age and first-seen quarantine), authenticated by the job's OIDC token and pinned by
+# sha256: bump the version and its sha256 together (the release's asset digest).
+#
+# Usage, .github/workflows/security-scan.yml in the repo:
+#   name: security-scan
+#   on:
+#     schedule:
+#       - cron: "16 23 * * *"
+#     workflow_dispatch:
+#   permissions: { contents: read, id-token: write }
+#   jobs:
+#     scan:
+#       uses: maestra-io/github-actions/.github/workflows/security-scan.yml@main
+#
+# Inputs:
+#   ref   ref of maestra-io/github-actions the central gitleaks config is read from
+#         (default main; set it when testing a branch of this repo).
+
+name: security-scan
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        default: main
+
+jobs:
+  gitleaks:
+    name: gitleaks
+    runs-on: runs-on=${{ github.run_id }}-gitleaks/pool=small
+    timeout-minutes: 15
+    env:
+      # renovate: datasource=github-releases depName=gitleaks/gitleaks
+      GITLEAKS_VERSION: "8.30.1"
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: maestra-io/github-actions
+          ref: ${{ inputs.ref }}
+          path: .github-actions
+          sparse-checkout: gitleaks
+          persist-credentials: false
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          oidc="$(curl -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=packages.maestra.io" | jq -r .value)"
+          echo "::add-mask::${oidc}"
+          tgz="$RUNNER_TEMP/gitleaks.tar.gz"
+          printf 'user = "oidc:%s"\n' "$oidc" | curl -sfL --retry 5 --retry-delay 5 --retry-all-errors -K - -o "$tgz" \
+            "https://packages.maestra.io/github/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  ${tgz}" | sha256sum -c -
+          tar -xzf "$tgz" -C "$RUNNER_TEMP" gitleaks
+          # The config leaves the tree, or `gitleaks dir` would scan it too.
+          mv .github-actions/gitleaks/gitleaks.toml "$RUNNER_TEMP/gitleaks.toml"
+          rm -rf .github-actions
+      - name: gitleaks git (last 50 commits) and dir (whole tree)
+        run: |
+          rc=0
+          "$RUNNER_TEMP/gitleaks" git --no-banner --config "$RUNNER_TEMP/gitleaks.toml" \
+            --log-opts=--max-count=50 --redact --verbose --exit-code 1 . || rc=1
+          "$RUNNER_TEMP/gitleaks" dir --no-banner --config "$RUNNER_TEMP/gitleaks.toml" \
+            --redact --verbose --exit-code 1 . || rc=1
+          exit "$rc"
+
+  trivy:
+    name: trivy
+    runs-on: runs-on=${{ github.run_id }}-trivy/pool=small
+    timeout-minutes: 15
+    env:
+      # renovate: datasource=github-releases depName=aquasecurity/trivy
+      TRIVY_VERSION: "0.75.0"
+      TRIVY_SHA256: c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f
+      TRIVY_DISABLE_VEX_NOTICE: "true"
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install trivy
+        run: |
+          set -euo pipefail
+          oidc="$(curl -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=packages.maestra.io" | jq -r .value)"
+          echo "::add-mask::${oidc}"
+          tgz="$RUNNER_TEMP/trivy.tar.gz"
+          printf 'user = "oidc:%s"\n' "$oidc" | curl -sfL --retry 5 --retry-delay 5 --retry-all-errors -K - -o "$tgz" \
+            "https://packages.maestra.io/github/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  ${tgz}" | sha256sum -c -
+          tar -xzf "$tgz" -C "$RUNNER_TEMP" trivy
+      - name: trivy fs (HIGH, CRITICAL)
+        run: '"$RUNNER_TEMP/trivy" fs --severity HIGH,CRITICAL --exit-code 1 .'
+
+  opengrep:
+    name: opengrep
+    runs-on: runs-on=${{ github.run_id }}-opengrep/pool=small
+    timeout-minutes: 30
+    env:
+      # renovate: datasource=github-releases depName=opengrep/opengrep
+      OPENGREP_VERSION: "1.33.1"
+      OPENGREP_SHA256: 46e8133cc490f9f50518061590ce2f6be5a08afaeda034471c0ceda4b3899808
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: semgrep/semgrep-rules
+          ref: release
+          path: .semgrep-rules
+          persist-credentials: false
+      - name: Install opengrep, select the security rules
+        run: |
+          set -euo pipefail
+          oidc="$(curl -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=packages.maestra.io" | jq -r .value)"
+          echo "::add-mask::${oidc}"
+          bin="$RUNNER_TEMP/opengrep"
+          printf 'user = "oidc:%s"\n' "$oidc" | curl -sfL --retry 5 --retry-delay 5 --retry-all-errors -K - -o "$bin" \
+            "https://packages.maestra.io/github/opengrep/opengrep/releases/download/v${OPENGREP_VERSION}/opengrep_manylinux_x86"
+          echo "${OPENGREP_SHA256}  ${bin}" | sha256sum -c -
+          chmod +x "$bin"
+          # The rules leave the tree, or the scan would read them as code.
+          mv .semgrep-rules "$RUNNER_TEMP/semgrep-rules"
+          cd "$RUNNER_TEMP/semgrep-rules"
+          echo "semgrep-rules $(git rev-parse HEAD)"
+          rm -rf .git .github scripts stats libsonnet trusted_python
+          find . -type f ! -name '*.yaml' -delete
+          find . -name '*.yaml' ! -exec grep -qE '^[[:space:]]+category:[[:space:]]*security[[:space:]]*$' {} \; -delete
+          find . -path '*/secrets/*' -delete
+          find . -type d -empty -delete
+          echo "$(find . -name '*.yaml' | wc -l) rule files"
+      - name: opengrep scan (ERROR)
+        run: |
+          "$RUNNER_TEMP/opengrep" scan --config "$RUNNER_TEMP/semgrep-rules" --severity=ERROR \
+            --taint-intrafile --no-rewrite-rule-ids --error .
