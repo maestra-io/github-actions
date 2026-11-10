@@ -1,0 +1,64 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: universal-channel-http-sender
+  namespace: universal-channel-http-sender
+spec:
+  values:
+    # stamped at OCI bake time; Flux postBuild leaves it alone.
+    packageVersion: ${APP_PACKAGE_VERSION_TO_BE_REPLACED}
+    name: universal-channel-http-sender
+    legacyEnvironmentLabel: omicron
+    product: mailings
+    feature: universal-channel
+    global:
+      deployEnv: ${ENV}
+
+    envValues:
+      omicron:
+        commonValues:
+          # commons-app has no omicron registry default; without it the image renders
+          # as "/<image>:<tag>" -> InvalidImageName.
+          containerRegistryName: "${CONTAINER_REGISTRY}"
+          publicRegistryName: ""
+          haproxyTarget:
+            public: us-omicron-lw-haproxy-public.omicron.maestra.io
+            private: us-omicron-lw-haproxy-private.omicron.maestra.io
+          validation:
+            serviceReliability: false
+
+    appSecrets:
+      k8sSecretName: universal-channel-http-sender-app-secrets
+    authSecrets:
+      k8sSecretName: universal-channel-http-sender-auth-secrets
+    commonAlerts:
+      disabled:
+        - DeploymentPodsInsufficient
+
+    services:
+      enabled: false
+
+    dotnetMonitor:
+      enabled: false
+
+    lrt:
+      imageName: universal_channel_http_sender_worker
+      roles:
+        - replicas: "1"
+          priorityClassName: production-high
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "1Gi"
+            limits:
+              memory: "1Gi"
+
+    # issues-maestra#1507 stage 04: allow-list of the worker, from 7 days of Hubble flows
+    # (09.11). Allow-only — enableDefaultDeny stays false, the namespace is not in a deny list.
+    networkPolicy:
+      enabled: true
+      egress:
+        - to: {namespace: mailings, app: mailings-services}
+          ports: [8080]
+        - to: {preset: kafka, namespace: kafka-common}
+        - to: {preset: dragonfly}

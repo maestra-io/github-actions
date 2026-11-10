@@ -1,0 +1,10 @@
+# Snapshot of maestra-io/universal-channel-http-sender (the networkPolicy pilot, 2026-11-09),
+# trimmed to what scripts/test-network-policy-gate.sh needs: the commons-app HelmRelease and a
+# dragonfly one whose own `networkPolicy: enabled` key the gate must ignore.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - helm-repositories.yaml
+  - dragonfly-v2.yaml
+  - helm-release-app.yaml

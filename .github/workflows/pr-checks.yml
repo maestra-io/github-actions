@@ -33,6 +33,17 @@
 #                   (pr-checks/check-image-signatures.py). Runs after the kustomize step
 #                   and downloads Kyverno only when such an image exists. A rejected image
 #                   is a warning until image-signatures-enforce is on.
+#   networkPolicy   when a change under kustomize-path touched a tree holding a
+#                   `networkPolicy:` key: every overlay's commons-app / postgres HelmRelease
+#                   with that key is rendered as Flux will (kustomize build, postBuild vars,
+#                   `helm template` of the pinned chart pulled from ECR with the runner's
+#                   instance role), the Cilium policies pass kubeconform -strict against the
+#                   vendored CRD schema and fluxcd's netpol-broad-gate.py; the key in an
+#                   overlay other than omicron is rejected (omega has no netpol/ in fluxcd
+#                   yet; pr-checks/check-network-policy.py, issues-maestra#1714). A chart
+#                   error (schema, template `fail`) fails the job with the chart's text in
+#                   the log and the job summary: Kargo pushes a release straight to fluxcd
+#                   main, where it would block every later promotion of the service.
 #
 # Inputs:
 #   check-encoding       default true.
@@ -91,6 +102,14 @@ env:
   # The version kyverno-image-signatures is tested with (fluxcd, kyverno-signature-tests).
   KYVERNO_VERSION: v1.19.2
   KYVERNO_SHA256: 357eaf1df8bc24ddd5a73979fadeaae6a032e8710f11af264229756e4956bf4a
+  # networkPolicy gate. Helm 4: Flux 2.8.6's helm-controller (v1.5.4) renders with the
+  # helm.sh/helm/v4 SDK, so the gate renders with the same major. get.helm.sh .sha256sum and
+  # the kubeconform release CHECKSUMS.
+  HELM_VERSION: v4.3.1
+  HELM_SHA256: 0403a88ae20913d11b10a2467b50087721fea7581736da6b9d3992f5357fe54b
+  KUBECONFORM_VERSION: v0.8.0
+  KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+  ECR_REGISTRY: 515260921971.dkr.ecr.us-west-2.amazonaws.com
 
 jobs:
   checks:
@@ -192,3 +211,39 @@ jobs:
           flag=()
           if [ "$ENFORCE" = true ]; then flag=(--enforce); fi
           python3 -I "$check" verify "$policy" "$RUNNER_TEMP/kyverno" "${flag[@]}" < "$RUNNER_TEMP/images"
+
+      - name: networkPolicy values gate (changed overlays tree)
+        if: ${{ !cancelled() && inputs.kustomize }}
+        env:
+          KPATH: ${{ inputs.kustomize-path }}
+        run: |
+          set -euo pipefail
+          # The kustomize step installs the binary only when something changed under KPATH.
+          if [ ! -x "$RUNNER_TEMP/kustomize" ]; then echo "nothing changed under $KPATH"; exit 0; fi
+          # A tree without the key (most repos today) downloads nothing. A key of another
+          # chart (dragonfly's `networkPolicy: enabled`) gets past this grep; the script then
+          # finds no commons-app/postgres block and says so.
+          if ! grep -rqE '^\s*networkPolicy:' "$KPATH"; then echo "no networkPolicy key under $KPATH"; exit 0; fi
+          curl -fsSL -o "$RUNNER_TEMP/helm.tar.gz" "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_SHA256}  $RUNNER_TEMP/helm.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/helm.tar.gz" -C "$RUNNER_TEMP" --strip-components=1 linux-amd64/helm
+          curl -fsSL -o "$RUNNER_TEMP/kubeconform.tar.gz" \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  $RUNNER_TEMP/kubeconform.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/kubeconform.tar.gz" -C "$RUNNER_TEMP" kubeconform
+          # The chart comes from ECR with the runner's instance role (read only, the same
+          # login the test job uses for a private base image). A fresh RunsOn instance can
+          # lack the role's credentials for a few seconds. No credentials = a loud failure:
+          # a gate that silently skips is no gate.
+          region=$(cut -d. -f4 <<< "$ECR_REGISTRY")
+          for i in 1 2 3 4 5; do
+            aws sts get-caller-identity --region "$region" >/dev/null 2>&1 && break
+            [ "$i" -lt 5 ] && sleep 10
+          done
+          aws ecr get-login-password --region "$region" \
+            | "$RUNNER_TEMP/helm" registry login --username AWS --password-stdin "$ECR_REGISTRY" \
+            || { echo "::error::no AWS credentials for the ECR chart pull: the networkPolicy gate cannot render the chart"; exit 1; }
+          mapfile -t eps < <(bash .pr-checks/pr-checks/kustomize-entry-points.sh "$KPATH")
+          KUSTOMIZE="$RUNNER_TEMP/kustomize" HELM="$RUNNER_TEMP/helm" KUBECONFORM="$RUNNER_TEMP/kubeconform" \
+            python3 -I .pr-checks/pr-checks/check-network-policy.py --kustomize-path "$KPATH" --charts-dir "$RUNNER_TEMP/charts" \
+              --ecr-registry "$ECR_REGISTRY" "${eps[@]}"

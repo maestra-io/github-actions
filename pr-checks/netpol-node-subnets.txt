@@ -1,0 +1,7 @@
+# Node subnets per cluster for netpol-broad-gate.py (V4): a policy CIDR wider than /32 that
+# overlaps one of these also matches node IPs (policy-cidr-match-mode=nodes → host identity).
+# Snapshot 2026-11-03 from `kubectl get nodes` InternalIP (omicron 9, omega 81, iota 3 nodes);
+# refresh when a cluster gains a node outside these ranges. CI has no cluster read access.
+omicron/us-omicron-lw-kube-common 10.108.8.0/21
+omega/us-omega-lw-kube-common 10.124.8.0/21
+iota/us-iota-lw-kube-infra 10.60.8.0/24
