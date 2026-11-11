@@ -5,7 +5,7 @@
 # repo's own test jobs (issues-maestra#1442 W3, #1568).
 #
 #   version ─► test ─► images (matrix) ─► release ─► bake
-#   pull_request: version ─► test, checks (pr-checks.yml) ─► pr-gate (the required check)
+#   pull_request: version ─► test, checks (pr-checks.yml), base-images ─► pr-gate (the required check)
 #
 # Warehouse refresh: no job here. The GitHub org webhook (workflow_run completed)
 # refreshes every Kargo Warehouse labelled maestra.io/source-repo=<lower-case repo name>
@@ -1007,12 +1007,22 @@ jobs:
     permissions:
       contents: read
 
+  # Pull requests only: no new base image nora still holds in its 3-day quarantine
+  # (base-images.yml, issues-maestra#1649). Never on a push: a default branch that already
+  # carries a held digest releases as before.
+  base-images:
+    if: ${{ github.event_name == 'pull_request' }}
+    uses: maestra-io/github-actions/.github/workflows/base-images.yml@main
+    permissions:
+      contents: read
+      id-token: write # nora session token
+
   # The single check a branch ruleset requires (`<caller job> / pr gate`): red when
   # any PR job failed or was cancelled. Skipped jobs (images without pr-images) pass.
   pr-gate:
     name: pr gate
     if: ${{ always() && github.event_name == 'pull_request' }}
-    needs: [version, test, images, checks]
+    needs: [version, test, images, checks, base-images]
     runs-on: runs-on=${{ github.run_id }}-pr-gate/pool=small
     timeout-minutes: 5
     steps:
