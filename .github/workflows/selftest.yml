@@ -40,6 +40,7 @@ on:
       - "nora-session/**"
       - "nora-image-prewarm/**"
       - ".github/workflows/pr-checks.yml"
+      - ".github/workflows/base-images.yml"
       - "pr-checks/**"
       - ".github/workflows/gitleaks.yml"
       - "gitleaks/**"
@@ -160,6 +161,8 @@ jobs:
 
       - name: pr-checks check-encoding and kustomize entry points
         run: bash scripts/test-pr-checks.sh
+      - name: base-images Dockerfile parser, nora verdicts, only-if-cached probe (stub nora)
+        run: python3 -I pr-checks/check-base-images.py --self-test
       - name: pr-changes (kustomization-only PRs skip build and test)
         run: bash scripts/test-pr-changes.sh
 
@@ -216,6 +219,16 @@ jobs:
     uses: ./.github/workflows/pr-checks.yml
     permissions:
       contents: read
+    with:
+      ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+  # The base-image check of the PR head on this repo's own pull requests: mcf-build's
+  # DEPS_BASE and the other digest-pinned nora images of these workflows move here.
+  base-images:
+    uses: ./.github/workflows/base-images.yml
+    permissions:
+      contents: read
+      id-token: write # nora session token
     with:
       ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
