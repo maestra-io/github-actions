@@ -1,0 +1,56 @@
+---
+# Drives holds.yml against the fake apt-mark in test-os-update-holds.sh.
+- name: Holds a dead run left behind are released by the next one
+  hosts: all
+  gather_facts: false
+  vars:
+    role_tasks: "{{ playbook_dir }}/../../collections/maestra/infra/roles/os_update/tasks"
+    os_update_dpkg_lock_timeout: 1
+    os_update_holds_file: "{{ state_dir }}/os-update/holds.json"
+  tasks:
+    - name: A run went UNREACHABLE after recording and holding these
+      ansible.builtin.copy:
+        dest: "{{ os_update_holds_file }}"
+        content: '["consul", "frr", "teleport"]'
+        mode: "0644"
+
+    - name: Restore the way the undrain-only hatch does (no holds set in this run)
+      ansible.builtin.include_tasks: "{{ role_tasks }}/holds.yml"
+      vars:
+        os_update_holds_action: restore
+
+    - name: Read the holds
+      ansible.builtin.command:
+        argv: [apt-mark, showhold]
+      register: holds_after
+      changed_when: false
+
+    - name: Ours are gone, the pin nobody recorded stays
+      ansible.builtin.assert:
+        that: holds_after.stdout_lines == ['haproxy']
+        fail_msg: "showhold after restore: {{ holds_after.stdout_lines }}"
+
+    - name: Stat the record
+      ansible.builtin.stat:
+        path: "{{ os_update_holds_file }}"
+      register: holds_file
+
+    - name: The record is dropped
+      ansible.builtin.assert:
+        that: not holds_file.stat.exists
+
+    - name: A second restore with no record is a no-op
+      ansible.builtin.include_tasks: "{{ role_tasks }}/holds.yml"
+      vars:
+        os_update_holds_action: restore
+        os_update_our_holds: []
+
+    - name: Read the holds again
+      ansible.builtin.command:
+        argv: [apt-mark, showhold]
+      register: holds_again
+      changed_when: false
+
+    - name: Still only the foreign pin
+      ansible.builtin.assert:
+        that: holds_again.stdout_lines == ['haproxy']
