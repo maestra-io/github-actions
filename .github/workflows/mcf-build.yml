@@ -244,7 +244,7 @@ env:
   ECR_REGISTRY: 515260921971.dkr.ecr.us-west-2.amazonaws.com
   HUSKY: "0"
   # Static image base: maestra-io/dockerfiles, Renovate preset mcfUploadBase moves the pin.
-  UPLOAD_BASE: 515260921971.dkr.ecr.us-west-2.amazonaws.com/mcf-upload-base:1.75.2-maestra.1
+  UPLOAD_BASE: 515260921971.dkr.ecr.us-west-2.amazonaws.com/mcf-upload-base:1.76.0-maestra.1
   # with-deps base, by digest on the tag of the Node major, not node:<node-version>-slim:
   # upstream stops rebuilding an exact tag once the next release is out (24.19.0-slim froze
   # on 25.08 with its Debian). Renovate moves the digest (renovate.json).
