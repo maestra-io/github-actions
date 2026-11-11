@@ -145,7 +145,7 @@ jobs:
         run: bash scripts/test-hot-test-publish.sh
       - name: mcf-build static-prefix and manifest inputs (workflow copy)
         run: bash scripts/test-mcf-build-static.sh
-      - name: mcf-build deps-prune: DEPS_PRUNE and what only it needs leave node_modules (workflow copy)
+      - name: mcf-build deps-prune, DEPS_PRUNE and what only it needs leave node_modules (workflow copy)
         run: bash scripts/test-mcf-build-deps-prune.sh
       - name: mcf-build localization-keys exit code and checks verdict (workflow copy)
         run: bash scripts/test-mcf-build-localization-keys.sh
