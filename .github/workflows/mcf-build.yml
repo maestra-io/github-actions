@@ -1184,7 +1184,8 @@ jobs:
           if jq -e '.scripts["check-types"]' package.json >/dev/null; then
             check=(npm run check-types)
           else
-            check=(npx tsc --project tsconfig.json --noEmit -i false)
+            # --no: a missing local tsc is a failed check, never a download in a job with id-token.
+            check=(npx --no tsc --project tsconfig.json --noEmit -i false)
           fi
           # A release never fails on this step: whatever goes wrong, the full copy comes back.
           if ! { prune && find node_modules/.bin -xtype l -delete && tar -xzf "$RUNNER_TEMP/codegen.tgz" && "${check[@]}"; }; then
