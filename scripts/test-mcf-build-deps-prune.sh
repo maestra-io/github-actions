@@ -64,6 +64,18 @@ want='node_modules/@scope/kept node_modules/app-lib node_modules/peer-kept node_
 [ "$left" = "$want" ] || { printf 'FAIL keep\n  got:  %s\n  want: %s\n' "$left" "$want"; exit 1; }
 echo "mcf-build deps-prune DEPS_KEEP: ok"
 
+# A regular dependency with no lock entry: the graph is not whole, nothing is deleted.
+jq '.packages["node_modules/app-lib"].dependencies.missing = "1"' package-lock.json > lock.t && mv lock.t package-lock.json
+before=$(find node_modules -name index.js | sort)
+if DEPS_PRUNE='eslint' bash -c "set -eo pipefail; $prog" >/dev/null 2>&1; then
+  echo "FAIL unresolved dependency: accepted"; exit 1
+fi
+[ "$(find node_modules -name index.js | sort)" = "$before" ] || { echo "FAIL unresolved dependency: something was deleted"; exit 1; }
+# The same name as an optional or a peer dependency is fine.
+jq '.packages["node_modules/app-lib"] |= (del(.dependencies.missing) | .optionalDependencies.missing = "1" | .peerDependencies.absent = "1")' package-lock.json > lock.t && mv lock.t package-lock.json
+DEPS_PRUNE='eslint' bash -c "set -eo pipefail; $prog" >/dev/null || { echo "FAIL absent optional/peer dependency: refused"; exit 1; }
+echo "mcf-build deps-prune unresolved dependencies: ok"
+
 # A lockfile without the packages map is refused, not silently kept whole.
 echo '{"lockfileVersion": 1, "dependencies": {}}' > package-lock.json
 if DEPS_PRUNE='eslint' bash -c "set -eo pipefail; $prog" >/dev/null 2>&1; then

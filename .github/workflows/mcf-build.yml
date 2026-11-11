@@ -1176,7 +1176,15 @@ jobs:
               });
               for (const name of names) {
                 const target = resolve(current, name);
-                if (target === undefined || seen.has(target) || isCut(nameOf(target))) continue;
+                if (target === undefined) {
+                  // Optional and peer dependencies may be absent. A regular one may not: the
+                  // lockfile is not the whole graph then, and pruning by it is a guess.
+                  if (entry.dependencies?.[name] !== undefined && entry.optionalDependencies?.[name] === undefined) {
+                    throw new Error(`${current || 'the root'} depends on ${name}, which package-lock.json does not have`);
+                  }
+                  continue;
+                }
+                if (seen.has(target) || isCut(nameOf(target))) continue;
                 seen.add(target);
                 queue.push(target);
               }
