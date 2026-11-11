@@ -27,6 +27,8 @@ on:
       - "ansible/uv.lock"
       - "ansible/tests/test-os-update-tail-silence.sh"
       - "ansible/tests/os-update-tail/**"
+      - "ansible/tests/test-os-update-holds.sh"
+      - "ansible/tests/os-update-holds/**"
       - ".github/workflows/collection-lint.yml"
   push:
     branches: [main]
@@ -38,6 +40,8 @@ on:
       - "ansible/uv.lock"
       - "ansible/tests/test-os-update-tail-silence.sh"
       - "ansible/tests/os-update-tail/**"
+      - "ansible/tests/test-os-update-holds.sh"
+      - "ansible/tests/os-update-holds/**"
       - ".github/workflows/collection-lint.yml"
 
 permissions:
@@ -134,3 +138,6 @@ jobs:
       # needs the `ansible` this job already installs.
       - name: os_update tail silence (real tasks against a fake Alertmanager)
         run: bash ansible/tests/test-os-update-tail-silence.sh
+
+      - name: os_update holds record (real holds.yml against a fake apt-mark)
+        run: bash ansible/tests/test-os-update-holds.sh

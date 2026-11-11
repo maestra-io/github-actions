@@ -30,6 +30,19 @@
 - name: UNDRAIN-ONLY (escape hatch)
   when: os_update_mode == 'undrain-only'
   block:
+    - name: Release the holds the dead run recorded
+      block:
+        - name: Restore holds
+          ansible.builtin.include_tasks: holds.yml
+          vars:
+            os_update_holds_action: restore
+      rescue:
+        - name: Hold restore failed — carry on with the rest of the hatch
+          ansible.builtin.debug:
+            msg: >-
+              WARNING: could not release the recorded apt holds on {{ inventory_hostname }}.
+              Check `apt-mark showhold` by hand. Continuing with the hatch.
+
     - name: Put the host back into rotation
       ansible.builtin.include_tasks: "{{ os_update_hooks_dir }}/undrain.yml"
 

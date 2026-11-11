@@ -105,6 +105,8 @@ os_update_boot_free_floor_mb: 150
 # left drained by a previous run" from "this host is healthy and in rotation".
 os_update_marker_dir: /var/lib/os-update
 os_update_marker_file: /var/lib/os-update/drained.json
+# The apt holds this role set, recorded before apt-mark hold (see holds.yml).
+os_update_holds_file: /var/lib/os-update/holds.json
 # Where node_exporter's textfile collector reads .prom files, for the
 # os_update_drained gauge marker.yml writes.
 #
