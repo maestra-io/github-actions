@@ -25,6 +25,18 @@
   ],
   "packageRules": [
     {
+      "description": "People merge this repo's Renovate PRs (renovate-config#42 makes renovate/daily automerge): first in this list so it beats the preset; a later rule's own automerge (a package that is safe to land alone) still wins. maestra-io/github-actions keeps the org-inherited automerge.",
+      "matchUpdateTypes": [
+        "minor",
+        "patch",
+        "digest"
+      ],
+      "matchPackageNames": [
+        "!maestra-io/github-actions"
+      ],
+      "automerge": false
+    },
+    {
       "description": "DEPS_BASE keeps the Node major of the node-version input of mcf-build.yml; the workflow fails when they differ.",
       "matchFileNames": [
         ".github/workflows/mcf-build.yml"
