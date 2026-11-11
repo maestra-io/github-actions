@@ -11,7 +11,7 @@
     - name: A run went UNREACHABLE after recording and holding these
       ansible.builtin.copy:
         dest: "{{ os_update_holds_file }}"
-        content: '["consul", "frr", "teleport"]'
+        content: '["consul", "frr", "teleport", "gone-pkg"]'
         mode: "0644"
 
     - name: Restore the way the undrain-only hatch does (no holds set in this run)
@@ -54,3 +54,23 @@
     - name: Still only the foreign pin
       ansible.builtin.assert:
         that: holds_again.stdout_lines == ['haproxy']
+
+    - name: A record that exists but cannot be read
+      ansible.builtin.file:
+        path: "{{ os_update_holds_file }}"
+        state: directory
+        mode: "0755"
+
+    - name: Restore must fail rather than read it as no record
+      block:
+        - name: Restore
+          ansible.builtin.include_tasks: "{{ role_tasks }}/holds.yml"
+          vars:
+            os_update_holds_action: restore
+        - name: Unreachable if the read error was swallowed
+          ansible.builtin.fail:
+            msg: an unreadable holds record was treated as absent
+      rescue:
+        - name: The read failed, as it must
+          ansible.builtin.assert:
+            that: "'directory' in ansible_failed_result.msg"
