@@ -54,6 +54,16 @@ out=$(DEPS_PRUNE='' bash -c "set -eo pipefail; $prog")
 [ "$out" = 'pruned 0 of 13 packages' ] || { echo "FAIL empty list: $out"; exit 1; }
 echo "mcf-build deps-prune empty list: ok"
 
+# DEPS_KEEP: what a kept package depends on stays even under a pruned name; the same name
+# reached only from pruned tooling still goes.
+jq -r '.packages | keys[] | select(startswith("node_modules/") or contains("/node_modules/"))' package-lock.json \
+  | while read -r dir; do mkdir -p "$dir"; : > "$dir/index.js"; done
+out=$(DEPS_PRUNE='eslint eslint-* lefthook lefthook-* only-lint shared' DEPS_KEEP='app-lib' bash -c "set -eo pipefail; $prog")
+left=$(find node_modules -name index.js | sed 's#/index.js$##' | sort | tr '\n' ' ')
+want='node_modules/@scope/kept node_modules/app-lib node_modules/peer-kept node_modules/playwright node_modules/shared node_modules/shared-configs node_modules/tests '
+[ "$left" = "$want" ] || { printf 'FAIL keep\n  got:  %s\n  want: %s\n' "$left" "$want"; exit 1; }
+echo "mcf-build deps-prune DEPS_KEEP: ok"
+
 # A lockfile without the packages map is refused, not silently kept whole.
 echo '{"lockfileVersion": 1, "dependencies": {}}' > package-lock.json
 if DEPS_PRUNE='eslint' bash -c "set -eo pipefail; $prog" >/dev/null 2>&1; then

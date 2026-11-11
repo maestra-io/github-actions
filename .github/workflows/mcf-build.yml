@@ -251,14 +251,25 @@ env:
   # on 25.08 with its Debian). Renovate moves the digest (renovate.json).
   DEPS_BASE: packages.maestra.io/docker-hub/library/node:24-slim@sha256:c86ecead9e55a5210ac1727de38a4ca840bf03dcaf34dc9749addbf383b1920c
   # Packages cut out of the with-deps image with everything only they need: the schema check
-  # runs graphql-codegen and tsc, not lint, commit or release tooling. A trailing * is a prefix.
+  # runs graphql-codegen and tsc, not lint, commit, release, test-runtime or bundling tooling.
+  # A trailing * is a prefix. Scripts the schema check runs (graphql-codegen, check-types) call
+  # none of these in any MCF; a new name here needs the same look at those scripts.
   DEPS_PRUNE: >-
-    lefthook lefthook-* husky lint-staged
+    lefthook lefthook-* husky lint-staged commitizen
     eslint eslint-* @eslint/* @eslint-community/* @typescript-eslint/* typescript-eslint
     @stylistic/eslint-plugin @seahax/eslint-plugin-wrap @vitest/eslint-plugin
     @mindbox-cloud/eslint-plugin @babel/eslint-parser
     stylelint stylelint-* knip bundlemon
     semantic-release @semantic-release/* @commitlint/* npm
+    cpy rimraf yargs ts-morph tsdown adm-zip
+    @babel/* babel-plugin-* @swc/* core-js caniuse-lite postcss postcss-*
+    webpack webpack-cli webpack-dev-server html-webpack-plugin html-webpack-tags-plugin
+    @module-federation/dts-plugin node-forge ejs svgo sass sass-embedded
+    @vitest/coverage-v8 @vitest/ui happy-dom jsdom
+  # What the schema check executes: these keep every dependency, DEPS_PRUNE names included
+  # (graphql-codegen parses the sources with @babel/*).
+  DEPS_KEEP: >-
+    @mindbox-cloud/frontend-graphql @graphql-codegen/cli tsx typescript
 
 jobs:
   # Pull requests that change only the kustomization tree(s) skip version/test/images:
@@ -1151,25 +1162,35 @@ jobs:
               base = cut === -1 ? '' : base.slice(0, cut);
             }
           }
+          function closure(starts, isCut) {
+            const seen = new Set(starts);
+            const queue = [...starts];
+            while (queue.length > 0) {
+              const current = queue.pop();
+              const entry = packages[current];
+              const names = Object.keys({
+                ...entry.dependencies,
+                ...entry.optionalDependencies,
+                ...entry.peerDependencies,
+                ...(current.includes(NM) ? undefined : entry.devDependencies),
+              });
+              for (const name of names) {
+                const target = resolve(current, name);
+                if (target === undefined || seen.has(target) || isCut(nameOf(target))) continue;
+                seen.add(target);
+                queue.push(target);
+              }
+            }
+            return seen;
+          }
           // The root and every workspace (tests, ...) are entry points: their devDependencies count.
           const roots = Object.keys(packages).filter((p) => !p.includes(NM));
-          const keep = new Set(roots);
-          const queue = [...roots];
-          while (queue.length > 0) {
-            const current = queue.pop();
-            const entry = packages[current];
-            const names = Object.keys({
-              ...entry.dependencies,
-              ...entry.optionalDependencies,
-              ...entry.peerDependencies,
-              ...(current.includes(NM) ? undefined : entry.devDependencies),
-            });
-            for (const name of names) {
-              const target = resolve(current, name);
-              if (target === undefined || keep.has(target) || isPruned(nameOf(target))) continue;
-              keep.add(target);
-              queue.push(target);
-            }
+          const keep = closure(roots, isPruned);
+          // DEPS_KEEP packages run in the schema check: all they depend on stays, pruned names too.
+          const kept = new Set((process.env.DEPS_KEEP || '').split(/\s+/).filter(Boolean));
+          const keptStarts = [...keep].filter((p) => p.includes(NM) && kept.has(nameOf(p)));
+          for (const lockPath of closure(keptStarts, () => false)) {
+            keep.add(lockPath);
           }
           // Only the root node_modules: that is the tree the step can put back.
           const drop = Object.keys(packages).filter((p) => p.startsWith(NM) && !packages[p].link && !keep.has(p));
