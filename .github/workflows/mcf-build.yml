@@ -252,7 +252,8 @@ env:
   DEPS_BASE: packages.maestra.io/docker-hub/library/node:24-slim@sha256:0998f9a7af5bba96fb32e2aeafde650a625012cb194a57e7f3939bf3e592721f
   # npm of the with-deps image, in place of the one the base bundles: the base's lags behind
   # its own fixes (11.19.1 in node 24.22.3 carries HIGH undici and brace-expansion). Keeps the
-  # base's npm major. Renovate moves it (renovate.json); nora serves a release after its hold.
+  # base's npm major. Renovate moves it (renovate.json). nora hides a public release for its
+  # first 7 days (cooldown, 403 blocked_by_policy): a younger pin falls back to the base's npm.
   DEPS_NPM: npm@11.21.1
   # Packages cut out of the with-deps image with everything only they need: the schema check
   # runs graphql-codegen and tsc, not lint, commit, release, test-runtime or bundling tooling.
@@ -1233,7 +1234,7 @@ jobs:
             | grep -zv -E '(^|/)node_modules/$' | xargs -0 -r rm -rf
           git checkout -q -- .
       # DEPS_NPM as a tarball for the build: npm bundles its dependencies, so the image installs
-      # it without a registry. No tarball (nora down, the version still on hold) keeps the
+      # it without a registry. No tarball (nora down, the version inside nora's cooldown) keeps the
       # base's npm and says so: a release does not wait for this.
       - *mint-token
       - name: npm for the image
