@@ -68,6 +68,7 @@
 #                    stand's host, see X-Testing-Frontend below).
 #   static-version-file  File in <static-prefix> with the build version (default none;
 #                    frontend-core-v2: build-info.json, the builder's core-build-info.json).
+#                    Outside static-prefix v2_static/core it only has to be in the artifact.
 #   manifest         Deprecated kind: core is manifest.json with build-info.json, none is an
 #                    empty static-manifest.
 #   stand-prefix     First word of the stand name (default hot-test): <stand-prefix>-<repo>-pr-<N>

@@ -49,14 +49,15 @@
 #   static-prefix       Folder of the built static under build/, no leading or trailing
 #                       slash (default v2_static/<mcf>, <mcf> = the package name without its
 #                       scope, - -> _). The admin shell frontend-core-v2 builds v2_static/core.
-#   static-manifest     File in <static-prefix> that switches tenants to the new build, the
-#                       upload Job copies it last (default mf-manifest.json, the module
-#                       federation manifest; frontend-core-v2: manifest.json).
-#   static-version-file File in <static-prefix> with the build version, copied right before the
-#                       manifest (default none: the manifest carries it; frontend-core-v2:
-#                       build-info.json). The build fails without either file; both names go
-#                       on to hot-test-publish.yml. The same names as the mcf-upload chart's
-#                       static.manifest and static.versionFile.
+#   static-manifest     File in <static-prefix> that switches tenants to the new build
+#                       (default mf-manifest.json, the module federation manifest;
+#                       frontend-core-v2: manifest.json).
+#   static-version-file File in <static-prefix> with the build version (default none: the
+#                       manifest carries it; frontend-core-v2: build-info.json).
+#                       Here the two names only fail a build without either file and go on to
+#                       hot-test-publish.yml. The upload order is the mcf-upload chart's, from
+#                       static.manifest and static.versionFile in the repo's HelmRelease: keep
+#                       them equal to these, nothing checks that.
 #   manifest            Deprecated: core stands for static-manifest: manifest.json and
 #                       static-version-file: build-info.json.
 #   image               ECR repository of the static image. Default: repository name.
