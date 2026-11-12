@@ -49,9 +49,17 @@
 #   static-prefix       Folder of the built static under build/, no leading or trailing
 #                       slash (default v2_static/<mcf>, <mcf> = the package name without its
 #                       scope, - -> _). The admin shell frontend-core-v2 builds v2_static/core.
-#   manifest            mcf (default): <static-prefix>/mf-manifest.json is the module
-#                       federation manifest. core: <static-prefix>/manifest.json and
-#                       build-info.json (frontend-core-v2). Both go on to hot-test-publish.yml.
+#   static-manifest     File in <static-prefix> that switches tenants to the new build
+#                       (default mf-manifest.json, the module federation manifest;
+#                       frontend-core-v2: manifest.json).
+#   static-version-file File in <static-prefix> with the build version (default none: the
+#                       manifest carries it; frontend-core-v2: build-info.json).
+#                       Here the two names only fail a build without either file and go on to
+#                       hot-test-publish.yml. The upload order is the mcf-upload chart's, from
+#                       static.manifest and static.versionFile in the repo's HelmRelease: keep
+#                       them equal to these, nothing checks that.
+#   manifest            Deprecated: core stands for static-manifest: manifest.json and
+#                       static-version-file: build-info.json.
 #   image               ECR repository of the static image. Default: repository name.
 #   service             Service name for bake (<service>-manifests). Default: repository name.
 #   auth-jwt-url        auth-jwt the schema token comes from (default the omega one).
@@ -182,9 +190,15 @@ on:
       static-prefix:
         type: string
         default: ""
+      static-manifest:
+        type: string
+        default: ""
+      static-version-file:
+        type: string
+        default: ""
       manifest:
         type: string
-        default: mcf
+        default: ""
       image:
         type: string
         default: ""
@@ -347,7 +361,8 @@ jobs:
       service: ${{ steps.v.outputs.service }}
       mcf: ${{ steps.v.outputs.mcf }}
       static-prefix: ${{ steps.v.outputs.static-prefix }}
-      manifest: ${{ steps.v.outputs.manifest }}
+      static-manifest: ${{ steps.v.outputs.static-manifest }}
+      static-version-file: ${{ steps.v.outputs.static-version-file }}
       manifest-files: ${{ steps.v.outputs.manifest-files }}
       bake: ${{ steps.v.outputs.bake }}
       last-hotfix: ${{ steps.hotfix.outputs.last-hotfix }}
@@ -387,6 +402,8 @@ jobs:
           IMAGE: ${{ inputs.image }}
           SERVICE: ${{ inputs.service }}
           STATIC_PREFIX: ${{ inputs.static-prefix }}
+          STATIC_MANIFEST: ${{ inputs.static-manifest }}
+          STATIC_VERSION_FILE: ${{ inputs.static-version-file }}
           MANIFEST: ${{ inputs.manifest }}
           PUSH: ${{ inputs.push && github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
           PUSH_REQUESTED: ${{ inputs.push && github.event_name != 'pull_request' }}
@@ -408,14 +425,21 @@ jobs:
           [ -n "$mcf" ] || { echo "::error::package.json has no name"; exit 1; }
           # >>> static (scripts/test-mcf-build-static.sh runs this block)
           static_prefix="${STATIC_PREFIX:-v2_static/$mcf}"
-          manifest="${MANIFEST:-mcf}"
           # The same path hot-test-publish.yml and the ResourceSet template accept, without the slashes.
           [[ "$static_prefix" =~ ^[a-z0-9_-]+(/[a-z0-9_-]+)*$ ]] || { echo "::error::static-prefix '$static_prefix' is not [a-z0-9_-]+(/[a-z0-9_-]+)* (no leading or trailing slash)"; exit 1; }
-          case "$manifest" in
-            mcf) manifest_files=mf-manifest.json ;;
-            core) manifest_files="manifest.json build-info.json" ;;
-            *) echo "::error::manifest '$manifest' is not mcf or core"; exit 1 ;;
+          static_manifest="$STATIC_MANIFEST"; static_version_file="$STATIC_VERSION_FILE"
+          # The deprecated kind, until frontend-core-v2 passes the file names (issues-maestra#1603).
+          case "$MANIFEST" in
+            ""|mcf) ;;
+            core) static_manifest="${static_manifest:-manifest.json}"; static_version_file="${static_version_file:-build-info.json}" ;;
+            *) echo "::error::manifest '$MANIFEST' is not a kind any more: pass static-manifest and static-version-file"; exit 1 ;;
           esac
+          [ -z "$MANIFEST" ] || echo "::warning::input manifest is deprecated: pass static-manifest and static-version-file"
+          static_manifest="${static_manifest:-mf-manifest.json}"
+          for f in "$static_manifest" "$static_version_file"; do
+            [[ -z "$f" || "$f" =~ ^[A-Za-z0-9_-][A-Za-z0-9._-]*$ ]] || { echo "::error::'$f' is not a file name in $static_prefix/ ([A-Za-z0-9._-]+)"; exit 1; }
+          done
+          manifest_files="$static_manifest${static_version_file:+ $static_version_file}"
           # <<< static
           {
             echo "release=${prefix}.${RUN_NUMBER}"
@@ -426,11 +450,12 @@ jobs:
             echo "service=${SERVICE:-$REPO_NAME}"
             echo "mcf=$mcf"
             echo "static-prefix=$static_prefix"
-            echo "manifest=$manifest"
+            echo "static-manifest=$static_manifest"
+            echo "static-version-file=$static_version_file"
             echo "manifest-files=$manifest_files"
             if [ -d kustomization ]; then echo "bake=true"; else echo "bake=false"; fi
           } >> "$GITHUB_OUTPUT"
-          echo "release ${prefix}.${RUN_NUMBER}, mcf $mcf, static $static_prefix ($manifest), image ${IMAGE:-$REPO_NAME}, publish=$PUSH, hot-test=$HOT_TEST, kustomization/ $([ -d kustomization ] && echo present || echo absent)"
+          echo "release ${prefix}.${RUN_NUMBER}, mcf $mcf, static $static_prefix ($manifest_files), image ${IMAGE:-$REPO_NAME}, publish=$PUSH, hot-test=$HOT_TEST, kustomization/ $([ -d kustomization ] && echo present || echo absent)"
 
       - id: tests
         env:
@@ -1585,7 +1610,8 @@ jobs:
       pr-number: ${{ github.event.pull_request.number }}
       mcf: ${{ needs.version.outputs.mcf }}
       static-prefix: ${{ needs.version.outputs.static-prefix }}
-      manifest: ${{ needs.version.outputs.manifest }}
+      static-manifest: ${{ needs.version.outputs.static-manifest }}
+      static-version-file: ${{ needs.version.outputs.static-version-file }}
       static-artifact: static
       pages: ${{ inputs.hot-test-pages }}
 
@@ -1602,7 +1628,8 @@ jobs:
       pr-number: ${{ github.event.pull_request.number }}
       mcf: ${{ needs.version.outputs.mcf }}
       static-prefix: ${{ needs.version.outputs.static-prefix }}
-      manifest: ${{ needs.version.outputs.manifest }}
+      static-manifest: ${{ needs.version.outputs.static-manifest }}
+      static-version-file: ${{ needs.version.outputs.static-version-file }}
       static-artifact: static
       stand-prefix: e2e
 

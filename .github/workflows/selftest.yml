@@ -143,7 +143,7 @@ jobs:
 
       - name: hot-test-publish stand names, manifest override, route wait, release bucket check, summary (workflow copy)
         run: bash scripts/test-hot-test-publish.sh
-      - name: mcf-build static-prefix and manifest inputs (workflow copy)
+      - name: mcf-build static-prefix, static-manifest and static-version-file inputs (workflow copy)
         run: bash scripts/test-mcf-build-static.sh
       - name: mcf-build deps-prune, DEPS_PRUNE and what only it needs leave node_modules (workflow copy)
         run: bash scripts/test-mcf-build-deps-prune.sh
