@@ -113,7 +113,7 @@ echo "dotnet-service-build aws-credentials: OK"
 cred=$(awk 'index($0,"# >>> nora-cred-helper"){n++} n==1{print} n==1&&index($0,"# <<< nora-cred-helper"){exit}' "$wf" | sed 's/^          //')
 [ -n "$cred" ] || { echo "nora-cred-helper block not found in $wf"; exit 1; }
 # Every job that pulls through nora carries the same copy (reusable workflows cannot share a file).
-for f in dotnet-service-build:2 service-build:2 mcf-build:3 nuget-package-publish:1 python-package-publish:1; do
+for f in dotnet-service-build:2 service-build:2 mcf-build:5 nuget-package-publish:1 python-package-publish:1; do
   w="$here/../.github/workflows/${f%%:*}.yml"
   got=$(sed -n '/# >>> nora-cred-helper/,/# <<< nora-cred-helper/p' "$w" | sed 's/^          //')
   want=$(for _ in $(seq "${f##*:}"); do printf '%s\n' "$cred"; done)

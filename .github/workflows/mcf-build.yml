@@ -68,10 +68,9 @@
 #   packages-url        Package registry (default https://packages.maestra.io, nora).
 #   packages-audience   `aud` of the GitHub OIDC token nora accepts.
 #   functional-workers  Playwright workers of `functional` (default 4, as frontend-playwright).
-#   functional-system-chrome  On a runner with /usr/bin/google-chrome skip the Playwright Chromium and its
-#                       apt fonts of `functional` (default false: opt-in per repo until every repo is on,
-#                       then the input goes away). frontend-playwright runs the tests in that Chrome
-#                       anyway, so only the fonts change. Not for a repo with its own browser config.
+#   functional-system-chrome  On a runner with /usr/bin/google-chrome run `functional` on the runner in
+#                       that Chrome, not in the Chromium of PLAYWRIGHT_IMAGE (default false: opt-in
+#                       per repo). Not for a repo with its own browser config.
 #   functional-required A red `functional` fails the run and `pr gate` and holds the image and
 #                       release (default true; false: advisory, the summary still shows red).
 #   e2e                 Run `npm run e2e:ci` on the e2e stand (default true; `e2e: false` opts a repo
@@ -125,7 +124,7 @@
 #             while package-lock.json is unchanged, a release uploads the sources layer. After image: ECR tags are immutable,
 #             so a push before checks and tests pass breaks "Re-run all jobs". release waits for it.
 #   e2e-image  tests/ with tests/node_modules (a root workspace's hoisted packages copied in) ->
-#             ECR <image>-e2e:<release> on mcr.microsoft.com/playwright:v<@playwright/test>-noble, user
+#             ECR <image>-e2e:<release> on PLAYWRIGHT_IMAGE:v<@playwright/test>-noble@<digest>, user
 #             pwuser, CMD npm run e2e:ci, the base's global npm replaced by DEPS_BASE's (an older
 #             Playwright image ships an npm whose bundled tar has a CRITICAL CVE); chart mcf-e2e
 #             runs it against ci-gate after the upload at promotion. Only with tests/e2e/,
@@ -141,14 +140,14 @@
 #             entry built on them go to the hot-test bucket, the PR gets the hot-test
 #             deployment (hot-test-publish.yml; mcf@3 hot-test environments, issues-maestra#1574).
 #   functional  tests/functional/playwright.config.ts, not on renovate/* and LocalizationPull
-#             branches: the `static` artifact served by http-server on :8080, Chromium of
-#             the tests' Playwright, `npm run functional:ci` in tests/ (mcf@3
-#             functional-tests/run). JUnit -> step summary, artifact, test-results-ingest;
-#             test-results/ (traces) as an artifact on failure. Advisory unless
-#             functional-required.
+#             branches: the `static` artifact served by http-server on :8080, `npm run
+#             functional:ci` in tests/ (mcf@3 functional-tests/run) inside PLAYWRIGHT_IMAGE of
+#             the tests' Playwright (no browser download). JUnit -> step summary, artifact,
+#             test-results-ingest; test-results/ (traces) as an artifact on failure. Advisory
+#             unless functional-required.
 #   e2e-stand  hot-test with stand-prefix e2e (tests/e2e/): fluxcd sends its API to the e2e tenant.
-#   e2e       `npm run e2e:ci` in tests/ on the e2e stand, login from Vault (input e2e); skipped
-#             without a route.
+#   e2e       `npm run e2e:ci` in tests/ on the e2e stand inside PLAYWRIGHT_IMAGE, as functional,
+#             login from Vault (input e2e); skipped without a route.
 #   pr-gate   pull_request only, the check a branch ruleset requires (`build / pr gate`): red when
 #             a PR job failed or was cancelled, skipped jobs pass; functional and e2e count only
 #             with functional-required / e2e-required. image, release, sourcemaps, bake never run
@@ -269,6 +268,9 @@ env:
   # base's npm major. Renovate moves it (renovate.json). nora hides a public release for its
   # first 7 days (cooldown, 403 blocked_by_policy): a younger pin falls back to the base's npm.
   DEPS_NPM: npm@11.21.1
+  # mcr.microsoft.com/playwright through nora: the browsers of functional, e2e and e2e-image,
+  # tag v<@playwright/test of tests/>-noble resolved to its digest per run (issues-maestra#1649).
+  PLAYWRIGHT_IMAGE: packages.maestra.io/mcr/playwright
   # Packages cut out of the with-deps image with everything only they need: the schema check
   # runs graphql-codegen and tsc, not lint, commit, release, test-runtime or bundling tooling.
   # A trailing * is a prefix. Scripts the schema check runs (graphql-codegen, check-types) call
@@ -1405,6 +1407,7 @@ jobs:
           # The helper above covers packages-url; DEPS_BASE's host stays fixed whatever that is.
           cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
           jq --arg h "${DEPS_BASE%%/*}" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+          jq --arg h "${PLAYWRIGHT_IMAGE%%/*}" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
           # >>> e2e-image-context (scripts/test-e2e.sh runs this block)
           if [ "$LAYOUT" = workspace ]; then
             # The image gets tests/ only: what npm hoisted to the root goes to tests/node_modules.
@@ -1427,11 +1430,14 @@ jobs:
           [ -f tests/node_modules/@playwright/test/package.json ] || { echo "::error::no @playwright/test in tests/node_modules"; exit 1; }
           v=$(node -p "require(require.resolve('@playwright/test/package.json',{paths:['tests']})).version")
           [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::@playwright/test $v has no mcr.microsoft.com/playwright image"; exit 1; }
+          base="$PLAYWRIGHT_IMAGE:v$v-noble"
+          d=$(docker buildx imagetools inspect "$base" --format '{{json .Manifest}}' | jq -r .digest) || d=
+          [[ "$d" == sha256:* ]] || { echo "::error::nora does not serve $base (nora quarantines a new release for 3 days)"; exit 1; }
           # The base's global npm bundles its own tar and friends, frozen with that Playwright image
           # (v1.62.1: tar 7.5.15, CVE-2026-59873): DEPS_BASE's npm, which Renovate moves, replaces it.
           {
             printf 'FROM %s AS npm\n' "$DEPS_BASE"
-            printf 'FROM mcr.microsoft.com/playwright:v%s-noble\n' "$v"
+            printf 'FROM %s@%s\n' "$base" "$d"
             # The Playwright image is frozen at its release: Ubuntu fixes (libbrotli1,
             # CVE-2026-111497) come from nora's apt mirror, renewed weekly by BASE_REFRESH.
             printf 'ARG BASE_REFRESH\n'
@@ -1442,7 +1448,7 @@ jobs:
             printf 'COPY --chown=pwuser:pwuser --exclude=node_modules . .\n'
             printf 'USER pwuser\nCMD ["npm","run","e2e:ci"]\n'
           } > "$RUNNER_TEMP/Dockerfile.e2e"
-          echo "Playwright $v, tests/ ($LAYOUT)"
+          echo "Playwright $v, tests/ ($LAYOUT), base $base@$d"
           # <<< e2e-image-context
       - name: ecr login
         id: ecr
@@ -1682,9 +1688,8 @@ jobs:
           [ -n "$v" ] || { echo "::error::no Playwright in tests/"; exit 1; }
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "Playwright $v"
-      # `install chromium` costs ~26 s on a cache hit: `--with-deps` runs apt-get update and adds
-      # 9 font packages. With input functional-system-chrome the runner's Chrome, which
-      # frontend-playwright prefers, runs the tests without any of it.
+      # With input functional-system-chrome the runner's Chrome, which frontend-playwright
+      # prefers, runs the tests on the runner; otherwise they run in PLAYWRIGHT_IMAGE.
       - id: chrome
         env:
           SYSTEM_CHROME: ${{ inputs.functional-system-chrome }}
@@ -1695,21 +1700,52 @@ jobs:
           echo "system=$system" >> "$GITHUB_OUTPUT"
           echo "system Chrome only: $system"
           # <<< functional-chrome
-      - id: browsers
+      - name: nora docker credentials
         if: ${{ steps.chrome.outputs.system != 'true' }}
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/ms-playwright
-          key: mcf-playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright.outputs.version }}
-      - name: install chromium
+        env:
+          AUDIENCE: ${{ inputs.packages-audience }}
+          PACKAGES_URL: ${{ inputs.packages-url }}
+        run: |
+          # >>> nora-cred-helper (scripts/test-dotnet-service-build.sh runs this block; all copies equal)
+          bin="$RUNNER_TEMP/nora-bin"; mkdir -p "$bin"
+          # The helper runs in the caller's environment, which tox and other test runners
+          # scrub: the job's OIDC request URL and token go to a 0600 file next to it.
+          ( umask 077; printf 'url=%q\ntoken=%q\naud=%q\n' "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+            "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$AUDIENCE" > "$bin/oidc.env" )
+          cat > "$bin/docker-credential-nora" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          [ "${1:-}" = get ] || exit 0
+          server=$(cat) # docker sends it without a newline
+          . "${BASH_SOURCE[0]%/*}/oidc.env"
+          t=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $token" \
+            "$url&audience=$aud" | jq -r '.value // empty')
+          [ -n "$t" ]
+          jq -cn --arg s "$server" --arg t "$t" '{ServerURL: $s, Username: "token", Secret: $t}'
+          EOF
+          chmod 755 "$bin/docker-credential-nora"
+          echo "$bin" >> "$GITHUB_PATH"
+          host="${PACKAGES_URL#*://}"; host="${host%%/*}"
+          cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"; mkdir -p "$(dirname "$cfg")"
+          [ -s "$cfg" ] || echo '{}' > "$cfg"
+          jq --arg h "$host" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+          # <<< nora-cred-helper
+      - id: image
+        name: playwright image
         if: ${{ steps.chrome.outputs.system != 'true' }}
-        working-directory: tests
-        run: npx --no playwright install --with-deps chromium
-      - if: ${{ steps.chrome.outputs.system != 'true' && steps.browsers.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ steps.browsers.outputs.cache-primary-key }}
+        env:
+          PLAYWRIGHT: ${{ steps.playwright.outputs.version }}
+        run: |
+          # >>> playwright-image (scripts/test-e2e.sh runs this block; all copies equal)
+          cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+          jq --arg h "${PLAYWRIGHT_IMAGE%%/*}" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+          tag="$PLAYWRIGHT_IMAGE:v$PLAYWRIGHT-noble"
+          d=$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest}}' | jq -r .digest) || d=
+          [[ "$d" == sha256:* ]] || { echo "::error::nora does not serve $tag (nora quarantines a new release for 3 days)"; exit 1; }
+          echo "image=$PLAYWRIGHT_IMAGE@$d" >> "$GITHUB_OUTPUT"
+          echo "Playwright browsers: $tag = $PLAYWRIGHT_IMAGE@$d"
+          docker pull -q "$PLAYWRIGHT_IMAGE@$d"
+          # <<< playwright-image
       # A nora install costs ~25 s per job: 48 packages, none of them used by the build or the tests.
       - id: server-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -1776,9 +1812,21 @@ jobs:
           BASE_URL: http://localhost:8080
           RETRIES: "2"
           WORKERS: ${{ inputs.functional-workers }}
+          IMAGE: ${{ steps.image.outputs.image }}
         run: |
           set -o pipefail
-          npm run functional:ci 2>&1 | tee "$RUNNER_TEMP/functional.log"
+          cmd=(npm run functional:ci)
+          # >>> functional-docker (scripts/test-functional.sh runs this block)
+          if [ -n "$IMAGE" ]; then
+            # The image's browsers with the job's Node; host network for http-server on :8080.
+            node=$(dirname "$(dirname "$(command -v node)")")
+            cmd=(docker run --rm --init --ipc=host --network host --user "$(id -u):$(id -g)"
+              -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" -v "$node:/opt/node:ro" -w "$PWD"
+              -e HOME=/tmp -e PATH="/opt/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+              -e PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 -e CI -e BASE_URL -e RETRIES -e WORKERS "$IMAGE" "${cmd[@]}")
+          fi
+          # <<< functional-docker
+          "${cmd[@]}" 2>&1 | tee "$RUNNER_TEMP/functional.log"
       - name: summary
         if: ${{ always() }}
         env:
@@ -1890,19 +1938,50 @@ jobs:
           [ -n "$v" ] || { echo "::error::no Playwright in tests/"; exit 1; }
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "Playwright $v"
-      - id: browsers
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/ms-playwright
-          key: mcf-playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright.outputs.version }}
-      - name: install chromium
-        working-directory: tests
-        run: npx --no playwright install --with-deps chromium
-      - if: ${{ steps.browsers.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ steps.browsers.outputs.cache-primary-key }}
+      - name: nora docker credentials
+        env:
+          AUDIENCE: ${{ inputs.packages-audience }}
+          PACKAGES_URL: ${{ inputs.packages-url }}
+        run: |
+          # >>> nora-cred-helper (scripts/test-dotnet-service-build.sh runs this block; all copies equal)
+          bin="$RUNNER_TEMP/nora-bin"; mkdir -p "$bin"
+          # The helper runs in the caller's environment, which tox and other test runners
+          # scrub: the job's OIDC request URL and token go to a 0600 file next to it.
+          ( umask 077; printf 'url=%q\ntoken=%q\naud=%q\n' "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+            "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$AUDIENCE" > "$bin/oidc.env" )
+          cat > "$bin/docker-credential-nora" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          [ "${1:-}" = get ] || exit 0
+          server=$(cat) # docker sends it without a newline
+          . "${BASH_SOURCE[0]%/*}/oidc.env"
+          t=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $token" \
+            "$url&audience=$aud" | jq -r '.value // empty')
+          [ -n "$t" ]
+          jq -cn --arg s "$server" --arg t "$t" '{ServerURL: $s, Username: "token", Secret: $t}'
+          EOF
+          chmod 755 "$bin/docker-credential-nora"
+          echo "$bin" >> "$GITHUB_PATH"
+          host="${PACKAGES_URL#*://}"; host="${host%%/*}"
+          cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"; mkdir -p "$(dirname "$cfg")"
+          [ -s "$cfg" ] || echo '{}' > "$cfg"
+          jq --arg h "$host" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+          # <<< nora-cred-helper
+      - id: image
+        name: playwright image
+        env:
+          PLAYWRIGHT: ${{ steps.playwright.outputs.version }}
+        run: |
+          # >>> playwright-image (scripts/test-e2e.sh runs this block; all copies equal)
+          cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+          jq --arg h "${PLAYWRIGHT_IMAGE%%/*}" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+          tag="$PLAYWRIGHT_IMAGE:v$PLAYWRIGHT-noble"
+          d=$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest}}' | jq -r .digest) || d=
+          [[ "$d" == sha256:* ]] || { echo "::error::nora does not serve $tag (nora quarantines a new release for 3 days)"; exit 1; }
+          echo "image=$PLAYWRIGHT_IMAGE@$d" >> "$GITHUB_OUTPUT"
+          echo "Playwright browsers: $tag = $PLAYWRIGHT_IMAGE@$d"
+          docker pull -q "$PLAYWRIGHT_IMAGE@$d"
+          # <<< playwright-image
       # Outputs only: exported env would reach every later step (uploads, ingest).
       - id: vault
         uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
@@ -1928,9 +2007,16 @@ jobs:
           TEST_ENVIRONMENT: pull-request
           RETRIES: "2"
           WORKERS: ${{ inputs.e2e-workers }}
+          IMAGE: ${{ steps.image.outputs.image }}
         run: |
           set -o pipefail
-          npm run e2e:ci 2>&1 | tee "$RUNNER_TEMP/e2e.log"
+          # The image's browsers with the job's Node; the login goes in by name (-e NAME), never by value.
+          node=$(dirname "$(dirname "$(command -v node)")")
+          docker run --rm --init --ipc=host --network host --user "$(id -u):$(id -g)" \
+            -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" -v "$node:/opt/node:ro" -w "$PWD" \
+            -e HOME=/tmp -e PATH="/opt/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+            -e PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 -e CI -e BASE_URL -e ADMINSITE_USERNAME -e ADMINSITE_PASSWORD \
+            -e TEST_ENVIRONMENT -e RETRIES -e WORKERS "$IMAGE" npm run e2e:ci 2>&1 | tee "$RUNNER_TEMP/e2e.log"
       - name: summary
         if: ${{ always() }}
         env:
