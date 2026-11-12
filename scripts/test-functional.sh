@@ -61,7 +61,7 @@ eq "$aliases" "$keys" "root cache steps with the shared path list (one save + al
 if grep -nE '^ +path: node_modules$' "$wf"; then echo "FAIL a root cache step lists node_modules alone"; exit 1; fi
 if grep -nF 'npx --no playwright --version' "$wf"; then echo "FAIL npx eats --version: the browser key gets npm's version"; exit 1; fi
 grep -qF "v=\$(node -p \"require('@playwright/test/package.json').version\" || true)" "$wf" \
-  || { echo "FAIL the Playwright image tag does not read @playwright/test/package.json"; exit 1; }
+  || { echo "FAIL the browser cache key does not read @playwright/test/package.json"; exit 1; }
 # Both http-server steps read one version: a bump must not leave the cache key behind.
 eq "$(grep -cF 'http-server@' "$wf")" "$(grep -cE '^ +(HTTP_SERVER: http-server@|#.*http-server@)' "$wf")" "http-server version only in the job env"
 # shellcheck disable=SC2016 # the expression is matched literally
@@ -69,7 +69,7 @@ grep -qF 'key: mcf-${{ env.HTTP_SERVER }}-${{ runner.os }}-${{ runner.arch }}' "
   || { echo "FAIL the http-server cache key does not carry its version"; exit 1; }
 functional_job=$(awk '/^  functional:$/ { on = 1; next } on && /^  [a-z]/ { exit } on' "$wf")
 eq "$(grep -cF "if: \${{ steps.server-cache.outputs.cache-hit != 'true' }}" <<<"$functional_job")" "3" "token, install and save run only on an http-server cache miss"
-eq "$(grep -cF "steps.chrome.outputs.system != 'true'" <<<"$functional_job")" "2" "nora credentials and the Playwright image skip on system Chrome"
+eq "$(grep -cF "steps.chrome.outputs.system != 'true'" <<<"$functional_job")" "3" "browser restore, install and save all skip on system Chrome"
 grep -A2 '^      functional-system-chrome:$' "$wf" | grep -qx '        default: false' \
   || { echo "FAIL functional-system-chrome is not opt-in"; exit 1; }
 echo "functional cache paths: ok"
@@ -83,23 +83,9 @@ chrome() {
 }
 printf '#!/bin/sh\n' > "$root/chrome"; chmod +x "$root/chrome"
 eq "$(chrome true "$root/chrome")" "system=true" "opted in, Chrome on the runner"
-eq "$(chrome true "$root/no-chrome")" "system=false" "opted in, no Chrome: the tests run in the Playwright image"
+eq "$(chrome true "$root/no-chrome")" "system=false" "opted in, no Chrome: the Playwright install stays"
 eq "$(chrome false "$root/chrome")" "system=false" "not opted in"
 echo "functional system chrome: ok"
-
-docker_prog=$(block functional-docker)
-# cmd <image>: the command the run step executes with that step output
-cmd() { (cd "$root" && IMAGE="$1" GITHUB_WORKSPACE=/w bash -c "set -eo pipefail; cmd=(npm run functional:ci); $docker_prog"$'\n''printf "%s\n" "${cmd[@]}"'); }
-eq "$(cmd "" | tr '\n' ' ')" "npm run functional:ci " "system Chrome: the tests run on the runner"
-img=$(cmd packages.maestra.io/mcr/playwright@sha256:abc | tr '\n' ' ')
-for w in "docker run --rm --init --ipc=host --network host --user $(id -u):$(id -g) -v /w:/w " \
-  "-w $root " "-e HOME=/tmp " "-e PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 -e CI -e BASE_URL -e RETRIES -e WORKERS " \
-  "packages.maestra.io/mcr/playwright@sha256:abc npm run functional:ci "; do
-  grep -qF -- "$w" <<<"$img" || { printf 'FAIL functional in the image: no %s\n  in: %s\n' "$w" "$img"; exit 1; }
-done
-# shellcheck disable=SC2016 # matched literally
-grep -qF '"${cmd[@]}" 2>&1 | tee "$RUNNER_TEMP/functional.log"' "$wf" || { echo "FAIL functional does not run the command"; exit 1; }
-echo "functional image: ok"
 
 # job <name> <key>: the value of a top-level key (needs, if) of a job in the workflow
 job() { awk -v j="  $1:" -v k="    $2: " '$0 == j { on = 1; next } on && /^  [a-z]/ { exit }

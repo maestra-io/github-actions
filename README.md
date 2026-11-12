@@ -709,19 +709,13 @@ changes in the MCF repo: the jobs switch on by files.
   cached per repo after the first install) on `http://localhost:8080`, the port the tests expect; then
   `BASE_URL=http://localhost:8080 RETRIES=2 WORKERS=<functional-workers> npm run functional:ci`
   in `tests/`. The backend is mocked by the tests: no secrets, no stand.
-- **Browser.** No browser download ([issues-maestra#1649](https://github.com/maestra-io/issues-maestra/issues/1649)):
-  `npm run functional:ci` runs inside `PLAYWRIGHT_IMAGE` (`packages.maestra.io/mcr/playwright`,
-  MCR's Playwright image through nora) with the tag `v<X>-noble`, `<X>` the `@playwright/test`
-  of `tests/`, resolved to its index digest per run (logged as `Playwright browsers: <tag> =
-  <image>@sha256:…`) and run by that digest, so the browsers are the ones of the tests'
-  Playwright. The job's Node (`node-version`) is mounted in, `--network host` reaches
-  http-server on `:8080`, `--user` is the runner's; nora docker credentials come from the
-  `nora-cred-helper` block. A Playwright release nora still quarantines (3 days) fails the
-  job with `nora does not serve …`. frontend-playwright prefers `/usr/bin/google-chrome`,
-  which the image does not have, so the tests run in the image's Chromium.
-  `functional-system-chrome: true` (default `false`, opt-in per repo) runs the tests on the
-  runner in its Chrome instead, no image pull; off the runner image's Chrome it falls back to
-  the image.
+- **Browser.** `npx playwright install --with-deps chromium` from `tests/`, so it is the
+  Chromium of the Playwright the tests resolve; `~/.cache/ms-playwright` is cached by that
+  version. frontend-playwright prefers `/usr/bin/google-chrome` with `--no-sandbox`
+  when the file exists, so on a runner image with Chrome the tests run in that Chrome.
+  `functional-system-chrome: true` (default `false`, opt-in per repo) then skips the Chromium
+  cache and install, ~30 s per run; the only difference left is that `--with-deps` no longer
+  adds its 9 font packages. Off the runner image's Chrome it falls back to the install.
 - **Blocking.** `functional-required` defaults to `true`: a red run fails the workflow and
   `pr gate`, and the `image` (and so `release`, `bake`) does not run. A repo opts out with
   `functional-required: false`: the job gets `continue-on-error`, a red run shows ❌ and
@@ -733,8 +727,8 @@ changes in the MCF repo: the jobs switch on by files.
   with traces and screenshots, 3 days; traces are on for every test, 19–86 MB). The
   JUnit also goes to [test-results-ingest](#test-results-ingest-flaky-test-telemetry).
 
-`scripts/test-functional.sh` (selftest) runs the detection, the server wait, the
-`docker run` and the summary blocks of the workflow.
+`scripts/test-functional.sh` (selftest) runs the detection, the server wait and the
+summary blocks of the workflow.
 
 ### mcf-build: e2e stand and e2e tests
 
@@ -757,11 +751,11 @@ unconditionally, the tests run only with input `e2e`.
   then skipped, it never fails on the login.
 - **`e2e`** (input `e2e`, default `true`: every repo with `tests/e2e/` runs them, `e2e: false` in
   `pr.yml` opts out; `e2e: true` is a no-op left from the opt-in period;
-  `pool=build`, 60 min): the root and `tests/` caches as `functional`, then `npm run e2e:ci`
-  in `tests/` inside `PLAYWRIGHT_IMAGE` by digest, as `functional` (no browser download), with
-  `CI=true`, `BASE_URL=https://e2e-<repo>-pr-<N>.testing-env.omicron.maestra.io`,
-  `ADMINSITE_USERNAME`, `ADMINSITE_PASSWORD`, `TEST_ENVIRONMENT=pull-request`, `RETRIES=2`,
-  `WORKERS=<e2e-workers>` (default 4), each passed to the container by name (`-e NAME`).
+  `pool=build`, 60 min): the root and `tests/` caches as `functional`, Chromium of the
+  tests' Playwright, then `npm run e2e:ci` in `tests/` with `CI=true`,
+  `BASE_URL=https://e2e-<repo>-pr-<N>.testing-env.omicron.maestra.io`, `ADMINSITE_USERNAME`,
+  `ADMINSITE_PASSWORD`, `TEST_ENVIRONMENT=pull-request`, `RETRIES=2`, `WORKERS=<e2e-workers>`
+  (default 4).
 - **Credentials.** `hashicorp/vault-action` against the central Vault (`jwt-github`), role
   `e2e-vault-role` (default `ci-gate-e2e`), keys `ADMINSITE_USERNAME` and
   `ADMINSITE_PASSWORD` of the KV v2 secret `e2e-vault-secret` (default
@@ -795,17 +789,16 @@ admin of ci-gate.
   contents; the workspace's link to `tests/` itself is skipped). A copied package resolves its
   dependencies from `tests/node_modules` first, so a version `tests/` pins differently from the
   root wins there; a repo that hits this gives `tests/` its own lockfile. Base
-  `packages.maestra.io/mcr/playwright:v<X>-noble@<digest>` (`PLAYWRIGHT_IMAGE`, MCR's image
-  through nora), `<X>` the installed `@playwright/test`, the digest resolved when the Dockerfile
-  is written, its global npm replaced by the npm of `DEPS_BASE` (pulled through nora; the
+  `mcr.microsoft.com/playwright:v<X>-noble`, `<X>` the installed `@playwright/test` (pulled from
+  MCR directly), its global npm replaced by the npm of `DEPS_BASE` (pulled through nora; the
   npm of an older Playwright image bundles a vulnerable `tar`, 1.62.1 ships 7.5.15), `WORKDIR /tests`, user `pwuser`, `CMD ["npm","run","e2e:ci"]`; the
   `node_modules` and the sources are separate layers in the gha cache (scope `mcf-e2e-<image>`).
   Labels and the best-effort signature as `-with-deps`.
 - **Release gate.** `release` waits for `e2e-image` when the repo has `tests/e2e/`: a failed bake
   holds the release; without `tests/e2e/` the skipped job holds nothing.
 
-`scripts/test-e2e.sh` (selftest) runs the detection, summary, Playwright image (against a fake
-`docker`) and e2e image Dockerfile blocks and checks the wiring of the three jobs.
+`scripts/test-e2e.sh` (selftest) runs the detection, summary and e2e image Dockerfile blocks and
+checks the wiring of the three jobs.
 
 [`scripts/dockerfile-from-fix.sh`](scripts/dockerfile-from-fix.sh) drops the
 `cr.yandex/crp2cvbrp76d7dmfegco/` mirror prefix from `FROM` lines (idempotent);

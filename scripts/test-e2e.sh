@@ -101,42 +101,9 @@ echo "e2e gate: ok"
 
 e2e=$(jobtext e2e)
 pw_line="v=\$(node -p \"require('@playwright/test/package.json').version\" || true)"
+eq "$(grep -cF "$pw_line" "$wf")" "$(grep -cF 'run: npx --no playwright install --with-deps chromium' "$wf")" "every chromium install reads @playwright/test/package.json"
 has "$e2e" "$pw_line" "e2e Playwright version"
-# No job downloads a browser (issues-maestra#1649): the tests run in PLAYWRIGHT_IMAGE.
-if grep -nE 'playwright install|ms-playwright' "$wf"; then echo "FAIL a job downloads a Playwright browser"; exit 1; fi
-eq "$(grep -cF "$pw_line" "$wf")" "$(grep -cF '# >>> playwright-image' "$wf")" "every image tag reads @playwright/test/package.json"
-eq "$(grep -c '^  PLAYWRIGHT_IMAGE: packages.maestra.io/mcr/playwright$' "$wf")" "1" "PLAYWRIGHT_IMAGE through nora"
-img_prog=$(awk 'index($0,"# >>> playwright-image"){n++} n==1{print} n==1&&index($0,"# <<< playwright-image"){exit}' "$wf" | sed 's/^          //')
-eq "$(sed -n '/# >>> playwright-image/,/# <<< playwright-image/p' "$wf" | sed 's/^          //')" \
-  "$(printf '%s\n%s' "$img_prog" "$img_prog")" "playwright-image: functional and e2e carry the same copy"
-has "$e2e" "          # >>> nora-cred-helper (scripts/test-dotnet-service-build.sh runs this block; all copies equal)" "e2e pulls the image through nora"
-has "$e2e" "            -e PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 -e CI -e BASE_URL -e ADMINSITE_USERNAME -e ADMINSITE_PASSWORD \\" "e2e env into the container by name"
-has "$e2e" "          docker run --rm --init --ipc=host --network host --user \"\$(id -u):\$(id -g)\" \\" "e2e runs in the image"
-has "$e2e" "            -e TEST_ENVIRONMENT -e RETRIES -e WORKERS \"\$IMAGE\" npm run e2e:ci 2>&1 | tee \"\$RUNNER_TEMP/e2e.log\"" "e2e in the image"
-# A fake docker: imagetools knows v1.56.1 only, pull records its argument.
-fake="$root/fake-docker"; mkdir -p "$fake/bin" "$fake/home/.docker"; echo '{}' > "$fake/home/.docker/config.json"
-cat > "$fake/bin/docker" <<'D'
-#!/usr/bin/env bash
-case "$*" in
-  "buildx imagetools inspect packages.maestra.io/mcr/playwright:v1.56.1-noble --format {{json .Manifest}}") echo '{"digest":"sha256:abc"}' ;;
-  "pull -q "*) echo "$3" >> "${FAKE_PULLS:?}" ;;
-  *) echo "ERROR: not found" >&2; exit 1 ;;
-esac
-D
-chmod 755 "$fake/bin/docker"
-image() { # image <playwright version>: the step's output, fails the test when the block fails unexpectedly
-  : > "$fake/out"; : > "$fake/pulls"
-  PATH="$fake/bin:$PATH" HOME="$fake/home" PLAYWRIGHT_IMAGE=packages.maestra.io/mcr/playwright PLAYWRIGHT="$1" \
-    GITHUB_OUTPUT="$fake/out" FAKE_PULLS="$fake/pulls" bash -c "set -eo pipefail; $img_prog" > "$fake/log" 2>&1
-}
-image 1.56.1 || { cat "$fake/log"; echo "FAIL playwright-image exited non-zero"; exit 1; }
-eq "$(cat "$fake/out")" "image=packages.maestra.io/mcr/playwright@sha256:abc" "playwright-image runs by digest"
-eq "$(cat "$fake/pulls")" "packages.maestra.io/mcr/playwright@sha256:abc" "playwright-image pulls the digest"
-eq "$(jq -c .credHelpers "$fake/home/.docker/config.json")" '{"packages.maestra.io":"nora"}' "playwright-image nora credentials"
-if image 9.9.9; then echo "FAIL playwright-image passed for a tag nora does not serve"; exit 1; fi
-grep -qF '::error::nora does not serve packages.maestra.io/mcr/playwright:v9.9.9-noble' "$fake/log" \
-  || { cat "$fake/log"; echo "FAIL playwright-image: no error for a missing tag"; exit 1; }
-eq "$(cat "$fake/pulls")" "" "playwright-image pulls nothing for a missing tag"
+has "$e2e" "run: npx --no playwright install --with-deps chromium" "e2e chromium"
 has "$e2e" "path: *root-node-modules" "e2e restores the root cache with the shared path list"
 has "$e2e" "npm run e2e:ci 2>&1 | tee \"\$RUNNER_TEMP/e2e.log\"" "e2e log captured"
 # shellcheck disable=SC2016 # the expressions are matched literally
@@ -151,8 +118,7 @@ has "$e2e" "          exportEnv: false" "vault-action does not export the creden
 has "$e2e" "          role: \${{ inputs.e2e-vault-role }}" "vault role input"
 has "$e2e" "            \${{ inputs.e2e-vault-secret }} ADMINSITE_PASSWORD | ADMINSITE_PASSWORD" "vault password line"
 has "$e2e" "            \${{ inputs.e2e-vault-secret }} ADMINSITE_USERNAME | ADMINSITE_USERNAME ;" "vault username line"
-eq "$(grep -v '^ *#' "$wf" | grep -c 'ADMINSITE_PASSWORD')" "3" "ADMINSITE_PASSWORD only in the Vault secret line, the run env and docker run -e by name"
-if grep -n 'ADMINSITE_[A-Z]*=' "$wf"; then echo "FAIL a credential value on a command line"; exit 1; fi
+eq "$(grep -v '^ *#' "$wf" | grep -c 'ADMINSITE_PASSWORD')" "2" "ADMINSITE_PASSWORD only in the Vault secret line and the run env"
 has "$e2e" "          ADMINSITE_PASSWORD: \${{ steps.vault.outputs.ADMINSITE_PASSWORD }}" "password from the Vault step output"
 has "$e2e" "          ADMINSITE_USERNAME: \${{ steps.vault.outputs.ADMINSITE_USERNAME }}" "username from the Vault step output"
 if grep -nE '(echo|printf|tee|cat|::add-mask::|set -x).*ADMINSITE_' "$wf"; then echo "FAIL a step prints the credentials"; exit 1; fi
@@ -184,8 +150,7 @@ done
 eq "$(grep -A3 '^          labels: |$' <<<"$ei")" "$(grep -A3 '^          labels: |$' <<<"$deps")" "e2e-image labels as with-deps"
 eq "$(grep -B1 'uses: maestra-io/github-actions/sign-image@' <<<"$ei")" "$(grep -B1 'uses: maestra-io/github-actions/sign-image@' <<<"$deps")" "e2e-image signs best-effort with the with-deps pin"
 eq "$(grep 'uses: maestra-io/github-actions/push-to-aws-ecr-repository@' <<<"$ei")" "$(grep 'uses: maestra-io/github-actions/push-to-aws-ecr-repository@' <<<"$deps")" "e2e-image ECR action pin as with-deps"
-hasnt "$ei" "mcr.microsoft.com/playwright:" "e2e-image pulls the Playwright base through nora"
-has "$ei" "          jq --arg h \"\${PLAYWRIGHT_IMAGE%%/*}\" '.credHelpers[\$h] = \"nora\"' \"\$cfg\" > \"\$cfg.t\" && mv \"\$cfg.t\" \"\$cfg\"" "e2e-image nora credentials for PLAYWRIGHT_IMAGE's host"
+hasnt "$ei" "FROM packages.maestra.io" "e2e-image pulls the Playwright base from MCR directly"
 has "$ei" "          # >>> nora-cred-helper (scripts/test-dotnet-service-build.sh runs this block; all copies equal)" "e2e-image pulls DEPS_BASE through nora"
 has "$ei" "          jq --arg h \"\${DEPS_BASE%%/*}\" '.credHelpers[\$h] = \"nora\"' \"\$cfg\" > \"\$cfg.t\" && mv \"\$cfg.t\" \"\$cfg\"" "e2e-image nora credentials for DEPS_BASE's host"
 has "$ei" "          package-manager-cache: false" "e2e-image publishes: no package manager cache from setup-node"
@@ -194,18 +159,18 @@ echo "e2e-image wiring: ok"
 ctx_prog=$(block e2e-image-context)
 # ctx <repo dir> <layout>; prints the Dockerfile, fails the test when the block fails
 ctx() {
-  (cd "$1" && PATH="$fake/bin:$PATH" PLAYWRIGHT_IMAGE=packages.maestra.io/mcr/playwright DEPS_BASE='node:24-slim@sha256:0' LAYOUT="$2" RUNNER_TEMP="$1/.tmp" bash -c "set -eo pipefail; mkdir -p \"\$RUNNER_TEMP\"; $ctx_prog") > "$root/ctx.log" 2>&1 \
+  (cd "$1" && DEPS_BASE='node:24-slim@sha256:0' LAYOUT="$2" RUNNER_TEMP="$1/.tmp" bash -c "set -eo pipefail; mkdir -p \"\$RUNNER_TEMP\"; $ctx_prog") > "$root/ctx.log" 2>&1 \
     || { echo "FAIL e2e-image-context exited non-zero in $1"; cat "$root/ctx.log"; exit 1; }
   cat "$1/.tmp/Dockerfile.e2e"
 }
 ctx_fails() { # ctx_fails <repo dir> <layout> <error>
-  if (cd "$1" && PATH="$fake/bin:$PATH" PLAYWRIGHT_IMAGE=packages.maestra.io/mcr/playwright DEPS_BASE='node:24-slim@sha256:0' LAYOUT="$2" RUNNER_TEMP="$1/.tmp" bash -c "set -eo pipefail; mkdir -p \"\$RUNNER_TEMP\"; $ctx_prog") > "$root/ctx.log" 2>&1; then
+  if (cd "$1" && DEPS_BASE='node:24-slim@sha256:0' LAYOUT="$2" RUNNER_TEMP="$1/.tmp" bash -c "set -eo pipefail; mkdir -p \"\$RUNNER_TEMP\"; $ctx_prog") > "$root/ctx.log" 2>&1; then
     echo "FAIL e2e-image-context passed in $1"; exit 1
   fi
   grep -qF -- "$3" "$root/ctx.log" || { echo "FAIL e2e-image-context in $1: no $3"; cat "$root/ctx.log"; exit 1; }
 }
 pkg() { mkdir -p "$1"; printf '{"name":"%s","version":"%s"}\n' "${1##*/node_modules/}" "$2" > "$1/package.json"; }
-want=$(printf '%s\n' 'FROM node:24-slim@sha256:0 AS npm' 'FROM packages.maestra.io/mcr/playwright:v1.56.1-noble@sha256:abc' \
+want=$(printf '%s\n' 'FROM node:24-slim@sha256:0 AS npm' 'FROM mcr.microsoft.com/playwright:v1.56.1-noble' \
   'ARG BASE_REFRESH' \
   'RUN --mount=type=secret,id=PRIVATE_PACKAGES_TOKEN,required=true --mount=type=bind,from=public.ecr.aws/g5f9s8a4/nora-apt:1.0.0,target=/nora-apt,rw . /nora-apt/env.sh && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y && rm -rf /var/lib/apt/lists/*' \
   'RUN rm -rf /usr/lib/node_modules/npm' 'COPY --from=npm /usr/local/lib/node_modules/npm /usr/lib/node_modules/npm' \
