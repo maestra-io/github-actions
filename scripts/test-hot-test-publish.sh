@@ -2,10 +2,10 @@
 #
 # Self-check for hot-test-publish.yml: the stand names (host, bucket folder, mcf, static-prefix
 # and stand-prefix defaults, the inputs the ResourceSet template also rejects), the manifest
-# override (the PR manifest byte for byte; none with manifest: none), the route wait (200 is
+# override (the PR manifest byte for byte; none with an empty static-manifest), the route wait (200 is
 # up, anything else until the timeout is not), the release bucket check (every
 # release manifest of the entry but the PR's own is the same through the stand and
-# under base-static-url, else the step fails; with manifest: none the PR's own MCF is
+# under base-static-url, else the step fails; with own files in public/ the PR's own MCF is
 # a released one too) and the summary it leads to. Runs the inline blocks of the
 # reusable workflow itself.
 set -euo pipefail
@@ -18,21 +18,25 @@ eq() { [ "$1" = "$2" ] || { printf 'FAIL %s\n  got:  %s\n  want: %s\n' "$3" "$1"
 
 names_prog=$(sed -n '/# >>> names/,/# <<< names/p' "$wf" | sed 's/^          //')
 [ -n "$names_prog" ] || { echo "names block not found in $wf"; exit 1; }
-# names <repo input> <pr input> <mcf input> [event pr] [static-prefix input] [manifest input]
-# prints "<host> <name> <mcf> <static prefix> <manifest>"
+# names <repo input> <pr input> <mcf input> [event pr] [static-prefix input] [deprecated manifest input]
+# with STATIC_MANIFEST (default mf-manifest.json, the input's own default) and STATIC_VERSION_FILE
+# prints "<host> <name> <mcf> <static prefix> <static manifest>,<static version file>"
 names() {
   REPO="$1" PR_NUMBER="$2" MCF="$3" EVENT_PR_NUMBER="${4:-}" STATIC_PREFIX="${5:-}" MANIFEST="${6:-}" \
+    STATIC_MANIFEST="${STATIC_MANIFEST-mf-manifest.json}" STATIC_VERSION_FILE="${STATIC_VERSION_FILE:-}" \
     HOT_TEST_DOMAIN=testing-env.omicron.maestra.io GITHUB_REPOSITORY=maestra-io/frontend-homepage \
-    bash -c "set -eo pipefail; $names_prog"$'\n''echo "$host $name $mcf $static_prefix $manifest"'
+    bash -c "set -eo pipefail; $names_prog"$'\n''echo "$host $name $mcf $static_prefix $static_manifest,$static_version_file"' | tail -n 1
 }
 fails() { if names "$1" "$2" "$3" "${4:-}" "${5:-}" "${6:-}" >/dev/null 2>&1; then echo "FAIL $7: accepted"; exit 1; fi; }
 
-eq "$(names frontend-homepage 12 frontend_homepage)" "hot-test-frontend-homepage-pr-12.testing-env.omicron.maestra.io hot-test-frontend-homepage-pr-12 frontend_homepage v2_static/frontend_homepage mcf" "explicit inputs"
-eq "$(names "" "" "" 7)" "hot-test-frontend-homepage-pr-7.testing-env.omicron.maestra.io hot-test-frontend-homepage-pr-7 frontend_homepage v2_static/frontend_homepage mcf" "defaults: repository, event PR, repo with _"
-eq "$(names frontend-core-v2 3 "")" "hot-test-frontend-core-v2-pr-3.testing-env.omicron.maestra.io hot-test-frontend-core-v2-pr-3 frontend_core_v2 v2_static/frontend_core_v2 mcf" "mcf default from repo"
-eq "$(names frontend 4 "" "" public none)" "hot-test-frontend-pr-4.testing-env.omicron.maestra.io hot-test-frontend-pr-4 frontend public none" "legacy monorepo: own files in public/, no manifest"
-eq "$(names frontend-core-v2 3 "" "" v2_static/core)" "hot-test-frontend-core-v2-pr-3.testing-env.omicron.maestra.io hot-test-frontend-core-v2-pr-3 frontend_core_v2 v2_static/core mcf" "static-prefix with a slash"
-eq "$(names frontend-core-v2 3 "" "" v2_static/core core)" "hot-test-frontend-core-v2-pr-3.testing-env.omicron.maestra.io hot-test-frontend-core-v2-pr-3 frontend_core_v2 v2_static/core core" "core: own files in v2_static/core, core manifest"
+eq "$(names frontend-homepage 12 frontend_homepage)" "hot-test-frontend-homepage-pr-12.testing-env.omicron.maestra.io hot-test-frontend-homepage-pr-12 frontend_homepage v2_static/frontend_homepage mf-manifest.json," "explicit inputs"
+eq "$(names "" "" "" 7)" "hot-test-frontend-homepage-pr-7.testing-env.omicron.maestra.io hot-test-frontend-homepage-pr-7 frontend_homepage v2_static/frontend_homepage mf-manifest.json," "defaults: repository, event PR, repo with _"
+eq "$(names frontend-core-v2 3 "")" "hot-test-frontend-core-v2-pr-3.testing-env.omicron.maestra.io hot-test-frontend-core-v2-pr-3 frontend_core_v2 v2_static/frontend_core_v2 mf-manifest.json," "mcf default from repo"
+eq "$(STATIC_MANIFEST="" names frontend 4 "" "" public)" "hot-test-frontend-pr-4.testing-env.omicron.maestra.io hot-test-frontend-pr-4 frontend public ," "legacy monorepo: own files in public/, no manifest"
+eq "$(names frontend 4 "" "" public none)" "hot-test-frontend-pr-4.testing-env.omicron.maestra.io hot-test-frontend-pr-4 frontend public ," "deprecated manifest: none is an empty static-manifest"
+eq "$(names frontend-core-v2 3 "" "" v2_static/core)" "hot-test-frontend-core-v2-pr-3.testing-env.omicron.maestra.io hot-test-frontend-core-v2-pr-3 frontend_core_v2 v2_static/core mf-manifest.json," "static-prefix with a slash"
+eq "$(STATIC_MANIFEST=manifest.json STATIC_VERSION_FILE=build-info.json names frontend-core-v2 3 "" "" v2_static/core)" "hot-test-frontend-core-v2-pr-3.testing-env.omicron.maestra.io hot-test-frontend-core-v2-pr-3 frontend_core_v2 v2_static/core manifest.json,build-info.json" "core: own files in v2_static/core, manifest.json and build-info.json"
+eq "$(names frontend-core-v2 3 "" "" v2_static/core core)" "hot-test-frontend-core-v2-pr-3.testing-env.omicron.maestra.io hot-test-frontend-core-v2-pr-3 frontend_core_v2 v2_static/core manifest.json,build-info.json" "deprecated manifest: core stands for the two names"
 fails "Frontend-Homepage" 1 "" "" "" "" "upper-case repo"
 fails "frontend.homepage" 1 "" "" "" "" "dot in repo"
 fails "a/b" 1 "" "" "" "" "slash in repo"
@@ -44,6 +48,8 @@ fails frontend 4 "" "" /public "" "static-prefix with a leading slash"
 fails frontend 4 "" "" public/ "" "static-prefix with a trailing slash"
 fails frontend 4 "" "" Public "" "upper-case static-prefix"
 fails frontend 4 "" "" public bogus "unknown manifest kind"
+if STATIC_MANIFEST=js/manifest.json names frontend-homepage 12 "" >/dev/null 2>&1; then echo "FAIL static-manifest with a folder: accepted"; exit 1; fi
+if STATIC_MANIFEST="" STATIC_VERSION_FILE=build-info.json names frontend 4 "" "" public >/dev/null 2>&1; then echo "FAIL static-version-file without a static-manifest: accepted"; exit 1; fi
 # prefixed <stand-prefix input> <repo> <pr>; prints "<url> <name>"
 prefixed() {
   REPO="$2" PR_NUMBER="$3" STAND_PREFIX="$1" HOT_TEST_DOMAIN=testing-env.omicron.maestra.io \
@@ -81,34 +87,39 @@ site="$root/site"; overrides="$root/overrides/manifests"; mkdir -p "$site/v2_sta
 cat > "$site/v2_static/frontend_homepage/mf-manifest.json" <<'JSON'
 {"id":"frontend_homepage","name":"frontend_homepage","metaData":{"name":"frontend_homepage","publicPath":null,"getPublicPath":"function() { return window.externalPublicPath || \"/\" }","remoteEntry":{"name":"v2_static/frontend_homepage/js/remoteEntry.js","path":"","type":"global"}},"shared":[],"remotes":[],"exposes":[]}
 JSON
-STATIC_PREFIX=v2_static/frontend_homepage MANIFEST=mcf \
+STATIC_PREFIX=v2_static/frontend_homepage STATIC_MANIFEST=mf-manifest.json STATIC_VERSION_FILE="" \
   site="$site" overrides="$overrides" bash -c "set -eo pipefail; $manifest_prog"
 cmp -s "$site/v2_static/frontend_homepage/mf-manifest.json" "$overrides/mf-manifest.json" \
   || { echo "FAIL override manifest differs from the PR manifest"; exit 1; }
 rm "$overrides/mf-manifest.json"
-STATIC_PREFIX=public MANIFEST=none \
+STATIC_PREFIX=public STATIC_MANIFEST="" STATIC_VERSION_FILE="" \
   site="$site" overrides="$overrides" bash -c "set -eo pipefail; $manifest_prog"
-[ -z "$(ls -A "$overrides")" ] || { echo "FAIL manifest: none wrote an override: $(ls "$overrides")"; exit 1; }
+[ -z "$(ls -A "$overrides")" ] || { echo "FAIL an empty static-manifest wrote an override: $(ls "$overrides")"; exit 1; }
 mkdir -p "$site/v2_static/core"
 echo '{"main":[{"path":"v2_static/core/main-1.js","integrity":"sha384-x"}]}' > "$site/v2_static/core/manifest.json"
 echo '{"buildVersion":"1.1.1","buildTimestamp":1,"lastHotfix":null}' > "$site/v2_static/core/build-info.json"
-STATIC_PREFIX=v2_static/core MANIFEST=core \
+STATIC_PREFIX=v2_static/core STATIC_MANIFEST=manifest.json STATIC_VERSION_FILE=build-info.json \
   site="$site" overrides="$overrides" bash -c "set -eo pipefail; $manifest_prog"
 cmp -s "$site/v2_static/core/manifest.json" "$overrides/../core-manifest.json" \
   || { echo "FAIL core: override core-manifest.json differs from the PR manifest"; exit 1; }
 cmp -s "$site/v2_static/core/build-info.json" "$overrides/../core-build-info.json" \
   || { echo "FAIL core: override core-build-info.json differs from the PR build-info"; exit 1; }
-[ -z "$(ls -A "$overrides")" ] || { echo "FAIL manifest: core wrote an MCF override: $(ls "$overrides")"; exit 1; }
+[ -z "$(ls -A "$overrides")" ] || { echo "FAIL core wrote an MCF override: $(ls "$overrides")"; exit 1; }
+rm "$overrides/../core-manifest.json" "$overrides/../core-build-info.json"
+STATIC_PREFIX=v2_static/core STATIC_MANIFEST=manifest.json STATIC_VERSION_FILE="" \
+  site="$site" overrides="$overrides" bash -c "set -eo pipefail; $manifest_prog"
+[ -f "$overrides/../core-manifest.json" ] && [ ! -e "$overrides/../core-build-info.json" ] \
+  || { echo "FAIL core without a version file: expected core-manifest.json alone"; exit 1; }
 echo "hot-test-publish manifest: ok"
 
 core_entry_prog=$(sed -n '/# >>> core-entry/,/# <<< core-entry/p' "$wf" | sed 's/^            //')
 [ -n "$core_entry_prog" ] || { echo "core-entry block not found in $wf"; exit 1; }
 mkdir -p "$site/entry"
 echo '<script src="https://stand/v2_static/core/main-1.js" integrity="sha384-x"></script>' > "$site/entry/index.html"
-STATIC_PREFIX=v2_static/core site="$site" bash -c "set -eo pipefail; $core_entry_prog" >/dev/null \
+STATIC_PREFIX=v2_static/core STATIC_MANIFEST=manifest.json site="$site" bash -c "set -eo pipefail; $core_entry_prog" >/dev/null \
   || { echo "FAIL core-entry: index.html with the PR chunk rejected"; exit 1; }
 echo '<script src="https://stand/v2_static/core/main-0.js"></script>' > "$site/entry/index.html"
-if STATIC_PREFIX=v2_static/core site="$site" bash -c "set -eo pipefail; $core_entry_prog" >/dev/null 2>&1; then
+if STATIC_PREFIX=v2_static/core STATIC_MANIFEST=manifest.json site="$site" bash -c "set -eo pipefail; $core_entry_prog" >/dev/null 2>&1; then
   echo "FAIL core-entry: index.html without the PR chunk accepted"; exit 1
 fi
 echo "hot-test-publish core entry: ok"

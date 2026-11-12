@@ -27,14 +27,15 @@
 #       with:
 #         static-artifact: static   # static.tgz with public/scripts/directcrm.js ...
 #         static-prefix: public
-#         manifest: none
+#         static-manifest: ""
 #
 #   The admin shell frontend-core-v2 (through mcf-build.yml) publishes v2_static/core/ with
 #   its own manifest.json and build-info.json, which the builder takes as the core overrides:
 #
 #       with:
 #         static-prefix: v2_static/core
-#         manifest: core
+#         static-manifest: manifest.json
+#         static-version-file: build-info.json
 #
 # Inputs:
 #   repo             Repository name, the <repo> of the host (default: this repository).
@@ -58,14 +59,17 @@
 #                    /public/, the admin shell frontend-core-v2 /v2_static/core/; it passes
 #                    the same path here, else the stand does not serve the PR's files and
 #                    the summary is ⚠️ or ❌.
-#   manifest         mcf (default): <static-prefix>/mf-manifest.json is the PR's module
-#                    federation manifest, the entry is built with it as the override.
-#                    core: <static-prefix>/manifest.json and build-info.json are the admin
-#                    shell's (frontend-core-v2), the entry is built with them as the
-#                    overrides core-manifest.json and core-build-info.json.
-#                    none: no manifest, the entry is the released shell as is (the
-#                    legacy monorepo: its pages are served by the backend and load
-#                    /public/... from the stand's host, see X-Testing-Frontend below).
+#   static-manifest  File in <static-prefix> the entry is built with as the override
+#                    (default mf-manifest.json, the PR's module federation manifest). Under
+#                    static-prefix v2_static/core it is the admin shell's (frontend-core-v2:
+#                    manifest.json) and becomes the builder's core-manifest.json. Empty: no
+#                    manifest, the entry is the released shell as is (the legacy monorepo:
+#                    its pages are served by the backend and load /public/... from the
+#                    stand's host, see X-Testing-Frontend below).
+#   static-version-file  File in <static-prefix> with the build version (default none;
+#                    frontend-core-v2: build-info.json, the builder's core-build-info.json).
+#   manifest         Deprecated kind: core is manifest.json with build-info.json, none is an
+#                    empty static-manifest.
 #   stand-prefix     First word of the stand name (default hot-test): <stand-prefix>-<repo>-pr-<N>
 #                    is the host, the bucket folder and the GitHub environment. mcf-build.yml
 #                    passes e2e for the e2e stand: the same stand whose API the cluster proxies
@@ -106,7 +110,7 @@
 # the route is up the job compares, byte for byte, every release manifest the entry was
 # built from: v2_static/core/manifest.json and v2_static/<mcf>/mf-manifest.json of each
 # MCF in entry/mcf-manifests.json except the ones under <static-prefix>/ (the PR's own:
-# its MCF with manifest: mcf, core with manifest: core; with manifest: none every MCF is
+# its MCF or the core; under another folder, as the legacy public/, every MCF is
 # released), fetched through https://<host> (the
 # cluster's release bucket) and under base-static-url. The builder's own list
 # (<base-static-url>/entry/mcf-manifests.json) cannot be read through the stand: its /entry
@@ -119,9 +123,10 @@
 # CDN_URL=https://<host> so every other MCF loads through the stand's host too
 # (the stand's route sends /v2_static to the release bucket);
 # VERSION_CHECKER_ENABLED=false, no DataDog RUM and no transaction manager: a PR
-# stand reports nothing. With manifest: core the overrides are core-manifest.json and
-# core-build-info.json (the builder's getCoreManifest and getCoreBuildInfo): the entry
-# loads this PR's core chunks. With manifest: none the entry is built without an override:
+# stand reports nothing. Under static-prefix v2_static/core, the folder the builder itself
+# reads the shell from, the overrides are core-manifest.json and core-build-info.json
+# (its getCoreManifest and getCoreBuildInfo): the entry loads this PR's core chunks.
+# With an empty static-manifest the entry is built without an override:
 # the SPA routes of the stand still need an index.html, and the PR's own files reach
 # the page from the backend's HTML: the stand's API route carries X-Testing-Frontend,
 # on which the admin backend links /public/... relative to the request host.
@@ -159,9 +164,15 @@ on:
       static-prefix:
         type: string
         default: ""
+      static-manifest:
+        type: string
+        default: mf-manifest.json
+      static-version-file:
+        type: string
+        default: ""
       manifest:
         type: string
-        default: mcf
+        default: ""
       hot-test-domain:
         type: string
         default: testing-env.omicron.maestra.io
@@ -213,6 +224,8 @@ jobs:
           EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
           MCF: ${{ inputs.mcf }}
           STATIC_PREFIX: ${{ inputs.static-prefix }}
+          STATIC_MANIFEST: ${{ inputs.static-manifest }}
+          STATIC_VERSION_FILE: ${{ inputs.static-version-file }}
           MANIFEST: ${{ inputs.manifest }}
           HOT_TEST_DOMAIN: ${{ inputs.hot-test-domain }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -223,7 +236,7 @@ jobs:
           pr="${PR_NUMBER:-$EVENT_PR_NUMBER}"
           mcf="${MCF:-${repo//-/_}}"
           static_prefix="${STATIC_PREFIX:-v2_static/$mcf}"
-          manifest="${MANIFEST:-mcf}"
+          static_manifest="$STATIC_MANIFEST"; static_version_file="$STATIC_VERSION_FILE"
           prefix="${STAND_PREFIX:-hot-test}"
           [[ "$prefix" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || { echo "::error::stand-prefix '$prefix' is not [a-z0-9]([a-z0-9-]*[a-z0-9])?"; exit 1; }
           [[ "$repo" =~ ^[a-z0-9-]+$ ]] || { echo "::error::repo '$repo' is not [a-z0-9-]+"; exit 1; }
@@ -231,7 +244,18 @@ jobs:
           [[ "$mcf" =~ ^[a-z0-9_]+$ ]] || { echo "::error::mcf '$mcf' is not [a-z0-9_]+"; exit 1; }
           # The same path the ResourceSet template accepts as staticPrefix, without the slashes.
           [[ "$static_prefix" =~ ^[a-z0-9_-]+(/[a-z0-9_-]+)*$ ]] || { echo "::error::static-prefix '$static_prefix' is not [a-z0-9_-]+(/[a-z0-9_-]+)* (no leading or trailing slash)"; exit 1; }
-          case "$manifest" in mcf|core|none) ;; *) echo "::error::manifest '$manifest' is not mcf, core or none"; exit 1 ;; esac
+          # The deprecated kind, until the legacy monorepo passes an empty static-manifest (issues-maestra#1603).
+          case "$MANIFEST" in
+            ""|mcf) ;;
+            core) static_manifest=manifest.json; static_version_file=build-info.json ;;
+            none) static_manifest=""; static_version_file="" ;;
+            *) echo "::error::manifest '$MANIFEST' is not a kind any more: pass static-manifest and static-version-file"; exit 1 ;;
+          esac
+          [ -z "$MANIFEST" ] || echo "::warning::input manifest is deprecated: pass static-manifest and static-version-file"
+          for f in "$static_manifest" "$static_version_file"; do
+            [[ -z "$f" || "$f" =~ ^[A-Za-z0-9_-][A-Za-z0-9._-]*$ ]] || { echo "::error::'$f' is not a file name in $static_prefix/ ([A-Za-z0-9._-]+)"; exit 1; }
+          done
+          [ -n "$static_manifest" ] || [ -z "$static_version_file" ] || { echo "::error::static-version-file '$static_version_file' without a static-manifest"; exit 1; }
           # haproxy-cdp sends every host containing -services to the kube-services backend.
           [[ "$repo" != *-services* ]] || { echo "::error::repo '$repo' contains -services: haproxy-cdp would never route its hot-test host"; exit 1; }
           name="${prefix}-${repo}-pr-${pr}"
@@ -254,14 +278,15 @@ jobs:
             echo "pr=$pr"
             echo "mcf=$mcf"
             echo "static-prefix=$static_prefix"
-            echo "manifest=$manifest"
+            echo "static-manifest=$static_manifest"
+            echo "static-version-file=$static_version_file"
             echo "name=$name"
             echo "host=$host"
             echo "url=https://$host"
             echo "sha=${HEAD_SHA:0:7}"
             echo "pages=$pages"
           } >> "$GITHUB_OUTPUT"
-          echo "stand https://$host, bucket folder $name/, own files $static_prefix/, manifest $manifest"
+          echo "stand https://$host, bucket folder $name/, own files $static_prefix/, manifest ${static_manifest:-<none>}${static_version_file:+, version file $static_version_file}"
 
       - id: static
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -272,13 +297,13 @@ jobs:
         name: unpack static
         env:
           STATIC_PREFIX: ${{ steps.names.outputs.static-prefix }}
-          MANIFEST: ${{ steps.names.outputs.manifest }}
+          STATIC_MANIFEST: ${{ steps.names.outputs.static-manifest }}
+          STATIC_VERSION_FILE: ${{ steps.names.outputs.static-version-file }}
         run: |
           site="$RUNNER_TEMP/site"; mkdir -p "$site"
           tar -xzf "$RUNNER_TEMP/artifact/static.tgz" -C "$site"
           [ -d "$site/$STATIC_PREFIX" ] || { echo "::error::$STATIC_PREFIX/ is not in the static artifact"; exit 1; }
-          case "$MANIFEST" in mcf) need=mf-manifest.json ;; core) need="manifest.json build-info.json" ;; *) need="" ;; esac
-          for f in $need; do
+          for f in $STATIC_MANIFEST $STATIC_VERSION_FILE; do
             [ -f "$site/$STATIC_PREFIX/$f" ] || { echo "::error::$STATIC_PREFIX/$f is not in the static artifact"; exit 1; }
           done
           if find "$site" -name '*.map' -type f | grep -q .; then
@@ -292,18 +317,24 @@ jobs:
           IMAGE: ${{ inputs.builder-image }}
           MCF: ${{ steps.names.outputs.mcf }}
           STATIC_PREFIX: ${{ steps.names.outputs.static-prefix }}
-          MANIFEST: ${{ steps.names.outputs.manifest }}
+          STATIC_MANIFEST: ${{ steps.names.outputs.static-manifest }}
+          STATIC_VERSION_FILE: ${{ steps.names.outputs.static-version-file }}
           HOT_TEST_URL: ${{ steps.names.outputs.url }}
           BASE_STATIC_URL: ${{ inputs.base-static-url }}
         run: |
           site="$RUNNER_TEMP/site"
           overrides="$RUNNER_TEMP/overrides/manifests"; mkdir -p "$overrides" "$site/entry"
           # >>> manifest (scripts/test-hot-test-publish.sh runs this block)
-          case "$MANIFEST" in
-            mcf) cp "$site/$STATIC_PREFIX/mf-manifest.json" "$overrides/mf-manifest.json" ;;
-            core) cp "$site/$STATIC_PREFIX/manifest.json" "$overrides/../core-manifest.json"
-                  cp "$site/$STATIC_PREFIX/build-info.json" "$overrides/../core-build-info.json" ;;
-          esac
+          # The builder's override slots: it reads the admin shell from v2_static/core
+          # (getCoreManifest, getCoreBuildInfo), every other manifest is an MCF's.
+          if [ -z "$STATIC_MANIFEST" ]; then
+            :
+          elif [ "$STATIC_PREFIX" = v2_static/core ]; then
+            cp "$site/$STATIC_PREFIX/$STATIC_MANIFEST" "$overrides/../core-manifest.json"
+            [ -z "$STATIC_VERSION_FILE" ] || cp "$site/$STATIC_PREFIX/$STATIC_VERSION_FILE" "$overrides/../core-build-info.json"
+          else
+            cp "$site/$STATIC_PREFIX/$STATIC_MANIFEST" "$overrides/$STATIC_MANIFEST"
+          fi
           # <<< manifest
           registry="${IMAGE%%/*}"
           if [[ "$registry" == *.dkr.ecr.* ]]; then
@@ -327,16 +358,18 @@ jobs:
           for f in index.html mcf-manifests.json mcf-manifests.js; do
             [ -s "$site/entry/$f" ] || { echo "::error::the builder wrote no entry/$f"; exit 1; }
           done
-          if [ "$MANIFEST" = mcf ]; then
-            remote_entry=$(jq -r '.metaData.remoteEntry.name' "$site/$STATIC_PREFIX/mf-manifest.json")
+          if [ -z "$STATIC_MANIFEST" ]; then
+            :
+          elif [ "$STATIC_PREFIX" != v2_static/core ]; then
+            remote_entry=$(jq -r '.metaData.remoteEntry.name' "$site/$STATIC_PREFIX/$STATIC_MANIFEST")
             jq -e --arg m "$MCF" --arg r "$remote_entry" \
               'any(.[]; .id == $m and .metaData.remoteEntry.name == $r)' \
               "$site/entry/mcf-manifests.json" >/dev/null \
               || { echo "::error::entry/mcf-manifests.json does not carry the PR manifest of $MCF (remoteEntry $remote_entry)"; exit 1; }
-          elif [ "$MANIFEST" = core ]; then
+          else
             # >>> core-entry (scripts/test-hot-test-publish.sh runs this block)
-            chunk=$(jq -r '[.[][].path] | first // empty' "$site/$STATIC_PREFIX/manifest.json")
-            [ -n "$chunk" ] || { echo "::error::$STATIC_PREFIX/manifest.json lists no chunk"; exit 1; }
+            chunk=$(jq -r '[.[][].path] | first // empty' "$site/$STATIC_PREFIX/$STATIC_MANIFEST")
+            [ -n "$chunk" ] || { echo "::error::$STATIC_PREFIX/$STATIC_MANIFEST lists no chunk"; exit 1; }
             grep -qF "$chunk" "$site/entry/index.html" \
               || { echo "::error::entry/index.html does not load the PR's core ($chunk)"; exit 1; }
             # <<< core-entry
