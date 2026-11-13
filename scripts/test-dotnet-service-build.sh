@@ -125,8 +125,9 @@ cat > "$n/bin/curl" <<'C'
 #!/usr/bin/env bash
 if [[ "$*" == *"https://packages.maestra.io/api/oidc/session"* ]]; then
   [[ "$*" == *"Bearer tok-"* ]] || exit 22
-  code=${NORA_SESSION:-200}; [ "$code" = 200 ] && echo '{"token":"nrs_'"$RANDOM"'"}' || echo '{}'
-  echo "$code"; exit 0
+  out=; while [ $# -gt 0 ]; do [ "$1" = -o ] && out=$2; shift; done
+  code=${NORA_SESSION:-200}; { [ "$code" = 200 ] && echo '{"token":"nrs_'"$RANDOM"'"}' || echo '{}'; } > "$out"
+  printf %s "$code"; exit 0
 fi
 [[ "$*" == *"audience=packages.maestra.io"* ]] && echo '{"value":"tok-'"$RANDOM"'"}'
 C

@@ -135,10 +135,12 @@ jobs:
           # Testcontainers keeps the first credential for its whole run, so a ~5 min JWT failed
           # pulls made later (api-mimic#72): hand out nora's 1 h session token for it instead.
           # ponytail: a test process over 1 h still outlives it; 403/404 = no exchange, the JWT.
-          s=$(curl -sS --retry 3 --connect-timeout 10 --max-time 30 -X POST -H "Authorization: Bearer $t" \
-            -w '\n%{http_code}' "$nora/api/oidc/session")
-          case "${s##*$'\n'}" in
-            200) t=$(jq -r '.token // empty' <<<"${s%$'\n'*}"); [[ "$t" == nrs_* ]] ;;
+          # the body to a 0600 file: curl truncates it before a retry, stdout would keep every attempt's
+          f=$(mktemp); trap 'rm -f "$f"' EXIT
+          code=$(curl -sS --retry 3 --connect-timeout 10 --max-time 30 -X POST -H "Authorization: Bearer $t" \
+            -o "$f" -w '%{http_code}' "$nora/api/oidc/session")
+          case "$code" in
+            200) t=$(jq -r '.token // empty' "$f"); [[ "$t" == nrs_* ]] ;;
             403|404) ;;
             *) exit 1 ;;
           esac
