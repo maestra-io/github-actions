@@ -134,8 +134,10 @@ jobs:
           bin="$RUNNER_TEMP/nora-bin"; mkdir -p "$bin"
           # The helper runs in the caller's environment, which tox and other test runners
           # scrub: the job's OIDC request URL and token go to a 0600 file next to it.
+          # nora's origin: PACKAGES_URL may carry a path (python-package-publish: …/simple/)
+          o="${PACKAGES_URL#*://}"; o="${PACKAGES_URL%%://*}://${o%%/*}"
           ( umask 077; printf 'url=%q\ntoken=%q\naud=%q\nnora=%q\n' "$ACTIONS_ID_TOKEN_REQUEST_URL" \
-            "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$AUDIENCE" "${PACKAGES_URL%/}" > "$bin/oidc.env" )
+            "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$AUDIENCE" "$o" > "$bin/oidc.env" )
           cat > "$bin/docker-credential-nora" <<'EOF'
           #!/usr/bin/env bash
           set -euo pipefail

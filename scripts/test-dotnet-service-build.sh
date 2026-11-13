@@ -135,7 +135,7 @@ chmod 755 "$n/bin/curl"
 echo '{"auths":{"515260921971.dkr.ecr.us-west-2.amazonaws.com":{"auth":"x"}}}' > "$n/home/.docker/config.json"
 install() { # <dir> <audience>: run the block with a job's OIDC env, as the workflow step does
   mkdir -p "$1/tmp"; : > "$1/path"
-  HOME="$n/home" RUNNER_TEMP="$1/tmp" GITHUB_PATH="$1/path" AUDIENCE="$2" PACKAGES_URL=https://packages.maestra.io \
+  HOME="$n/home" RUNNER_TEMP="$1/tmp" GITHUB_PATH="$1/path" AUDIENCE="$2" PACKAGES_URL="${3:-https://packages.maestra.io}" \
     ACTIONS_ID_TOKEN_REQUEST_TOKEN=x ACTIONS_ID_TOKEN_REQUEST_URL="https://t/?v=1" bash -c "set -eo pipefail; $cred"
 }
 # get <dir>: the helper as tox runs it, with an environment that has PATH only
@@ -148,6 +148,9 @@ eq "$(jq -r '.ServerURL + " " + .Username + " " + (.Secret|test("^nrs_")|tostrin
   "packages.maestra.io token true" "nora helper get, scrubbed env"
 eq "$(NORA_SESSION=404 get "$n/ok" | jq -r '.Secret|test("^tok-")')" true "no exchange at nora: the JWT"
 if NORA_SESSION=500 get "$n/ok" >/dev/null 2>&1; then echo "FAIL nora helper: a failed exchange accepted"; exit 1; fi
+# python-package-publish hands its index URL: the exchange still goes to nora's origin
+install "$n/py" packages.maestra.io https://packages.maestra.io/simple/
+eq "$(get "$n/py" | jq -r '.Secret|test("^nrs_")')" true "index URL with a path: session at the origin"
 eq "$(stat -c %a "$n/ok/tmp/nora-bin/oidc.env" 2>/dev/null || stat -f %Lp "$n/ok/tmp/nora-bin/oidc.env")" 600 "oidc.env mode"
 install "$n/bad" wrong
 if get "$n/bad" >/dev/null 2>&1; then echo "FAIL nora helper: empty token accepted"; exit 1; fi
