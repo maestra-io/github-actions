@@ -589,6 +589,25 @@ steps:
 
 Test: `python3 nora-image-prewarm/prewarm.py --self-test` (selftest).
 
+## Mindbox lint images through nora (`check-encoding`, `translation-checker`)
+
+Drop-ins, same inputs, for `mindbox-cloud/check-encoding` and
+`mindbox-cloud/github-actions/localization/translation-checker`: Docker actions whose images
+(`mindboxmoscow/check-encoding`, `mindboxmoscow/translation-checker-gha`, Mindbox's Docker Hub)
+the runner pulls in "Set up job", past nora. Here the same images, pinned `tag@digest`, are
+pulled through `packages.maestra.io/docker-hub` with the job's OIDC token
+([`nora-session/nora-docker-run.sh`](nora-session/nora-docker-run.sh), a throwaway
+`DOCKER_CONFIG`) and run over the workspace (issues-maestra#1649). Needs `id-token: write`.
+
+```yaml
+    permissions: { contents: read, id-token: write }
+    steps:
+      - uses: maestra-io/github-actions/check-encoding@<40-hex sha> # vX.Y.Z
+      - uses: maestra-io/github-actions/translation-checker@<40-hex sha> # vX.Y.Z
+```
+
+Tested by the `mindbox-lint` job of `selftest` (real pulls, run over this repo).
+
 ## Gitleaks on pull requests (`gitleaks.yml`)
 
 The reusable workflow [`gitleaks.yml`](.github/workflows/gitleaks.yml) runs the official
