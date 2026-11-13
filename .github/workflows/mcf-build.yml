@@ -1040,8 +1040,10 @@ jobs:
           bin="$RUNNER_TEMP/nora-bin"; mkdir -p "$bin"
           # The helper runs in the caller's environment, which tox and other test runners
           # scrub: the job's OIDC request URL and token go to a 0600 file next to it.
-          ( umask 077; printf 'url=%q\ntoken=%q\naud=%q\n' "$ACTIONS_ID_TOKEN_REQUEST_URL" \
-            "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$AUDIENCE" > "$bin/oidc.env" )
+          # nora's origin: PACKAGES_URL may carry a path (python-package-publish: …/simple/)
+          o="${PACKAGES_URL#*://}"; o="${PACKAGES_URL%%://*}://${o%%/*}"
+          ( umask 077; printf 'url=%q\ntoken=%q\naud=%q\nnora=%q\n' "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+            "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$AUDIENCE" "$o" > "$bin/oidc.env" )
           cat > "$bin/docker-credential-nora" <<'EOF'
           #!/usr/bin/env bash
           set -euo pipefail
@@ -1051,6 +1053,18 @@ jobs:
           t=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $token" \
             "$url&audience=$aud" | jq -r '.value // empty')
           [ -n "$t" ]
+          # Testcontainers keeps the first credential for its whole run, so a ~5 min JWT failed
+          # pulls made later (api-mimic#72): hand out nora's 1 h session token for it instead.
+          # ponytail: a test process over 1 h still outlives it; 403/404 = no exchange, the JWT.
+          # the body to a 0600 file: curl truncates it before a retry, stdout would keep every attempt's
+          f=$(mktemp); trap 'rm -f "$f"' EXIT
+          code=$(curl -sS --retry 3 --connect-timeout 10 --max-time 30 -X POST -H "Authorization: Bearer $t" \
+            -o "$f" -w '%{http_code}' "$nora/api/oidc/session")
+          case "$code" in
+            200) t=$(jq -r '.token // empty' "$f"); [[ "$t" == nrs_* ]] ;;
+            403|404) ;;
+            *) exit 1 ;;
+          esac
           jq -cn --arg s "$server" --arg t "$t" '{ServerURL: $s, Username: "token", Secret: $t}'
           EOF
           chmod 755 "$bin/docker-credential-nora"
@@ -1128,8 +1142,10 @@ jobs:
           bin="$RUNNER_TEMP/nora-bin"; mkdir -p "$bin"
           # The helper runs in the caller's environment, which tox and other test runners
           # scrub: the job's OIDC request URL and token go to a 0600 file next to it.
-          ( umask 077; printf 'url=%q\ntoken=%q\naud=%q\n' "$ACTIONS_ID_TOKEN_REQUEST_URL" \
-            "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$AUDIENCE" > "$bin/oidc.env" )
+          # nora's origin: PACKAGES_URL may carry a path (python-package-publish: …/simple/)
+          o="${PACKAGES_URL#*://}"; o="${PACKAGES_URL%%://*}://${o%%/*}"
+          ( umask 077; printf 'url=%q\ntoken=%q\naud=%q\nnora=%q\n' "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+            "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$AUDIENCE" "$o" > "$bin/oidc.env" )
           cat > "$bin/docker-credential-nora" <<'EOF'
           #!/usr/bin/env bash
           set -euo pipefail
@@ -1139,6 +1155,18 @@ jobs:
           t=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $token" \
             "$url&audience=$aud" | jq -r '.value // empty')
           [ -n "$t" ]
+          # Testcontainers keeps the first credential for its whole run, so a ~5 min JWT failed
+          # pulls made later (api-mimic#72): hand out nora's 1 h session token for it instead.
+          # ponytail: a test process over 1 h still outlives it; 403/404 = no exchange, the JWT.
+          # the body to a 0600 file: curl truncates it before a retry, stdout would keep every attempt's
+          f=$(mktemp); trap 'rm -f "$f"' EXIT
+          code=$(curl -sS --retry 3 --connect-timeout 10 --max-time 30 -X POST -H "Authorization: Bearer $t" \
+            -o "$f" -w '%{http_code}' "$nora/api/oidc/session")
+          case "$code" in
+            200) t=$(jq -r '.token // empty' "$f"); [[ "$t" == nrs_* ]] ;;
+            403|404) ;;
+            *) exit 1 ;;
+          esac
           jq -cn --arg s "$server" --arg t "$t" '{ServerURL: $s, Username: "token", Secret: $t}'
           EOF
           chmod 755 "$bin/docker-credential-nora"
@@ -1363,8 +1391,10 @@ jobs:
           bin="$RUNNER_TEMP/nora-bin"; mkdir -p "$bin"
           # The helper runs in the caller's environment, which tox and other test runners
           # scrub: the job's OIDC request URL and token go to a 0600 file next to it.
-          ( umask 077; printf 'url=%q\ntoken=%q\naud=%q\n' "$ACTIONS_ID_TOKEN_REQUEST_URL" \
-            "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$AUDIENCE" > "$bin/oidc.env" )
+          # nora's origin: PACKAGES_URL may carry a path (python-package-publish: …/simple/)
+          o="${PACKAGES_URL#*://}"; o="${PACKAGES_URL%%://*}://${o%%/*}"
+          ( umask 077; printf 'url=%q\ntoken=%q\naud=%q\nnora=%q\n' "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+            "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$AUDIENCE" "$o" > "$bin/oidc.env" )
           cat > "$bin/docker-credential-nora" <<'EOF'
           #!/usr/bin/env bash
           set -euo pipefail
@@ -1374,6 +1404,18 @@ jobs:
           t=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $token" \
             "$url&audience=$aud" | jq -r '.value // empty')
           [ -n "$t" ]
+          # Testcontainers keeps the first credential for its whole run, so a ~5 min JWT failed
+          # pulls made later (api-mimic#72): hand out nora's 1 h session token for it instead.
+          # ponytail: a test process over 1 h still outlives it; 403/404 = no exchange, the JWT.
+          # the body to a 0600 file: curl truncates it before a retry, stdout would keep every attempt's
+          f=$(mktemp); trap 'rm -f "$f"' EXIT
+          code=$(curl -sS --retry 3 --connect-timeout 10 --max-time 30 -X POST -H "Authorization: Bearer $t" \
+            -o "$f" -w '%{http_code}' "$nora/api/oidc/session")
+          case "$code" in
+            200) t=$(jq -r '.token // empty' "$f"); [[ "$t" == nrs_* ]] ;;
+            403|404) ;;
+            *) exit 1 ;;
+          esac
           jq -cn --arg s "$server" --arg t "$t" '{ServerURL: $s, Username: "token", Secret: $t}'
           EOF
           chmod 755 "$bin/docker-credential-nora"
@@ -1710,8 +1752,10 @@ jobs:
           bin="$RUNNER_TEMP/nora-bin"; mkdir -p "$bin"
           # The helper runs in the caller's environment, which tox and other test runners
           # scrub: the job's OIDC request URL and token go to a 0600 file next to it.
-          ( umask 077; printf 'url=%q\ntoken=%q\naud=%q\n' "$ACTIONS_ID_TOKEN_REQUEST_URL" \
-            "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$AUDIENCE" > "$bin/oidc.env" )
+          # nora's origin: PACKAGES_URL may carry a path (python-package-publish: …/simple/)
+          o="${PACKAGES_URL#*://}"; o="${PACKAGES_URL%%://*}://${o%%/*}"
+          ( umask 077; printf 'url=%q\ntoken=%q\naud=%q\nnora=%q\n' "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+            "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$AUDIENCE" "$o" > "$bin/oidc.env" )
           cat > "$bin/docker-credential-nora" <<'EOF'
           #!/usr/bin/env bash
           set -euo pipefail
@@ -1721,6 +1765,18 @@ jobs:
           t=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $token" \
             "$url&audience=$aud" | jq -r '.value // empty')
           [ -n "$t" ]
+          # Testcontainers keeps the first credential for its whole run, so a ~5 min JWT failed
+          # pulls made later (api-mimic#72): hand out nora's 1 h session token for it instead.
+          # ponytail: a test process over 1 h still outlives it; 403/404 = no exchange, the JWT.
+          # the body to a 0600 file: curl truncates it before a retry, stdout would keep every attempt's
+          f=$(mktemp); trap 'rm -f "$f"' EXIT
+          code=$(curl -sS --retry 3 --connect-timeout 10 --max-time 30 -X POST -H "Authorization: Bearer $t" \
+            -o "$f" -w '%{http_code}' "$nora/api/oidc/session")
+          case "$code" in
+            200) t=$(jq -r '.token // empty' "$f"); [[ "$t" == nrs_* ]] ;;
+            403|404) ;;
+            *) exit 1 ;;
+          esac
           jq -cn --arg s "$server" --arg t "$t" '{ServerURL: $s, Username: "token", Secret: $t}'
           EOF
           chmod 755 "$bin/docker-credential-nora"
@@ -1947,8 +2003,10 @@ jobs:
           bin="$RUNNER_TEMP/nora-bin"; mkdir -p "$bin"
           # The helper runs in the caller's environment, which tox and other test runners
           # scrub: the job's OIDC request URL and token go to a 0600 file next to it.
-          ( umask 077; printf 'url=%q\ntoken=%q\naud=%q\n' "$ACTIONS_ID_TOKEN_REQUEST_URL" \
-            "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$AUDIENCE" > "$bin/oidc.env" )
+          # nora's origin: PACKAGES_URL may carry a path (python-package-publish: …/simple/)
+          o="${PACKAGES_URL#*://}"; o="${PACKAGES_URL%%://*}://${o%%/*}"
+          ( umask 077; printf 'url=%q\ntoken=%q\naud=%q\nnora=%q\n' "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+            "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$AUDIENCE" "$o" > "$bin/oidc.env" )
           cat > "$bin/docker-credential-nora" <<'EOF'
           #!/usr/bin/env bash
           set -euo pipefail
@@ -1958,6 +2016,18 @@ jobs:
           t=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $token" \
             "$url&audience=$aud" | jq -r '.value // empty')
           [ -n "$t" ]
+          # Testcontainers keeps the first credential for its whole run, so a ~5 min JWT failed
+          # pulls made later (api-mimic#72): hand out nora's 1 h session token for it instead.
+          # ponytail: a test process over 1 h still outlives it; 403/404 = no exchange, the JWT.
+          # the body to a 0600 file: curl truncates it before a retry, stdout would keep every attempt's
+          f=$(mktemp); trap 'rm -f "$f"' EXIT
+          code=$(curl -sS --retry 3 --connect-timeout 10 --max-time 30 -X POST -H "Authorization: Bearer $t" \
+            -o "$f" -w '%{http_code}' "$nora/api/oidc/session")
+          case "$code" in
+            200) t=$(jq -r '.token // empty' "$f"); [[ "$t" == nrs_* ]] ;;
+            403|404) ;;
+            *) exit 1 ;;
+          esac
           jq -cn --arg s "$server" --arg t "$t" '{ServerURL: $s, Username: "token", Secret: $t}'
           EOF
           chmod 755 "$bin/docker-credential-nora"
