@@ -109,19 +109,25 @@ eq "$(aws_run 9)" "5 4 0" "never: 5 tries, then the AWS steps report it"
 grep -q '::warning::no AWS credentials' "$work/out" || { cat "$work/out"; echo "FAIL aws-credentials: no warning"; exit 1; }
 echo "dotnet-service-build aws-credentials: OK"
 
-# ── nora-cred-helper: a fresh OIDC token per docker pull ───────────────────────
+# ── nora-cred-helper: a fresh OIDC token per docker pull, exchanged for a nora session ──
 cred=$(awk 'index($0,"# >>> nora-cred-helper"){n++} n==1{print} n==1&&index($0,"# <<< nora-cred-helper"){exit}' "$wf" | sed 's/^          //')
 [ -n "$cred" ] || { echo "nora-cred-helper block not found in $wf"; exit 1; }
 # Every job that pulls through nora carries the same copy (reusable workflows cannot share a file).
-for f in dotnet-service-build:2 service-build:2 mcf-build:5 nuget-package-publish:1 python-package-publish:1; do
+for f in dotnet-service-build:2 service-build:2 mcf-build:5 nuget-package-publish:1 python-package-publish:1 mirror-test-images:1; do
   w="$here/../.github/workflows/${f%%:*}.yml"
   got=$(sed -n '/# >>> nora-cred-helper/,/# <<< nora-cred-helper/p' "$w" | sed 's/^          //')
   want=$(for _ in $(seq "${f##*:}"); do printf '%s\n' "$cred"; done)
   [ "$got" = "${want%$'\n'}" ] || { echo "FAIL nora-cred-helper: ${f%%:*}.yml copies differ or are missing"; exit 1; }
 done
 n="$work/nora"; mkdir -p "$n/bin" "$n/home/.docker" "$n/tmp"
+# NORA_SESSION=<http code> the exchange answers (200 = an nrs_ token)
 cat > "$n/bin/curl" <<'C'
 #!/usr/bin/env bash
+if [[ "$*" == *"https://packages.maestra.io/api/oidc/session"* ]]; then
+  [[ "$*" == *"Bearer tok-"* ]] || exit 22
+  code=${NORA_SESSION:-200}; [ "$code" = 200 ] && echo '{"token":"nrs_'"$RANDOM"'"}' || echo '{}'
+  echo "$code"; exit 0
+fi
 [[ "$*" == *"audience=packages.maestra.io"* ]] && echo '{"value":"tok-'"$RANDOM"'"}'
 C
 chmod 755 "$n/bin/curl"
@@ -132,12 +138,15 @@ install() { # <dir> <audience>: run the block with a job's OIDC env, as the work
     ACTIONS_ID_TOKEN_REQUEST_TOKEN=x ACTIONS_ID_TOKEN_REQUEST_URL="https://t/?v=1" bash -c "set -eo pipefail; $cred"
 }
 # get <dir>: the helper as tox runs it, with an environment that has PATH only
-get() { printf %s packages.maestra.io | env -i PATH="$n/bin:$PATH" "$(cat "$1/path")/docker-credential-nora" get; }
+get() { printf %s packages.maestra.io | env -i PATH="$n/bin:$PATH" NORA_SESSION="${NORA_SESSION:-200}" "$(cat "$1/path")/docker-credential-nora" get; }
 install "$n/ok" packages.maestra.io
 eq "$(jq -c '{a: (.auths|keys), h: .credHelpers}' "$n/home/.docker/config.json")" \
   '{"a":["515260921971.dkr.ecr.us-west-2.amazonaws.com"],"h":{"packages.maestra.io":"nora"}}' "nora config keeps auths"
-eq "$(jq -r '.ServerURL + " " + .Username + " " + (.Secret|test("^tok-")|tostring)' <<<"$(get "$n/ok")")" \
+# the 1 h session token, not the JWT: Testcontainers keeps the first credential for its whole run
+eq "$(jq -r '.ServerURL + " " + .Username + " " + (.Secret|test("^nrs_")|tostring)' <<<"$(get "$n/ok")")" \
   "packages.maestra.io token true" "nora helper get, scrubbed env"
+eq "$(NORA_SESSION=404 get "$n/ok" | jq -r '.Secret|test("^tok-")')" true "no exchange at nora: the JWT"
+if NORA_SESSION=500 get "$n/ok" >/dev/null 2>&1; then echo "FAIL nora helper: a failed exchange accepted"; exit 1; fi
 eq "$(stat -c %a "$n/ok/tmp/nora-bin/oidc.env" 2>/dev/null || stat -f %Lp "$n/ok/tmp/nora-bin/oidc.env")" 600 "oidc.env mode"
 install "$n/bad" wrong
 if get "$n/bad" >/dev/null 2>&1; then echo "FAIL nora helper: empty token accepted"; exit 1; fi
