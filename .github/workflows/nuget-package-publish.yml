@@ -45,6 +45,8 @@
 #                        value naming this account's ECR (515260921971...us-west-2) triggers
 #                        an ECR login (instance role, read only), so tests pull the
 #                        mirrored test-images/* (mirror-test-images.yml) instead of quay.io.
+#                        TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX defaults to
+#                        packages.maestra.io/docker-hub/ (nora, issues-maestra#1649).
 #
 # Auth: nora verifies the GitHub Actions OIDC token passed as the NuGet API key
 # (X-NuGet-ApiKey, maestra-io/nora#1), so no stored secret. --skip-duplicate makes a
@@ -276,7 +278,6 @@ jobs:
             core.setOutput('token', t);
 
       - name: test-env
-        if: ${{ inputs.test-env != '' }}
         env:
           TEST_ENV: ${{ inputs.test-env }}
           ECR_REGISTRY: 515260921971.dkr.ecr.us-west-2.amazonaws.com
@@ -292,6 +293,11 @@ jobs:
             printf '%s\n' "$line" >> "$GITHUB_ENV"
             echo "test env: ${key}"
           done <<< "$TEST_ENV"
+          # Testcontainers pulls Docker Hub images (test images and its ryuk reaper) through
+          # nora's proxy and its 3-day quarantine, not Docker Hub / RunsOn's ECR pull-through
+          # (issues-maestra#1649); a test-env line with its own prefix wins.
+          grep -q '^TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX=' "$RUNNER_TEMP/test.env" \
+            || echo "TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX=packages.maestra.io/docker-hub/" | tee -a "$RUNNER_TEMP/test.env" >> "$GITHUB_ENV"
           # Testcontainers pulls with ~/.docker/config.json; log in to this
           # account's ECR when a value names it (instance role, read only).
           if grep -qF "$ECR_REGISTRY" "$RUNNER_TEMP/test.env"; then
@@ -339,6 +345,12 @@ jobs:
           fi
           dotnet pack "${sln[@]}" --no-build --configuration Release --output "$RUNNER_TEMP/nupkg" "${ver[@]}" "${repo[@]}"
           ls -1 "$RUNNER_TEMP/nupkg"
+
+      # Where the test containers came from (issues-maestra#1649): Testcontainers' Docker Hub
+      # images show as packages.maestra.io/docker-hub/…
+      - name: test images
+        if: ${{ always() && inputs.run-tests }}
+        run: docker image ls --format '{{.Repository}}:{{.Tag}}' | sort || true
 
       # Flaky-test telemetry (maestra-io/issues-maestra#1592): TRX of every attempt, pass or fail.
       # github.job is the CALLED job id (test/package), the same for every call of this
