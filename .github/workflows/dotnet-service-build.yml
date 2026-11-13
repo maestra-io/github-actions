@@ -76,6 +76,8 @@
 #                       single-line and not secret (they show in the log). Images on
 #                       this account's ECR are pulled after an ECR login (see
 #                       mirror-test-images.yml for test-images/*).
+#                       TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX defaults to
+#                       packages.maestra.io/docker-hub/ (nora, issues-maestra#1649).
 #   pr-images           Build the images on pull_request too (default false: a PR runs
 #                       tests only; a broken Dockerfile surfaces in the release on the
 #                       default branch, before anything is pushed).
@@ -553,6 +555,11 @@ jobs:
             printf '%s\n' "$line" >> "$GITHUB_ENV"
             echo "test env: ${key}"
           done <<< "$TEST_ENV"
+          # Testcontainers pulls Docker Hub images (test images and its ryuk reaper) through
+          # nora's proxy and its 3-day quarantine, not Docker Hub / RunsOn's ECR pull-through
+          # (issues-maestra#1649); a test-env line with its own prefix wins.
+          grep -q '^TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX=' "$RUNNER_TEMP/test.env" \
+            || echo "TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX=packages.maestra.io/docker-hub/" | tee -a "$RUNNER_TEMP/test.env" >> "$GITHUB_ENV"
           # Testcontainers pulls with ~/.docker/config.json, and so does BuildKit
           # for the docker-test-target stage; log in to this account's ECR when a
           # value or that Dockerfile names it (instance role, read only).
@@ -964,6 +971,12 @@ jobs:
           VSTestLogger=trx VSTestResultsDirectory="$RUNNER_TEMP/test-results" \
             dotnet test --no-restore "${sln[@]}" --configuration Release "${filter[@]}" "${wae[@]}"
           # <<< dotnet-test
+
+      # Where the test containers came from (issues-maestra#1649): Testcontainers' Docker Hub
+      # images show as packages.maestra.io/docker-hub/…
+      - name: test images
+        if: ${{ always() }}
+        run: docker image ls --format '{{.Repository}}:{{.Tag}}' | sort || true
 
       # Flaky-test telemetry (maestra-io/issues-maestra#1592): TRX of every attempt, pass or fail.
       # github.job is the CALLED job id (test/package), the same for every call of this
