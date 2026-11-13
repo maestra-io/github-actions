@@ -38,6 +38,8 @@ on:
       - "go-nora/**"
       - "cargo-nora/**"
       - "nora-session/**"
+      - "check-encoding/**"
+      - "translation-checker/**"
       - "nora-image-prewarm/**"
       - ".github/workflows/pr-checks.yml"
       - ".github/workflows/base-images.yml"
@@ -214,6 +216,22 @@ jobs:
             grep -qF -- "$line" ansible/tests/test-host-limit-selector.sh \
               || { echo "::error::test no longer contains: $line"; exit 1; }
           done
+
+  # check-encoding and translation-checker for real: both images pulled through nora
+  # with the job's OIDC token (nora-session/nora-docker-run.sh) and run over this repo.
+  mindbox-lint:
+    runs-on: runs-on=${{ github.run_id }}-mindbox-lint/runner=t3a-small
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # nora pull
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./check-encoding
+      - uses: ./translation-checker
 
   # The shared PR checks on this repo's own pull requests, with the scripts and the
   # gitleaks config of the PR head. The workflow skips itself outside pull_request.
