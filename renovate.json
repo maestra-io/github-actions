@@ -32,6 +32,19 @@
         "DEPS_NPM: (?<depName>npm)@(?<currentValue>\\S+)"
       ],
       "datasourceTemplate": "npm"
+    },
+    {
+      "customType": "regex",
+      "description": "BuildKit image in the driver-opts of setup-buildx/action.yml and of the workflow copies (issues-maestra#1649; scripts/test-dotnet-service-build.sh asserts every copy is equal, so all of them move in one PR). Looked up on Docker Hub, the source nora proxies, like DEPS_BASE above.",
+      "managerFilePatterns": [
+        "/^setup-buildx/action\\.yml$/",
+        "/^\\.github/workflows/[^/]+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "packages\\.maestra\\.io/docker-hub/(?<depName>moby/buildkit):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
     }
   ],
   "packageRules": [
