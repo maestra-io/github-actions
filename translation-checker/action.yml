@@ -1,10 +1,11 @@
 name: "translation-checker"
 description: >-
   Drop-in for mindbox-cloud/github-actions/localization/translation-checker@658e582 (same
-  inputs): checks the Mindbox i18n files of a .NET solution. Its image,
-  mindboxmoscow/translation-checker-gha 1.0.69 (its `latest` since 2024-12-18), by digest,
-  pulled through nora (packages.maestra.io/docker-hub, issues-maestra#1649) instead of
-  Docker Hub. Needs `permissions: id-token: write`.
+  inputs): checks the Mindbox i18n files of a .NET solution. Runs our build of it,
+  maestra-io/localization-github-actions (image translation-checker-gha in this account's
+  private ECR, pinned by digest), instead of Mindbox's mindboxmoscow/translation-checker-gha
+  (issues-maestra#1649). Pulled with the runner's instance role (RunsOn, read only), the
+  same ECR login the shared workflows use; needs no token.
 
 inputs:
   skipInclusionCheck:
@@ -34,7 +35,24 @@ runs:
         allowCyrillicSymbolsInCSharpComments: ${{ inputs.allowCyrillicSymbolsInCSharpComments }}
         allowOldFormatTranslationFiles: ${{ inputs.allowOldFormatTranslationFiles }}
         requireDivisionAgnosticTranslations: ${{ inputs.requireDivisionAgnosticTranslations }}
-        IMAGE_ENV: skipInclusionCheck allowCyrillicSymbolsInCSharpComments allowOldFormatTranslationFiles requireDivisionAgnosticTranslations
+        IMAGE: 515260921971.dkr.ecr.us-west-2.amazonaws.com/translation-checker-gha:1.1.1@sha256:22eb2b8eee26ca1027878b15407d0e89ff4d8232ed03be519bd69d5739f7b5ca
       run: |
-        bash "${GITHUB_ACTION_PATH}/../nora-session/nora-docker-run.sh" \
-          packages.maestra.io/docker-hub/mindboxmoscow/translation-checker-gha:1.0.69@sha256:93bc6ea87be4aae205dbc374496a290f2f46f0cab125daa32cb015470f7d1ae5
+        set -euo pipefail
+        registry="${IMAGE%%/*}"
+        region=$(cut -d. -f4 <<< "$registry")
+        # A throwaway docker config: the caller's ~/.docker/config.json stays as it was.
+        DOCKER_CONFIG=$(mktemp -d); export DOCKER_CONFIG
+        trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+        # A fresh RunsOn instance can lack its instance-role credentials for a few seconds.
+        for i in 1 2 3 4 5; do
+          aws sts get-caller-identity --region "$region" >/dev/null 2>&1 && break
+          [ "$i" -lt 5 ] && sleep 10
+        done
+        aws ecr get-login-password --region "$region" \
+          | docker login --username AWS --password-stdin "$registry" >/dev/null \
+          || { echo "::error::no AWS credentials for the ECR pull of $IMAGE: translation-checker needs a RunsOn runner (instance role)"; exit 1; }
+        docker pull "$IMAGE"
+        docker run --rm -v "${GITHUB_WORKSPACE:-$PWD}:/github/workspace" -w /github/workspace \
+          -e skipInclusionCheck -e allowCyrillicSymbolsInCSharpComments \
+          -e allowOldFormatTranslationFiles -e requireDivisionAgnosticTranslations \
+          "$IMAGE"

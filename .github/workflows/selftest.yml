@@ -218,14 +218,13 @@ jobs:
           done
 
   # check-encoding and translation-checker for real over this repo: check-encoding runs
-  # the Python port, translation-checker's image is pulled through nora with the job's
-  # OIDC token (nora-session/nora-docker-run.sh).
+  # the Python port, translation-checker pulls our image from ECR with the runner's
+  # instance role. No id-token: neither action needs one.
   mindbox-lint:
     runs-on: runs-on=${{ github.run_id }}-mindbox-lint/runner=t3a-small
     timeout-minutes: 10
     permissions:
       contents: read
-      id-token: write # nora pull
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
