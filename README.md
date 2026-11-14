@@ -600,13 +600,17 @@ Drop-ins, same inputs, for `mindbox-cloud/check-encoding` and
   on the runner ([`check-encoding/check-encoding.sh`](check-encoding/check-encoding.sh)): every
   tracked file with the extensions must decode as UTF-8 (ASCII included). No image, no token.
   `command: fix` and a `target_encoding` other than UTF-8/ASCII fail instead of passing.
-- `translation-checker` pulls `mindboxmoscow/translation-checker-gha`, pinned `tag@digest`,
-  through `packages.maestra.io/docker-hub` with the job's OIDC token
-  ([`nora-session/nora-docker-run.sh`](nora-session/nora-docker-run.sh), a throwaway
-  `DOCKER_CONFIG`) and runs it over the workspace. Needs `id-token: write`.
+- `translation-checker` runs our build of the checker:
+  [maestra-io/localization-github-actions](https://github.com/maestra-io/localization-github-actions)
+  releases `translation-checker-gha:<release>` to this account's private ECR, and the action
+  pins it by `tag@digest`. It logs in to ECR with the runner's instance role (RunsOn, read only;
+  the same login the shared workflows use), using a throwaway `DOCKER_CONFIG`, and runs the image
+  over the workspace. No token. A bump: release that repo, then update the image in
+  [`translation-checker/action.yml`](translation-checker/action.yml).
 
 ```yaml
-    permissions: { contents: read, id-token: write }
+    runs-on: runs-on=${{ github.run_id }}/pool=small   # RunsOn: the ECR pull uses its instance role
+    permissions: { contents: read }
     steps:
       - uses: actions/checkout@<version tag>
       - uses: maestra-io/github-actions/check-encoding@<40-hex sha> # vX.Y.Z
