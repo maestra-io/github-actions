@@ -33,7 +33,10 @@
 # FROM/WORKDIR (or its last dotnet RUN): only the <id>/<version> folders its
 # obj/project.assets.json files name (COPY_RUN below), not the whole mount, which on a
 # sticky disk holds every version ever restored (54-354 s copies, unbounded images);
-# the whole-mount `cp -a /tmp/nuget-cache/.` line of PR 147 is upgraded to it.
+# the whole-mount `cp -a /tmp/nuget-cache/.` line of PR 147 is upgraded to it. A package
+# the mount lacks (restore layer from the layer cache, mount cold on a fresh runner) is
+# downloaded from the feed with the source credentials, not a failed build
+# (operations-metrics-exporter PR 52); older copies are upgraded on the next run.
 # Dockerfiles converted earlier get the cache mount on their next run.
 # Idempotent: a second run changes nothing.
 #
@@ -65,17 +68,24 @@ FLAG = re.compile(r'^--\S+\s*')
 COPY_CACHE = '--mount=type=cache,id=nuget,target=/tmp/nuget-cache,sharing=locked'
 # Copies only the packages of this stage's obj/project.assets.json files (the "path",
 # <id>/<version> lowercase, of each "type": "package" library), not the whole mount (every version the disk ever restored);
-# fails when there is no assets file, one restored elsewhere, or a package is missing.
-COPY_RUN = ('RUN ' + COPY_CACHE + " set -e; find / \\( -path /proc -o -path /sys -o -path /tmp/nuget-cache"
-            " -o -path /usr/share/dotnet -o -path @D@ \\) -prune -o -path '*/obj/project.assets.json' -print"
-            " > /tmp/nuget-assets; [ -s /tmp/nuget-assets ] || { echo 'no obj/project.assets.json: no NuGet"
-            " packages to copy' >&2; exit 1; }; while read -r f; do grep -q '\"@D@/\\{0,1\\}\"' \"$f\" || { echo"
-            " \"$f restores outside @D@\" >&2; exit 1; }; done < /tmp/nuget-assets; while read -r f; do"
-            " sed -n '/^ *\"type\": \"package\"/,/^ *\"path\": /s|^ *\"path\": \"\\([^\"]*\\)\",*$|\\1|p' \"$f\";"
-            " done < /tmp/nuget-assets | sort -u > /tmp/nuget-pkgs; while read -r p; do test -d \"/tmp/nuget-cache/$p\""
-            " || { echo \"$p is not in the NuGet cache mount\" >&2; exit 1; }; mkdir -p \"@D@/$p\";"
-            " cp -a \"/tmp/nuget-cache/$p/.\" \"@D@/$p/\"; done < /tmp/nuget-pkgs;"
-            " echo \"copied $(wc -l < /tmp/nuget-pkgs) NuGet packages into @D@\"; rm /tmp/nuget-assets /tmp/nuget-pkgs")
+# fails when there is no assets file or one restored elsewhere. A package missing from the mount (a restore layer
+# from the layer cache over a cold mount: a fresh runner, a seed that missed) is downloaded from the feed with the
+# source credentials (@M@): PackageDownload of exactly those <id>/<version> in a throwaway project, the stage's own
+# obj files untouched; it fails when the feed does not have one either.
+COPY_RUN = ('RUN ' + COPY_CACHE + ' @M@ ' +
+            r"""set -e; find / \( -path /proc -o -path /sys -o -path /tmp/nuget-cache -o -path /usr/share/dotnet -o -path @D@ \) -prune -o -path '*/obj/project.assets.json' -print > /tmp/nuget-assets; """
+            r"""[ -s /tmp/nuget-assets ] || { echo 'no obj/project.assets.json: no NuGet packages to copy' >&2; exit 1; }; """
+            r"""while read -r f; do grep -q '"@D@/\{0,1\}"' "$f" || { echo "$f restores outside @D@" >&2; exit 1; }; done < /tmp/nuget-assets; """
+            r"""while read -r f; do sed -n '/^ *"type": "package"/,/^ *"path": /s|^ *"path": "\([^"]*\)",*$|\1|p' "$f"; done < /tmp/nuget-assets | sort -u > /tmp/nuget-pkgs; """
+            r""": > /tmp/nuget-miss; while read -r p; do if test -d "/tmp/nuget-cache/$p"; then mkdir -p "@D@/$p"; cp -a "/tmp/nuget-cache/$p/." "@D@/$p/"; else echo "$p" >> /tmp/nuget-miss; fi; done < /tmp/nuget-pkgs; """
+            r"""echo "copied $(($(wc -l < /tmp/nuget-pkgs) - $(wc -l < /tmp/nuget-miss))) NuGet packages into @D@"; """
+            r"""if [ -s /tmp/nuget-miss ]; then echo "$(wc -l < /tmp/nuget-miss) NuGet packages are not in the cache mount (cached restore layer, cold mount): downloading them into @D@"; """
+            r"""f=$(head -n 1 /tmp/nuget-assets); mkdir -p /tmp/nuget-fetch; """
+            r"""{ echo "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>$(sed -n 's|^ *"targetAlias": "\([^"]*\)",*$|\1|p' "$f" | head -n 1)</TargetFramework></PropertyGroup><ItemGroup>"; """
+            r"""sed 's|^\(.*\)/\(.*\)$|<PackageDownload Include="\1" Version="[\2]" />|' /tmp/nuget-miss; echo '</ItemGroup></Project>'; } > /tmp/nuget-fetch/fetch.csproj; """
+            r"""dotnet restore /tmp/nuget-fetch/fetch.csproj --packages @D@ --configfile "$(sed -n '/"configFilePaths": \[/,/]/s|^ *"\([^"]*\)",*$|\1|p' "$f" | head -n 1)"; """
+            r"""while read -r p; do test -d "@D@/$p" || { echo "$p is neither in the NuGet cache mount nor on the feed" >&2; exit 1; }; done < /tmp/nuget-miss; rm -r /tmp/nuget-fetch; fi; """
+            r"""rm /tmp/nuget-assets /tmp/nuget-pkgs /tmp/nuget-miss""")
 
 def instructions(lines):
     """[(first, last)] line ranges of logical instructions (comments/blanks excluded)."""
@@ -281,7 +291,7 @@ for path in sys.argv[1:]:
             k = a - 1  # the comment lines right above it explain it: drop them too
             while k >= 0 and lines[k].strip().startswith('#') and not lines[k].strip().startswith('###'):
                 drop.add(k); k -= 1
-        elif DOTNET.search(cmd):
+        elif DOTNET.search(cmd) and COPY_CACHE not in text:  # the runtime copy's restore is not a stage RUN
             if 'id=NUGET_CREDENTIALS' not in text:
                 runs.append(a)
             d, why = cache_target(cmd, st)
@@ -350,7 +360,7 @@ for path in sys.argv[1:]:
         # from its own filesystem: copy them out of the mount into that image.
         for s in starts:
             if s.copies != 'new' and dirs:
-                run = COPY_RUN.replace('@D@', next(iter(dirs)))
+                run = COPY_RUN.replace('@D@', next(iter(dirs))).replace('@M@', mounts)
                 if s.copies is None:
                     inserts.append((s.at, run))
                 elif lines[s.copies].rstrip('\r\n') != run:
