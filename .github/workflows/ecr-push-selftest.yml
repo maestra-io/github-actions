@@ -34,7 +34,57 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # setup-buildx pulls moby/buildkit through nora (packages.maestra.io, issues-maestra#1649)
+      # with ~/.docker/config.json. nora takes the OIDC token, which lives minutes: a credential
+      # helper mints a fresh one per pull.
+      - name: nora docker credentials
+        env:
+          AUDIENCE: packages.maestra.io
+          PACKAGES_URL: https://packages.maestra.io
+        run: |
+          # >>> nora-cred-helper (scripts/test-dotnet-service-build.sh runs this block; all copies equal)
+          bin="$RUNNER_TEMP/nora-bin"; mkdir -p "$bin"
+          # The helper runs in the caller's environment, which tox and other test runners
+          # scrub: the job's OIDC request URL and token go to a 0600 file next to it.
+          # nora's origin: PACKAGES_URL may carry a path (python-package-publish: …/simple/)
+          o="${PACKAGES_URL#*://}"; o="${PACKAGES_URL%%://*}://${o%%/*}"
+          ( umask 077; printf 'url=%q\ntoken=%q\naud=%q\nnora=%q\n' "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+            "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$AUDIENCE" "$o" > "$bin/oidc.env" )
+          cat > "$bin/docker-credential-nora" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          [ "${1:-}" = get ] || exit 0
+          server=$(cat) # docker sends it without a newline
+          . "${BASH_SOURCE[0]%/*}/oidc.env"
+          t=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $token" \
+            "$url&audience=$aud" | jq -r '.value // empty')
+          [ -n "$t" ]
+          # Testcontainers keeps the first credential for its whole run, so a ~5 min JWT failed
+          # pulls made later (api-mimic#72): hand out nora's 1 h session token for it instead.
+          # ponytail: a test process over 1 h still outlives it; 403/404 = no exchange, the JWT.
+          # the body to a 0600 file: curl truncates it before a retry, stdout would keep every attempt's
+          f=$(mktemp); trap 'rm -f "$f"' EXIT
+          code=$(curl -sS --retry 3 --connect-timeout 10 --max-time 30 -X POST -H "Authorization: Bearer $t" \
+            -o "$f" -w '%{http_code}' "$nora/api/oidc/session")
+          case "$code" in
+            200) t=$(jq -r '.token // empty' "$f"); [[ "$t" == nrs_* ]] ;;
+            403|404) ;;
+            *) exit 1 ;;
+          esac
+          jq -cn --arg s "$server" --arg t "$t" '{ServerURL: $s, Username: "token", Secret: $t}'
+          EOF
+          chmod 755 "$bin/docker-credential-nora"
+          echo "$bin" >> "$GITHUB_PATH"
+          host="${PACKAGES_URL#*://}"; host="${host%%/*}"
+          cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"; mkdir -p "$(dirname "$cfg")"
+          [ -s "$cfg" ] || echo '{}' > "$cfg"
+          jq --arg h "$host" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+          # <<< nora-cred-helper
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          # moby/buildkit through nora, not Docker Hub (issues-maestra#1649); every copy equal:
+          # scripts/test-dotnet-service-build.sh
+          driver-opts: image=packages.maestra.io/docker-hub/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
       - name: contexts
         run: |
           for v in a b; do

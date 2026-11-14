@@ -113,7 +113,7 @@ echo "dotnet-service-build aws-credentials: OK"
 cred=$(awk 'index($0,"# >>> nora-cred-helper"){n++} n==1{print} n==1&&index($0,"# <<< nora-cred-helper"){exit}' "$wf" | sed 's/^          //')
 [ -n "$cred" ] || { echo "nora-cred-helper block not found in $wf"; exit 1; }
 # Every job that pulls through nora carries the same copy (reusable workflows cannot share a file).
-for f in dotnet-service-build:2 service-build:2 mcf-build:5 nuget-package-publish:1 python-package-publish:1 mirror-test-images:1; do
+for f in dotnet-service-build:2 service-build:2 mcf-build:5 nuget-package-publish:1 python-package-publish:1 mirror-test-images:1 ecr-push-selftest:1; do
   w="$here/../.github/workflows/${f%%:*}.yml"
   got=$(sed -n '/# >>> nora-cred-helper/,/# <<< nora-cred-helper/p' "$w" | sed 's/^          //')
   want=$(for _ in $(seq "${f##*:}"); do printf '%s\n' "$cred"; done)
@@ -155,3 +155,23 @@ eq "$(stat -c %a "$n/ok/tmp/nora-bin/oidc.env" 2>/dev/null || stat -f %Lp "$n/ok
 install "$n/bad" wrong
 if get "$n/bad" >/dev/null 2>&1; then echo "FAIL nora helper: empty token accepted"; exit 1; fi
 echo "dotnet-service-build nora-cred-helper: OK"
+
+# ── setup-buildx: moby/buildkit through nora, pinned by digest (issues-maestra#1649) ──
+# Without driver-opts the docker-container driver pulls moby/buildkit:buildx-stable-1 from
+# Docker Hub, past nora's quarantine. The daemon pulls it with ~/.docker/config.json, so the
+# job's nora-cred-helper must run first. Bump: every copy, a version nora has served >3 days.
+bk=$(awk '
+  FNR==1 { job=""; cred=0 }
+  /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { job=$1; cred=0 }
+  index($0, "# <<< nora-cred-helper") { cred=1 }
+  /uses: docker\/setup-buildx-action@/ { pend=FILENAME ":" FNR " " job; c=cred; next }
+  pend != "" && /^[[:space:]]*#/ { next }
+  pend != "" && /driver-opts:/ { sub(/.*driver-opts:[[:space:]]*/, ""); print pend " cred=" c " " $0; pend=""; next }
+  pend != "" && !/^[[:space:]]+(with:|[a-z-]+:)/ { print pend " cred=" c " none"; pend="" }
+' "$here"/../.github/workflows/*.yml)
+[ -n "$bk" ] || { echo "FAIL setup-buildx: no use found"; exit 1; }
+img='image=packages\.maestra\.io/docker-hub/moby/buildkit:v[0-9.]+@sha256:[0-9a-f]{64}$'
+bad=$(grep -vE " cred=1 $img" <<<"$bk" || true)
+[ -z "$bad" ] || { printf 'FAIL setup-buildx without the nora BuildKit image or nora login before it:\n%s\n' "$bad"; exit 1; }
+[ "$(awk '{print $NF}' <<<"$bk" | sort -u | wc -l | tr -d ' ')" = 1 ] || { printf 'FAIL setup-buildx: BuildKit copies differ:\n%s\n' "$bk"; exit 1; }
+echo "setup-buildx BuildKit via nora: OK ($(wc -l <<<"$bk" | tr -d ' ') uses)"
