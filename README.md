@@ -425,6 +425,25 @@ warning; any other answer fails the step. Needs `id-token: write`.
 
 Tested by [`scripts/test-nora-session.sh`](scripts/test-nora-session.sh) (stub `curl`, run by `selftest`).
 
+## BuildKit through nora (`setup-buildx`)
+
+`docker/setup-buildx-action`'s docker-container driver runs `moby/buildkit:buildx-stable-1`,
+pulled by the runner's Docker daemon straight from Docker Hub, past nora's 3-day quarantine
+(issues-maestra#1649). This composite is that action with the BuildKit image pinned by digest
+at `packages.maestra.io/docker-hub/moby/buildkit`, after the nora docker credential helper (the
+same block as the reusable workflows, so later packages.maestra.io pulls of the job work too).
+Inputs: `name`, `driver-opts` (more options, one per line), `buildkitd-config-inline`, `cleanup`;
+output `name`. Needs `id-token: write`. The `docker` driver starts no BuildKit: keep
+`docker/setup-buildx-action` for it. SOC flags any other `docker/setup-buildx-action` without a
+nora `image=` (`github.package_sources_via_nora`).
+
+```yaml
+  - uses: maestra-io/github-actions/setup-buildx@<40-hex sha> # vX.Y.Z
+```
+
+`ecr-push-selftest` builds and pushes with it; `scripts/test-dotnet-service-build.sh` keeps every
+BuildKit pin and credential-helper copy equal.
+
 ## Terraform providers through nora (`terraform-nora`)
 
 Every `registry.terraform.io` provider installs from `https://packages.maestra.io/terraform/`

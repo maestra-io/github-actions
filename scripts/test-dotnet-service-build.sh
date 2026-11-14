@@ -113,12 +113,15 @@ echo "dotnet-service-build aws-credentials: OK"
 cred=$(awk 'index($0,"# >>> nora-cred-helper"){n++} n==1{print} n==1&&index($0,"# <<< nora-cred-helper"){exit}' "$wf" | sed 's/^          //')
 [ -n "$cred" ] || { echo "nora-cred-helper block not found in $wf"; exit 1; }
 # Every job that pulls through nora carries the same copy (reusable workflows cannot share a file).
-for f in dotnet-service-build:2 service-build:2 mcf-build:5 nuget-package-publish:1 python-package-publish:1 mirror-test-images:1 ecr-push-selftest:1; do
+for f in dotnet-service-build:2 service-build:2 mcf-build:5 nuget-package-publish:1 python-package-publish:1 mirror-test-images:1; do
   w="$here/../.github/workflows/${f%%:*}.yml"
   got=$(sed -n '/# >>> nora-cred-helper/,/# <<< nora-cred-helper/p' "$w" | sed 's/^          //')
   want=$(for _ in $(seq "${f##*:}"); do printf '%s\n' "$cred"; done)
   [ "$got" = "${want%$'\n'}" ] || { echo "FAIL nora-cred-helper: ${f%%:*}.yml copies differ or are missing"; exit 1; }
 done
+# the setup-buildx composite (its run: block sits two columns left of a workflow's)
+got=$(sed -n '/# >>> nora-cred-helper/,/# <<< nora-cred-helper/p' "$here/../setup-buildx/action.yml" | sed 's/^        //')
+[ "$got" = "$cred" ] || { echo "FAIL nora-cred-helper: setup-buildx/action.yml copy differs or is missing"; exit 1; }
 n="$work/nora"; mkdir -p "$n/bin" "$n/home/.docker" "$n/tmp"
 # NORA_SESSION=<http code> the exchange answers (200 = an nrs_ token)
 cat > "$n/bin/curl" <<'C'
@@ -166,9 +169,10 @@ bk=$(awk '
   index($0, "# <<< nora-cred-helper") { cred=1 }
   /uses: docker\/setup-buildx-action@/ { pend=FILENAME ":" FNR " " job; c=cred; next }
   pend != "" && /^[[:space:]]*#/ { next }
-  pend != "" && /driver-opts:/ { sub(/.*driver-opts:[[:space:]]*/, ""); print pend " cred=" c " " $0; pend=""; next }
+  pend != "" && blk { sub(/^[[:space:]]*/, ""); print pend " cred=" c " " $0; pend=""; blk=0; next }
+  pend != "" && /driver-opts:/ { sub(/.*driver-opts:[[:space:]]*/, ""); if ($0 == "|") { blk=1; next } print pend " cred=" c " " $0; pend=""; next }
   pend != "" && !/^[[:space:]]+(with:|[a-z-]+:)/ { print pend " cred=" c " none"; pend="" }
-' "$here"/../.github/workflows/*.yml)
+' "$here"/../.github/workflows/*.yml "$here/../setup-buildx/action.yml")
 [ -n "$bk" ] || { echo "FAIL setup-buildx: no use found"; exit 1; }
 img='image=packages\.maestra\.io/docker-hub/moby/buildkit:v[0-9.]+@sha256:[0-9a-f]{64}$'
 bad=$(grep -vE " cred=1 $img" <<<"$bk" || true)
