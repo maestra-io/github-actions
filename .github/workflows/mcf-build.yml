@@ -1093,6 +1093,10 @@ jobs:
           teleportToken: ${{ inputs.teleport-token }}
           push: false
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          # moby/buildkit through nora, not Docker Hub (issues-maestra#1649); every copy equal:
+          # scripts/test-dotnet-service-build.sh
+          driver-opts: image=packages.maestra.io/docker-hub/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
       - name: build and push ${{ needs.version.outputs.image }}:${{ needs.version.outputs.release }}
         id: push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -1338,6 +1342,8 @@ jobs:
           teleportToken: ${{ inputs.teleport-token }}
           push: false
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: image=packages.maestra.io/docker-hub/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
       - name: build and push ${{ needs.version.outputs.image }}-with-deps:${{ needs.version.outputs.release }}
         id: push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -1502,6 +1508,8 @@ jobs:
           teleportToken: ${{ inputs.teleport-token }}
           push: false
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: image=packages.maestra.io/docker-hub/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
       # ISO week for the Dockerfile's `ARG BASE_REFRESH`: a new value reruns the apt upgrade
       # the gha layer cache would otherwise serve forever.
       - id: week

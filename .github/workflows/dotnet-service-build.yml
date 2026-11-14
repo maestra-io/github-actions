@@ -625,6 +625,10 @@ jobs:
       - if: ${{ inputs.docker-test-target != '' }}
         id: buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          # moby/buildkit through nora, not Docker Hub (issues-maestra#1649); every copy equal:
+          # scripts/test-dotnet-service-build.sh
+          driver-opts: image=packages.maestra.io/docker-hub/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
       - if: ${{ inputs.docker-test-target != '' }}
         # GitLab Dockerfiles bind-mount the CI NuGet cache dir; it must exist.
         run: mkdir -p .nuget
@@ -1026,6 +1030,8 @@ jobs:
           fi
       - if: ${{ needs.version.outputs.base-name != '' && (github.event_name != 'pull_request' || inputs.pr-images) }}
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: image=packages.maestra.io/docker-hub/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
       - name: layer cache (base image)
         id: cache-base
         if: ${{ needs.version.outputs.base-name != '' && (github.event_name != 'pull_request' || inputs.pr-images) }}
@@ -1200,6 +1206,7 @@ jobs:
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
+          driver-opts: image=packages.maestra.io/docker-hub/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
           name: ${{ steps.runs-on.outputs.buildkit-builder }}
           driver: docker-container
           cleanup: ${{ !inputs.sticky-buildkit }}

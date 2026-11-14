@@ -494,6 +494,10 @@ jobs:
       # ── Dockerfile stage (GitLab .run-docker-test) ───────────────────────
       - if: ${{ inputs.docker-test-target != '' }}
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          # moby/buildkit through nora, not Docker Hub (issues-maestra#1649); every copy equal:
+          # scripts/test-dotnet-service-build.sh
+          driver-opts: image=packages.maestra.io/docker-hub/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
       # Layer cache only for a Dockerfile that never writes the token into a layer:
       # a cached layer replays it after it expired (dotnet-service-build.yml header).
       - if: ${{ inputs.docker-test-target != '' }}
@@ -630,6 +634,8 @@ jobs:
       # Actions runtime env buildx reads for type=gha, which a run step does not see on its own.
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: image=packages.maestra.io/docker-hub/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
@@ -770,6 +776,8 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: image=packages.maestra.io/docker-hub/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
 
       # BuildKit pulls base images with ~/.docker/config.json; log in to this
       # account's ECR when the Dockerfile names it (instance role, read only).
