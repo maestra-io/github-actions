@@ -217,8 +217,9 @@ jobs:
               || { echo "::error::test no longer contains: $line"; exit 1; }
           done
 
-  # check-encoding and translation-checker for real: both images pulled through nora
-  # with the job's OIDC token (nora-session/nora-docker-run.sh) and run over this repo.
+  # check-encoding and translation-checker for real over this repo: check-encoding runs
+  # the Python port, translation-checker's image is pulled through nora with the job's
+  # OIDC token (nora-session/nora-docker-run.sh).
   mindbox-lint:
     runs-on: runs-on=${{ github.run_id }}-mindbox-lint/runner=t3a-small
     timeout-minutes: 10

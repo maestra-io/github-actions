@@ -589,24 +589,32 @@ steps:
 
 Test: `python3 nora-image-prewarm/prewarm.py --self-test` (selftest).
 
-## Mindbox lint images through nora (`check-encoding`, `translation-checker`)
+## Mindbox lint drop-ins (`check-encoding`, `translation-checker`)
 
 Drop-ins, same inputs, for `mindbox-cloud/check-encoding` and
-`mindbox-cloud/github-actions/localization/translation-checker`: Docker actions whose images
-(`mindboxmoscow/check-encoding`, `mindboxmoscow/translation-checker-gha`, Mindbox's Docker Hub)
-the runner pulls in "Set up job", past nora. Here the same images, pinned `tag@digest`, are
-pulled through `packages.maestra.io/docker-hub` with the job's OIDC token
-([`nora-session/nora-docker-run.sh`](nora-session/nora-docker-run.sh), a throwaway
-`DOCKER_CONFIG`) and run over the workspace (issues-maestra#1649). Needs `id-token: write`.
+`mindbox-cloud/github-actions/localization/translation-checker`, Docker actions whose images
+(`mindboxmoscow/*`, Mindbox's Docker Hub) the runner pulls in "Set up job", past nora
+(issues-maestra#1649).
+
+- `check-encoding` runs our port [`pr-checks/check-encoding.py`](pr-checks/check-encoding.py)
+  on the runner ([`check-encoding/check-encoding.sh`](check-encoding/check-encoding.sh)): every
+  tracked file with the extensions must decode as UTF-8 (ASCII included). No image, no token.
+  `command: fix` and a `target_encoding` other than UTF-8/ASCII fail instead of passing.
+- `translation-checker` pulls `mindboxmoscow/translation-checker-gha`, pinned `tag@digest`,
+  through `packages.maestra.io/docker-hub` with the job's OIDC token
+  ([`nora-session/nora-docker-run.sh`](nora-session/nora-docker-run.sh), a throwaway
+  `DOCKER_CONFIG`) and runs it over the workspace. Needs `id-token: write`.
 
 ```yaml
     permissions: { contents: read, id-token: write }
     steps:
+      - uses: actions/checkout@<version tag>
       - uses: maestra-io/github-actions/check-encoding@<40-hex sha> # vX.Y.Z
       - uses: maestra-io/github-actions/translation-checker@<40-hex sha> # vX.Y.Z
 ```
 
-Tested by the `mindbox-lint` job of `selftest` (real pulls, run over this repo).
+Tested by the `mindbox-lint` job of `selftest` (real runs over this repo); the script of
+`check-encoding` also by `scripts/test-pr-checks.sh`.
 
 ## Gitleaks on pull requests (`gitleaks.yml`)
 

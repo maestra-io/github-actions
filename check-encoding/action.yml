@@ -1,14 +1,14 @@
 name: "check-encoding"
 description: >-
-  Drop-in for mindbox-cloud/check-encoding@b7c4fcd (same inputs): files with these
-  extensions must be in the target encoding. Its image, mindboxmoscow/check-encoding
-  1.0.17 (built from that commit, its `latest`), by digest, pulled through nora
-  (packages.maestra.io/docker-hub, issues-maestra#1649) instead of Docker Hub.
-  Needs `permissions: id-token: write`.
+  Drop-in for mindbox-cloud/check-encoding@b7c4fcd (same inputs): every tracked file
+  with these extensions must be UTF-8 (ASCII included). Runs our port,
+  pr-checks/check-encoding.py (strict UTF-8 decode), on the runner instead of the
+  mindboxmoscow/check-encoding image (issues-maestra#1649). Needs a git checkout of
+  the workspace and python3; no registry pull, no token.
 
 inputs:
   command:
-    description: '"check" fails the build, "fix" converts the offending files.'
+    description: '"check" fails the build. "fix" (convert the files) is not supported and fails.'
     required: false
     default: "check"
   extensions:
@@ -16,7 +16,7 @@ inputs:
     required: false
     default: "txt,xml,json,config,cs,csproj,sln"
   target_encoding:
-    description: "Accepted encodings."
+    description: "Accepted encodings: must name utf-8; ASCII may be listed beside it."
     required: false
     default: "utf-8,ASCII"
 
@@ -29,7 +29,4 @@ runs:
         COMMAND: ${{ inputs.command }}
         EXTENSIONS: ${{ inputs.extensions }}
         TARGET_ENCODING: ${{ inputs.target_encoding }}
-      run: |
-        bash "${GITHUB_ACTION_PATH}/../nora-session/nora-docker-run.sh" \
-          packages.maestra.io/docker-hub/mindboxmoscow/check-encoding:1.0.17@sha256:6b2f07f6112e270885ff805034fa2f5b780e1b712bb3a154688fb2b976a3b65f \
-          "$COMMAND" -d /github/workspace -e "$TARGET_ENCODING" --extensions "$EXTENSIONS"
+      run: bash "${GITHUB_ACTION_PATH}/check-encoding.sh"
