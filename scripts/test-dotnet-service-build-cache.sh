@@ -216,10 +216,15 @@ RUN $S dotnet restore --packages \$PackagesPath
 # from the image (without them it silently runs zero tests): copied out of the mount
 # only the <id>/<version> folders of the stage's obj/project.assets.json, not the whole mount
 cp_tpl=$(cat <<'T'
+RUN --mount=type=cache,id=nuget,target=/tmp/nuget-cache,sharing=locked @M@ set -e; find / \( -path /proc -o -path /sys -o -path /tmp/nuget-cache -o -path /usr/share/dotnet -o -path @D@ \) -prune -o -path '*/obj/project.assets.json' -print > /tmp/nuget-assets; [ -s /tmp/nuget-assets ] || { echo 'no obj/project.assets.json: no NuGet packages to copy' >&2; exit 1; }; while read -r f; do grep -q '"@D@/\{0,1\}"' "$f" || { echo "$f restores outside @D@" >&2; exit 1; }; done < /tmp/nuget-assets; while read -r f; do sed -n '/^ *"type": "package"/,/^ *"path": /s|^ *"path": "\([^"]*\)",*$|\1|p' "$f"; done < /tmp/nuget-assets | sort -u > /tmp/nuget-pkgs; : > /tmp/nuget-miss; while read -r p; do if test -d "/tmp/nuget-cache/$p"; then mkdir -p "@D@/$p"; cp -a "/tmp/nuget-cache/$p/." "@D@/$p/"; else echo "$p" >> /tmp/nuget-miss; fi; done < /tmp/nuget-pkgs; echo "copied $(($(wc -l < /tmp/nuget-pkgs) - $(wc -l < /tmp/nuget-miss))) NuGet packages into @D@"; if [ -s /tmp/nuget-miss ]; then echo "$(wc -l < /tmp/nuget-miss) NuGet packages are not in the cache mount (cached restore layer, cold mount): downloading them into @D@"; f=$(head -n 1 /tmp/nuget-assets); mkdir -p /tmp/nuget-fetch; { echo "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>$(sed -n 's|^ *"targetAlias": "\([^"]*\)",*$|\1|p' "$f" | head -n 1)</TargetFramework></PropertyGroup><ItemGroup>"; sed 's|^\(.*\)/\(.*\)$|<PackageDownload Include="\1" Version="[\2]" />|' /tmp/nuget-miss; echo '</ItemGroup></Project>'; } > /tmp/nuget-fetch/fetch.csproj; dotnet restore /tmp/nuget-fetch/fetch.csproj --packages @D@ --configfile "$(sed -n '/"configFilePaths": \[/,/]/s|^ *"\([^"]*\)",*$|\1|p' "$f" | head -n 1)"; while read -r p; do test -d "@D@/$p" || { echo "$p is neither in the NuGet cache mount nor on the feed" >&2; exit 1; }; done < /tmp/nuget-miss; rm -r /tmp/nuget-fetch; fi; rm /tmp/nuget-assets /tmp/nuget-pkgs /tmp/nuget-miss
+T
+)
+# the copy before a cold mount downloaded the missing packages (it failed instead): upgraded in place
+cp_prev=$(cat <<'T'
 RUN --mount=type=cache,id=nuget,target=/tmp/nuget-cache,sharing=locked set -e; find / \( -path /proc -o -path /sys -o -path /tmp/nuget-cache -o -path /usr/share/dotnet -o -path @D@ \) -prune -o -path '*/obj/project.assets.json' -print > /tmp/nuget-assets; [ -s /tmp/nuget-assets ] || { echo 'no obj/project.assets.json: no NuGet packages to copy' >&2; exit 1; }; while read -r f; do grep -q '"@D@/\{0,1\}"' "$f" || { echo "$f restores outside @D@" >&2; exit 1; }; done < /tmp/nuget-assets; while read -r f; do sed -n '/^ *"type": "package"/,/^ *"path": /s|^ *"path": "\([^"]*\)",*$|\1|p' "$f"; done < /tmp/nuget-assets | sort -u > /tmp/nuget-pkgs; while read -r p; do test -d "/tmp/nuget-cache/$p" || { echo "$p is not in the NuGet cache mount" >&2; exit 1; }; mkdir -p "@D@/$p"; cp -a "/tmp/nuget-cache/$p/." "@D@/$p/"; done < /tmp/nuget-pkgs; echo "copied $(wc -l < /tmp/nuget-pkgs) NuGet packages into @D@"; rm /tmp/nuget-assets /tmp/nuget-pkgs
 T
 )
-cp_run() { printf '%s' "${cp_tpl//@D@/$1}"; }
+cp_run() { local t=${cp_tpl//@D@/$1}; printf '%s' "${t//@M@/$S}"; }
 # its package list: "type": "package" libraries only (a version may end in "proj"),
 # also with "serviceable" between type and path; project references are skipped
 sedexpr=${cp_tpl#*sed -n \'}; sedexpr=${sedexpr%%\' \"\$f\"*}
@@ -313,13 +318,23 @@ cachecase runtime-test-upgrade-149 "FROM sdk AS build
 WORKDIR /sln
 RUN $S $(cm /sln/.nuget) dotnet restore --packages .nuget
 FROM build AS tests
-$(t=${cp_tpl//'\{0,1\}'/}; printf '%s' "${t//@D@//sln/.nuget}")
+$(t=${cp_prev//'\{0,1\}'/}; printf '%s' "${t//@D@//sln/.nuget}")
 ENTRYPOINT [\"dotnet\", \"test\", \"--no-build\"]
 " "FROM sdk AS build
 WORKDIR /sln
 RUN $S $(cm /sln/.nuget) dotnet restore --packages .nuget
 FROM build AS tests
 $(cp_run /sln/.nuget)
+ENTRYPOINT [\"dotnet\", \"test\", \"--no-build\"]"
+cachecase runtime-test-upgrade-cold "FROM sdk AS build
+RUN $S $(cm /root/.nuget/packages) dotnet restore
+FROM build AS tests
+${cp_prev//@D@//root/.nuget/packages}
+ENTRYPOINT [\"dotnet\", \"test\", \"--no-build\"]
+" "FROM sdk AS build
+RUN $S $(cm /root/.nuget/packages) dotnet restore
+FROM build AS tests
+$(cp_run /root/.nuget/packages)
 ENTRYPOINT [\"dotnet\", \"test\", \"--no-build\"]"
 # a cache mount alone in a runtime stage is no package copy
 cachecase runtime-test-mount-only "FROM sdk AS build
@@ -497,6 +512,24 @@ docker buildx build --progress plain --load --add-host host.docker.internal:host
   || { grep -E "^#[0-9]+ [0-9.]+ " "$work/build.log" | tail -20; echo "FAIL build tests stage"; exit 1; }
 eq "$(docker run --rm --entrypoint sh local/selftest-token-cache:tests -c 'cd /root/.nuget/packages && find . -mindepth 2 -maxdepth 2 -type d | sort')" "./selftest.build/1.0.0" "runtime tests stage: only the restored packages copied"
 echo "ok runtime tests stage: copies the packages of obj/project.assets.json, not the whole mount"
+# A restore layer from the layer cache over a cold mount (fresh runner, a seed that missed:
+# operations-metrics-exporter PR 52): the copy finds nothing in the mount and downloads the
+# packages from the feed with the current token, not "is not in the NuGet cache mount".
+# The mount id is not part of the cache key; ARG COLD re-runs only the tests stage, and
+# without NuGet's HTTP cache (the restore layer keeps the .nupkg there) the feed is asked.
+awk -v n="$nonce" '{gsub("id=nuget-" n "-t,", "id=nuget-" n "-cold,"); print} $0=="FROM build AS tests"{print "ARG COLD"; print "RUN rm -rf /root/.local/share/NuGet"}' \
+  "$work/ctx/Dockerfile.tests" > "$work/ctx/Dockerfile.cold"
+D2="tok-D-$nonce"; token "$D2"; : > "$work/feed.log"
+docker buildx build --progress plain --load --add-host host.docker.internal:host-gateway --build-arg "COLD=$nonce" \
+  --secret "id=NUGET_CREDENTIALS,src=$work/e2e/packages-token/NUGET_CREDENTIALS" \
+  -f "$work/ctx/Dockerfile.cold" --target tests -t local/selftest-token-cache:cold "$work/ctx" >"$work/build.log" 2>&1 \
+  || { grep -E "^#[0-9]+ [0-9.]+ " "$work/build.log" | tail -20; cat "$work/feed.log"; echo "FAIL tests stage over a cold mount"; exit 1; }
+grep -q 'CACHED' "$work/build.log" || { tail -30 "$work/build.log"; echo "FAIL cold mount: the build stage was not taken from the layer cache"; exit 1; }
+grep -q '1 NuGet packages are not in the cache mount' "$work/build.log" || { tail -30 "$work/build.log"; echo "FAIL cold mount: the copy did not see the empty mount"; exit 1; }
+grep -q '^200 .*selftest.build.1.0.0.nupkg' "$work/feed.log" || { cat "$work/feed.log"; echo "FAIL cold mount: Selftest.Build not downloaded with the current token"; exit 1; }
+eq "$(docker run --rm --entrypoint sh local/selftest-token-cache:cold -c 'cd /root/.nuget/packages && find . -mindepth 2 -maxdepth 2 -type d | sort')" "./selftest.build/1.0.0" "cold mount: the tests image gets the downloaded package"
+eq "$(docker run --rm --entrypoint sh local/selftest-token-cache:cold -c 'grep -q "\"/root/.nuget/packages/\"" /sln/obj/project.assets.json && test ! -e /tmp/nuget-fetch && echo ok')" "ok" "cold mount: the stage's obj untouched, no throwaway project left"
+echo "ok runtime tests stage over a cold mount: downloads the missing packages from the feed"
 # ── 4. NuGet cache mount on the Magic Cache (test job, docker-test-target) ─────────
 seed=$(block nuget-mount-seed "$wf"); extract=$(block nuget-mount-extract "$wf")
 [ -n "$seed" ] && [ -n "$extract" ] || { echo "nuget-mount-seed/extract block not found in $wf"; exit 1; }
@@ -538,5 +571,5 @@ DIR="$work/nuget-mount-empty" BUILDER="${builders[2]}" GITHUB_OUTPUT="$work/out"
 eq "$(cat "$work/out")" "" "nuget-mount-extract: an empty mount is not saved"
 echo "ok NuGet cache mount: copied out of one fresh builder and into another, the restore fetches no package"
 
-docker rmi -f local/selftest-token-cache:gitlab local/selftest-token-cache:fixed local/selftest-token-cache:tests >/dev/null 2>&1 || true
+docker rmi -f local/selftest-token-cache:gitlab local/selftest-token-cache:fixed local/selftest-token-cache:tests local/selftest-token-cache:cold >/dev/null 2>&1 || true
 echo "dotnet-service-build packages token: OK"
