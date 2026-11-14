@@ -37,6 +37,21 @@ git add cp1251.cs
 check "tracked cp1251 fails whole-tree" 1 python3 -I "$enc" txt,json,cs
 grep -q "cp1251.cs: invalid continuation byte" "$work/out" && echo "ok   names the file" || { echo "FAIL names the file"; fail=1; }
 
+# The check-encoding action's script: the defaults check the whole tracked tree, inputs
+# it cannot honour fail. GITHUB_WORKSPACE is where it runs.
+act="$root/check-encoding/check-encoding.sh"
+check "action: tracked cp1251 fails"         1 env GITHUB_WORKSPACE="$work" bash "$act"
+git rm -q --cached cp1251.cs
+check "action: defaults pass a utf-8 tree"   0 env GITHUB_WORKSPACE="$work" bash "$act"
+check "action: extensions input is used"     0 env GITHUB_WORKSPACE="$work" EXTENSIONS=md bash "$act"
+git add cp1251.md
+check "action: extensions input fails md"    1 env GITHUB_WORKSPACE="$work" EXTENSIONS=md bash "$act"
+git rm -q --cached cp1251.md
+check "action: utf8 spelling accepted"       0 env GITHUB_WORKSPACE="$work" TARGET_ENCODING="UTF8, ascii" bash "$act"
+check "action: fix is refused"               1 env GITHUB_WORKSPACE="$work" COMMAND=fix bash "$act"
+check "action: other encoding is refused"    1 env GITHUB_WORKSPACE="$work" TARGET_ENCODING=utf-8,windows-1251 bash "$act"
+check "action: ascii-only is refused"        1 env GITHUB_WORKSPACE="$work" TARGET_ENCODING=ASCII bash "$act"
+
 # kustomize entry points: overlays/* directories with a kustomization file.
 mkdir -p kustomization/svc/base kustomization/svc/overlays/omega kustomization/other/overlays/omicron kustomization/svc/overlays/omega/patches
 touch kustomization/svc/base/kustomization.yaml kustomization/svc/overlays/omega/kustomization.yaml \
