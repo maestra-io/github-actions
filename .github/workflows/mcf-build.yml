@@ -75,10 +75,11 @@
 #                       release (default true; false: advisory, the summary still shows red).
 #   e2e                 Run `npm run e2e:ci` on the e2e stand (default true; `e2e: false` opts a repo
 #                       out, `e2e: true` in pr.yml is a no-op left from the opt-in period).
-#                       The e2e stand itself is published on every pull_request with tests/e2e/.
+#                       The e2e stand itself is published on every pull_request with tests/e2e/,
+#                       renovate/* included; not for LocalizationPull or PRs from forks.
 #   e2e-workers         Playwright workers of `e2e` (default 4).
-#   e2e-required        A red `e2e` fails the run and `pr gate` (default false: advisory). It
-#                       never holds the image or the release yet.
+#   e2e-required        A red `e2e` fails the run and `pr gate` (default false: advisory; always
+#                       true on renovate/*). It never holds the image or the release yet.
 #   e2e-vault-role      Central Vault jwt-github role of `e2e` (default ci-gate-e2e).
 #   e2e-vault-secret    KV v2 secret with ADMINSITE_USERNAME and ADMINSITE_PASSWORD, as
 #                       vault-action reads it (default gitlab/data/ci-e2e/ci-gate).
@@ -139,19 +140,20 @@
 #   hot-test  pull_request only, right after `build`: the PR's static files and an
 #             entry built on them go to the hot-test bucket, the PR gets the hot-test
 #             deployment (hot-test-publish.yml; mcf@3 hot-test environments, issues-maestra#1574).
-#   functional  tests/functional/playwright.config.ts, not on renovate/* and LocalizationPull
-#             branches: the `static` artifact served by http-server on :8080, `npm run
+#   functional  tests/functional/playwright.config.ts, not on the LocalizationPull
+#             branch or PRs from forks: the `static` artifact served by http-server on :8080, `npm run
 #             functional:ci` in tests/ (mcf@3 functional-tests/run) inside PLAYWRIGHT_IMAGE of
 #             the tests' Playwright (no browser download). JUnit -> step summary, artifact,
 #             test-results-ingest; test-results/ (traces) as an artifact on failure. Advisory
 #             unless functional-required.
-#   e2e-stand  hot-test with stand-prefix e2e (tests/e2e/): fluxcd sends its API to the e2e tenant.
+#   e2e-stand  hot-test with stand-prefix e2e (tests/e2e/), renovate/* included: fluxcd sends its API
+#             to the e2e tenant.
 #   e2e       `npm run e2e:ci` in tests/ on the e2e stand inside PLAYWRIGHT_IMAGE, as functional,
 #             login from Vault (input e2e); skipped without a route.
 #   pr-gate   pull_request only, the check a branch ruleset requires (`build / pr gate`): red when
 #             a PR job failed or was cancelled, skipped jobs pass; functional and e2e count only
-#             with functional-required / e2e-required. image, release, sourcemaps, bake never run
-#             on pull_request.
+#             with functional-required / e2e-required (e2e always on renovate/*). image, release,
+#             sourcemaps, bake never run on pull_request.
 #
 # Not ported from mcf@3: cyrillic (translation-checker, issues-maestra#1581),
 # multi-contour schema loading, and the RU contour jobs (Octopus, phrase, metrics,
@@ -358,7 +360,8 @@ jobs:
       publish: ${{ steps.v.outputs.publish }}
       pr-stands: ${{ steps.v.outputs.pr-stands }}
       hot-test: ${{ steps.v.outputs.hot-test }}
-      e2e-stand: ${{ steps.v.outputs.pr-stands == 'true' && steps.tests.outputs.e2e == 'true' }}
+      e2e-stand: ${{ steps.v.outputs.e2e-stand == 'true' && steps.tests.outputs.e2e == 'true' }}
+      e2e-required: ${{ inputs.e2e-required || startsWith(github.head_ref, 'renovate/') }}
       image: ${{ steps.v.outputs.image }}
       service: ${{ steps.v.outputs.service }}
       mcf: ${{ steps.v.outputs.mcf }}
@@ -410,6 +413,7 @@ jobs:
           PUSH: ${{ inputs.push && github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
           PUSH_REQUESTED: ${{ inputs.push && github.event_name != 'pull_request' }}
           PR_STANDS: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && !startsWith(github.head_ref, 'renovate/') && github.head_ref != 'LocalizationPull' }}
+          E2E_STAND: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref != 'LocalizationPull' }}
           HOT_TEST_INPUT: ${{ inputs.hot-test }}
         run: |
           HOT_TEST=false
@@ -447,6 +451,7 @@ jobs:
             echo "release=${prefix}.${RUN_NUMBER}"
             echo "publish=$PUSH"
             echo "pr-stands=$PR_STANDS"
+            echo "e2e-stand=$E2E_STAND"
             echo "hot-test=$HOT_TEST"
             echo "image=${IMAGE:-$REPO_NAME}"
             echo "service=${SERVICE:-$REPO_NAME}"
@@ -461,7 +466,7 @@ jobs:
 
       - id: tests
         env:
-          PLAYWRIGHT_EVENT: ${{ !startsWith(github.head_ref, 'renovate/') && github.head_ref != 'LocalizationPull' }}
+          PLAYWRIGHT_EVENT: ${{ github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref != 'LocalizationPull') }}
         run: |
           # >>> tests-detect (scripts/test-functional.sh and scripts/test-e2e.sh run this block)
           tests=false; layout=none
@@ -1972,7 +1977,7 @@ jobs:
     if: ${{ !cancelled() && inputs.e2e && needs.version.outputs.e2e == 'true' && needs.e2e-stand.result == 'success' && needs.e2e-stand.outputs.route == 'true' && needs.install.result == 'success' && (needs.tests-install.result == 'success' || needs.tests-install.result == 'skipped') }}
     runs-on: runs-on=${{ github.run_id }}-e2e/pool=build
     timeout-minutes: 60
-    continue-on-error: ${{ !inputs.e2e-required }}
+    continue-on-error: ${{ needs.version.outputs.e2e-required != 'true' }}
     permissions:
       contents: read
       id-token: write # central Vault (jwt-github), test-results-ingest
@@ -2101,7 +2106,7 @@ jobs:
           JUNIT: tests/e2e/test-results/results.xml
           LOG: ${{ runner.temp }}/e2e.log
           OUTCOME: ${{ steps.run.outcome }}
-          REQUIRED: ${{ inputs.e2e-required }}
+          REQUIRED: ${{ needs.version.outputs.e2e-required }}
           STAND: ${{ needs.e2e-stand.outputs.url }}
         run: |
           # >>> e2e-summary (scripts/test-e2e.sh runs this block)
@@ -2197,7 +2202,7 @@ jobs:
       - env:
           NEEDS: ${{ toJSON(needs) }}
           FUNCTIONAL_REQUIRED: ${{ inputs.functional-required }}
-          E2E_REQUIRED: ${{ inputs.e2e-required }}
+          E2E_REQUIRED: ${{ needs.version.outputs.e2e-required == 'true' }}
         run: |
           # >>> pr-gate (scripts/test-mcf-build-pr-gate.sh runs this block)
           echo "PR jobs: $(jq -c 'map_values(.result)' <<<"$NEEDS")"
