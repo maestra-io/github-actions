@@ -2,7 +2,8 @@
 #
 # Self-check for the pr-gate job of mcf-build.yml: it waits for every job that runs on
 # pull_request, fails on a failed or cancelled one, passes skipped ones, and counts functional
-# and e2e only when their *-required input is true. Runs the inline block of the workflow itself.
+# and e2e only when their *-required input is true (e2e always on renovate/*). Runs the inline
+# block of the workflow itself.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 wf="$here/../.github/workflows/mcf-build.yml"
@@ -19,6 +20,16 @@ eq "$(job pr-gate needs)" "[$jobs]" "pr-gate needs every PR job"
 # shellcheck disable=SC2016 # the expression is matched literally
 eq "$(job pr-gate if)" '${{ always() && github.event_name == '"'pull_request'"' }}' "pr-gate runs on pull_request after any outcome"
 eq "$(job pr-gate name)" "pr gate" "check name (rulesets require \`build / pr gate\`)"
+gate_env=$(awk '$0 == "  pr-gate:" { on = 1; next } on && /^  [a-z]/ { exit } on' "$wf")
+# shellcheck disable=SC2016 # the expressions are matched literally
+{
+  grep -qxF '          FUNCTIONAL_REQUIRED: ${{ inputs.functional-required }}' <<<"$gate_env" \
+    || { echo "FAIL pr-gate FUNCTIONAL_REQUIRED is not the input"; exit 1; }
+  grep -qxF '          E2E_REQUIRED: ${{ needs.version.outputs.e2e-required == '"'true'"' }}' <<<"$gate_env" \
+    || { echo "FAIL pr-gate E2E_REQUIRED is not the version job's e2e-required (input or renovate/*)"; exit 1; }
+  grep -qxF '      e2e-required: ${{ inputs.e2e-required || startsWith(github.head_ref, '"'renovate/'"') }}' "$wf" \
+    || { echo "FAIL the version job's e2e-required is not the input or a renovate/* branch"; exit 1; }
+}
 echo "mcf-build pr-gate wiring: ok"
 
 prog=$(sed -n '/# >>> pr-gate/,/# <<< pr-gate/p' "$wf" | sed 's/^          //')
@@ -39,4 +50,9 @@ eq "$(gate false false build=success functional=cancelled e2e=cancelled)" pass "
 eq "$(gate true false build=success functional=failure e2e=failure)" fail "required functional"
 eq "$(gate false true build=success functional=failure e2e=failure)" fail "required e2e"
 eq "$(gate true true build=success functional=skipped e2e=skipped)" pass "required but skipped"
+# renovate/* (e2e-required from the version job, functional-required as the repo sets it)
+eq "$(gate false true version=success build=success functional=success e2e=failure)" fail "renovate/*: red e2e"
+eq "$(gate false true version=success build=success e2e=cancelled)" fail "renovate/*: cancelled e2e"
+eq "$(gate false true version=success build=success e2e-stand=success e2e=skipped)" pass "renovate/*: e2e skipped (no route)"
+eq "$(gate false true version=success build=success functional=failure e2e=success)" pass "renovate/*: functional stays advisory when not required"
 echo "mcf-build pr-gate verdict: ok"

@@ -2,7 +2,7 @@
 #
 # Self-check for the tests/ jobs of mcf-build.yml: the tests/ detection (layout
 # lockfile / workspace / none, functional only with the Playwright config and
-# tests/package.json, not on excluded branches), the http-server wait (up / never
+# tests/package.json, not on LocalizationPull), the http-server wait (up / never
 # up), the functional step summary from Playwright JUnit (errors count as
 # failed) and the release gate (image waits for tests-checks and a required
 # functional; release, sourcemaps and bake follow image by result). Runs the inline
@@ -25,7 +25,7 @@ detect_prog=$(block tests-detect)
 # detect <repo dir> <playwright event>; prints the step outputs
 detect() {
   : > "$root/detect.out"
-  (cd "$1" && PLAYWRIGHT_EVENT="$2" GITHUB_HEAD_REF=renovate/x GITHUB_OUTPUT="$root/detect.out" \
+  (cd "$1" && PLAYWRIGHT_EVENT="$2" GITHUB_HEAD_REF=LocalizationPull GITHUB_OUTPUT="$root/detect.out" \
     bash -c "set -eo pipefail; $detect_prog") > "$root/detect.log" 2>&1 \
     || { echo "FAIL detect exited non-zero in $1"; cat "$root/detect.log"; exit 1; }
   tr '\n' ' ' < "$root/detect.out" | sed 's/ $//'
@@ -46,12 +46,12 @@ eq "$(detect "$workspace" true)" "tests=true tests-layout=workspace functional=t
 eq "$(detect "$none" true)" "tests=false tests-layout=none functional=false e2e=false" "no tests/"
 eq "$(detect "$no_cfg" true)" "tests=true tests-layout=lockfile functional=false e2e=false" "tests/ without the functional config"
 eq "$(detect "$lockfile" false)" "tests=true tests-layout=lockfile functional=false e2e=false" "excluded branch"
-grep -q 'renovate/x' "$root/detect.log" || { echo "FAIL excluded branch is not named in the log"; exit 1; }
+grep -q 'LocalizationPull' "$root/detect.log" || { echo "FAIL excluded branch is not named in the log"; exit 1; }
 eq "$(detect "$cfg_only" true)" "tests=false tests-layout=none functional=false e2e=false" "config without tests/package.json"
 grep -q '^::warning::' "$root/detect.log" || { echo "FAIL config without tests/package.json emits no ::warning::"; exit 1; }
 # shellcheck disable=SC2016 # the expression is matched literally
-grep -qF "PLAYWRIGHT_EVENT: \${{ !startsWith(github.head_ref, 'renovate/') && github.head_ref != 'LocalizationPull' }}" "$wf" \
-  || { echo "FAIL PLAYWRIGHT_EVENT does not exclude renovate/* and LocalizationPull"; exit 1; }
+grep -qxF "          PLAYWRIGHT_EVENT: \${{ github.head_ref != 'LocalizationPull' }}" "$wf" \
+  || { echo "FAIL PLAYWRIGHT_EVENT is not 'every branch but LocalizationPull' (renovate/* runs the tests)"; exit 1; }
 echo "functional detect: ok"
 
 # Every restore of the root cache must list the same paths as its save, or it misses.

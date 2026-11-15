@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
 # Self-check for the e2e jobs of mcf-build.yml: the tests/e2e/ detection (only with
-# tests/package.json, not on excluded branches), the wiring of e2e-stand (the hot-test
-# conditions plus tests/e2e/, no input, stand-prefix e2e, the static artifact) and e2e (only
-# unless e2e: false, on a stand with a route, advisory unless e2e-required, never holds the image), the
+# tests/package.json, not on LocalizationPull), the wiring of e2e-stand (the hot-test
+# conditions but renovate/*, plus tests/e2e/, no input, stand-prefix e2e, the static artifact) and e2e
+# (only unless e2e: false, on a stand with a route, advisory unless e2e-required or renovate/*, never
+# holds the image), the
 # Vault credentials (step outputs only, never printed), the e2e step summary from
 # Playwright JUnit and the release-time e2e-image (its Dockerfile from tests/node_modules, a
 # root workspace's hoisted packages copied in, linked local packages by content; release waits
@@ -34,7 +35,7 @@ detect_prog=$(block tests-detect)
 # detect <repo dir> <playwright event>; prints the step outputs
 detect() {
   : > "$root/detect.out"
-  (cd "$1" && PLAYWRIGHT_EVENT="$2" GITHUB_HEAD_REF=renovate/x GITHUB_OUTPUT="$root/detect.out" \
+  (cd "$1" && PLAYWRIGHT_EVENT="$2" GITHUB_HEAD_REF=LocalizationPull GITHUB_OUTPUT="$root/detect.out" \
     bash -c "set -eo pipefail; $detect_prog") > "$root/detect.log" 2>&1 \
     || { echo "FAIL detect exited non-zero in $1"; cat "$root/detect.log"; exit 1; }
   tr '\n' ' ' < "$root/detect.out" | sed 's/ $//'
@@ -54,7 +55,7 @@ eq "$(detect "$lockfile" true)" "tests=true tests-layout=lockfile functional=fal
 eq "$(detect "$workspace" true)" "tests=true tests-layout=workspace functional=false e2e=true" "e2e, tests/ as a root workspace"
 eq "$(detect "$both" true)" "tests=true tests-layout=lockfile functional=true e2e=true" "functional and e2e"
 eq "$(detect "$lockfile" false)" "tests=true tests-layout=lockfile functional=false e2e=false" "excluded branch"
-grep -qF 'no e2e tests on renovate/x' "$root/detect.log" || { echo "FAIL excluded branch is not named in the log"; exit 1; }
+grep -qF 'no e2e tests on LocalizationPull' "$root/detect.log" || { echo "FAIL excluded branch is not named in the log"; exit 1; }
 eq "$(detect "$cfg_only" true)" "tests=false tests-layout=none functional=false e2e=false" "e2e config without tests/package.json"
 grep -qF '::warning::tests/e2e/playwright.config.ts without tests/package.json' "$root/detect.log" \
   || { echo "FAIL e2e config without tests/package.json emits no ::warning::"; exit 1; }
@@ -64,8 +65,11 @@ echo "e2e detect: ok"
 # shellcheck disable=SC2016 # the expressions are matched literally
 {
   eq "$(job e2e-stand if)" '${{ needs.version.outputs.e2e-stand == '"'true'"' }}' "e2e-stand runs on the version job's verdict"
-  grep -qF 'e2e-stand: ${{ steps.v.outputs.pr-stands == '"'true'"' && steps.tests.outputs.e2e == '"'true'"' }}' "$wf" \
-    || { echo "FAIL e2e-stand is not pr-stands && e2e"; exit 1; }
+  grep -qF 'e2e-stand: ${{ steps.v.outputs.e2e-stand == '"'true'"' && steps.tests.outputs.e2e == '"'true'"' }}' "$wf" \
+    || { echo "FAIL e2e-stand is not E2E_STAND && e2e"; exit 1; }
+  grep -qF 'E2E_STAND: ${{ github.event_name == '"'pull_request'"' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref != '"'LocalizationPull'"' }}' "$wf" \
+    || { echo "FAIL E2E_STAND is not pull_request, no fork, no LocalizationPull (renovate/* included)"; exit 1; }
+  grep -qF 'echo "e2e-stand=$E2E_STAND"' "$wf" || { echo "FAIL the v step does not output E2E_STAND"; exit 1; }
   grep -qF 'if [ "$PR_STANDS" = true ] && [ "$HOT_TEST_INPUT" = true ]; then HOT_TEST=true; fi' "$wf" \
     || { echo "FAIL hot-test is not pr-stands && input hot-test"; exit 1; }
   grep -qF 'PR_STANDS: ${{ github.event_name == '"'pull_request'"' && github.event.pull_request.head.repo.full_name == github.repository && !startsWith(github.head_ref, '"'renovate/'"') && github.head_ref != '"'LocalizationPull'"' }}' "$wf" \
@@ -85,7 +89,13 @@ echo "e2e-stand wiring: ok"
 eq "$(job e2e needs)" "[version, install, tests-install, e2e-stand]" "e2e needs"
 # shellcheck disable=SC2016 # the expressions are matched literally
 {
-  eq "$(job e2e continue-on-error)" '${{ !inputs.e2e-required }}' "e2e failure is advisory only when not required"
+  eq "$(job e2e continue-on-error)" '${{ needs.version.outputs.e2e-required != '"'true'"' }}' "e2e failure is advisory only when not required"
+  grep -qxF '      e2e-required: ${{ inputs.e2e-required || startsWith(github.head_ref, '"'renovate/'"') }}' "$wf" \
+    || { echo "FAIL e2e-required is not the input or a renovate/* branch"; exit 1; }
+  has "$(jobtext e2e)" '          REQUIRED: ${{ needs.version.outputs.e2e-required }}' "e2e summary reads the effective e2e-required"
+  if grep -n 'inputs\.e2e-required' "$wf" | grep -v '      e2e-required: ${{ inputs.e2e-required ||'; then
+    echo "FAIL inputs.e2e-required read past the version job's e2e-required"; exit 1
+  fi
   e2e_if=$(job e2e if)
   for c in '!cancelled()' 'inputs.e2e &&' "needs.e2e-stand.result == 'success'" "needs.e2e-stand.outputs.route == 'true'" \
     "needs.version.outputs.e2e == 'true'" "needs.install.result == 'success'" \
