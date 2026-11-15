@@ -754,7 +754,7 @@ changes in the MCF repo: the jobs switch on by files.
 - **`tests-checks`** (`tests/package.json`): `npm run check-types` and `check-scripts` in
   `tests/`, each in its own log group, fails the run and holds the `image` (no release).
 - **`functional`** (`tests/functional/playwright.config.ts`; on pull requests and pushes, not on
-  `LocalizationPull`): the `static` artifact of `build` (source maps
+  `LocalizationPull` or PRs from forks): the `static` artifact of `build` (source maps
   removed) is unpacked to an empty `site/` and served by `http-server@14.1.1` (from nora,
   cached per repo after the first install) on `http://localhost:8080`, the port the tests expect; then
   `BASE_URL=http://localhost:8080 RETRIES=2 WORKERS=<functional-workers> npm run functional:ci`
@@ -791,7 +791,7 @@ changes in the MCF repo: the jobs switch on by files.
 The port of mcf@3 e2e ([issues-maestra#1573](https://github.com/maestra-io/issues-maestra/issues/1573)):
 the Playwright tests of `tests/e2e/` (`@mindbox-cloud/frontend-playwright`) run on pull
 requests against a stand of the PR. Both jobs need `tests/e2e/playwright.config.ts` (with
-`tests/package.json`; not on `LocalizationPull`); the stand is published
+`tests/package.json`; not on `LocalizationPull` or PRs from forks); the stand is published
 unconditionally, the tests run only with input `e2e`.
 
 - **`e2e-stand`** (pull requests from this repository, the conditions of `hot-test` without

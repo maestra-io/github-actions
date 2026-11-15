@@ -50,8 +50,8 @@ grep -q 'LocalizationPull' "$root/detect.log" || { echo "FAIL excluded branch is
 eq "$(detect "$cfg_only" true)" "tests=false tests-layout=none functional=false e2e=false" "config without tests/package.json"
 grep -q '^::warning::' "$root/detect.log" || { echo "FAIL config without tests/package.json emits no ::warning::"; exit 1; }
 # shellcheck disable=SC2016 # the expression is matched literally
-grep -qxF "          PLAYWRIGHT_EVENT: \${{ github.head_ref != 'LocalizationPull' }}" "$wf" \
-  || { echo "FAIL PLAYWRIGHT_EVENT is not 'every branch but LocalizationPull' (renovate/* runs the tests)"; exit 1; }
+grep -qxF "          PLAYWRIGHT_EVENT: \${{ github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref != 'LocalizationPull') }}" "$wf" \
+  || { echo "FAIL PLAYWRIGHT_EVENT is not 'non-PR events, or same-repo PRs but LocalizationPull' (renovate/* runs the tests, forks do not)"; exit 1; }
 echo "functional detect: ok"
 
 # Every restore of the root cache must list the same paths as its save, or it misses.
