@@ -505,8 +505,8 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/nora-images
-          key: nora-images-test-${{ github.run_id }}
-          restore-keys: nora-images-test-
+          key: nora-images-svc-test-${{ github.run_id }}
+          restore-keys: nora-images-svc-test-
       - name: nora image cache (load)
         if: ${{ inputs.docker-test-target != '' && steps.nora-images-1.outputs.cache-matched-key != '' }}
         continue-on-error: true
@@ -534,7 +534,7 @@ jobs:
           ids=$(docker image ls --no-trunc --format '{{.Repository}} {{.ID}}' \
             | awk '$1 ~ /^packages\.maestra\.io\// {print $2}' | sort -u)
           [ -n "$ids" ] || { echo "nora image cache: no packages.maestra.io images"; exit 0; }
-          key="nora-images-test-$(sha256sum <<<"$ids" | cut -c1-16)"
+          key="nora-images-svc-test-$(sha256sum <<<"$ids" | cut -c1-16)"
           [ "$key" != "$MATCHED" ] || { echo "nora image cache: unchanged ($key)"; exit 0; }
           mkdir -p "$RUNNER_TEMP/nora-images"
           # shellcheck disable=SC2086 # one ID per word
@@ -692,8 +692,8 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/nora-images
-          key: nora-images-test-${{ github.run_id }}
-          restore-keys: nora-images-test-
+          key: nora-images-svc-test-${{ github.run_id }}
+          restore-keys: nora-images-svc-test-
       - name: nora image cache (load)
         if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' && steps.nora-images-2.outputs.cache-matched-key != '' }}
         continue-on-error: true
@@ -723,7 +723,7 @@ jobs:
           ids=$(docker image ls --no-trunc --format '{{.Repository}} {{.ID}}' \
             | awk '$1 ~ /^packages\.maestra\.io\// {print $2}' | sort -u)
           [ -n "$ids" ] || { echo "nora image cache: no packages.maestra.io images"; exit 0; }
-          key="nora-images-test-$(sha256sum <<<"$ids" | cut -c1-16)"
+          key="nora-images-svc-test-$(sha256sum <<<"$ids" | cut -c1-16)"
           [ "$key" != "$MATCHED" ] || { echo "nora image cache: unchanged ($key)"; exit 0; }
           mkdir -p "$RUNNER_TEMP/nora-images"
           # shellcheck disable=SC2086 # one ID per word
@@ -889,8 +889,8 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/nora-images
-          key: nora-images-images-${{ github.run_id }}
-          restore-keys: nora-images-images-
+          key: nora-images-svc-images-${{ github.run_id }}
+          restore-keys: nora-images-svc-images-
       - name: nora image cache (load)
         if: ${{ steps.nora-images-3.outputs.cache-matched-key != '' }}
         continue-on-error: true
@@ -915,7 +915,7 @@ jobs:
           ids=$(docker image ls --no-trunc --format '{{.Repository}} {{.ID}}' \
             | awk '$1 ~ /^packages\.maestra\.io\// {print $2}' | sort -u)
           [ -n "$ids" ] || { echo "nora image cache: no packages.maestra.io images"; exit 0; }
-          key="nora-images-images-$(sha256sum <<<"$ids" | cut -c1-16)"
+          key="nora-images-svc-images-$(sha256sum <<<"$ids" | cut -c1-16)"
           [ "$key" != "$MATCHED" ] || { echo "nora image cache: unchanged ($key)"; exit 0; }
           mkdir -p "$RUNNER_TEMP/nora-images"
           # shellcheck disable=SC2086 # one ID per word
