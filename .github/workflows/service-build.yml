@@ -678,10 +678,6 @@ jobs:
           # <<< uv-keyring
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           echo "PACKAGES_AUDIENCE=$AUDIENCE" >> "$GITHUB_ENV"
-      # A test-command that builds an image can cache its layers like the images job:
-      # `docker buildx build --load --cache-from type=gha,scope=<x> --cache-to type=gha,mode=max,scope=<x>`.
-      # That needs a BuildKit builder (plain `docker build` keeps using the default one) and the
-      # Actions runtime env buildx reads for type=gha, which a run step does not see on its own.
       # >>> nora-image-cache restore (test)
       # moby/buildkit comes from nora (packages.maestra.io), which RunsOn's ECR pull-through mirror
       # (docker.io only) does not cover, so every fresh runner pulled it in full from nora
@@ -706,6 +702,10 @@ jobs:
           zstd -dcq "$f" | docker load -q \
             || echo "::warning::nora image cache: docker load failed, images come from nora"
       # <<< nora-image-cache restore
+      # A test-command that builds an image can cache its layers like the images job:
+      # `docker buildx build --load --cache-from type=gha,scope=<x> --cache-to type=gha,mode=max,scope=<x>`.
+      # That needs a BuildKit builder (plain `docker build` keeps using the default one) and the
+      # Actions runtime env buildx reads for type=gha, which a run step does not see on its own.
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
