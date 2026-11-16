@@ -28,6 +28,10 @@
 #                   under it changed (Flux builds the same trees from <service>-manifests;
 #                   the bake only packs them, so a broken overlay otherwise surfaces in
 #                   the cluster).
+#   fixed-digest tags  every clickhouse/clickhouse-server tag in the built overlays must be
+#                   a key of fluxcd's `fixedDigests` (vendored: pr-checks/fixed-digests.yaml):
+#                   the clusters pin that image by digest at admission and deny a tag they
+#                   cannot pin (pr-checks/check-fixed-digests.py, issues-maestra#1726).
 #   image-signatures  the images a change under kustomize-path adds to the built overlays,
 #                   judged by kyverno-cli with the policy the clusters enforce
 #                   (pr-checks/check-image-signatures.py). Runs after the kustomize step
@@ -173,6 +177,22 @@ jobs:
             fi
           done
           exit $failed
+
+      - name: fixed-digest tags (changed overlays tree)
+        if: ${{ !cancelled() && inputs.kustomize }}
+        env:
+          KPATH: ${{ inputs.kustomize-path }}
+        run: |
+          set -euo pipefail
+          # The kustomize step installs the binary only when something changed under KPATH.
+          if [ ! -x "$RUNNER_TEMP/kustomize" ]; then echo "nothing changed under $KPATH"; exit 0; fi
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet pyyaml==6.0.3
+          # An overlay that does not build is the kustomize step's verdict, not this one's.
+          for ep in $(bash .pr-checks/pr-checks/kustomize-entry-points.sh "$KPATH"); do
+            "$RUNNER_TEMP/kustomize" build --load-restrictor LoadRestrictionsNone "$ep" 2>/dev/null && echo '---' || true
+          done > "$RUNNER_TEMP/fixed-digests-head.yaml"
+          python3 -I .pr-checks/pr-checks/check-fixed-digests.py .pr-checks/pr-checks/fixed-digests.yaml \
+            "$RUNNER_TEMP/fixed-digests-head.yaml"
 
       - name: image signatures (changed overlays tree)
         if: ${{ !cancelled() && inputs.kustomize && inputs.image-signatures }}

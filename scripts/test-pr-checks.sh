@@ -117,4 +117,12 @@ check "no kyverno binary never fails"        0 sig_verify ./missing-kyverno --en
 : > images
 check "no images: kyverno not started"       0 sig_verify ./missing-kyverno --enforce
 
+# check-fixed-digests.py: its own cases, then the vendored map against a built CHI.
+fd="$root/pr-checks/check-fixed-digests.py"
+check "fixed-digests self-test"              0 python3 -I "$fd" --self-test
+printf 'kind: HelmRelease\nmetadata: {name: ch}\nspec:\n  chart: {spec: {chart: clickhouse}}\n  values: {clickhouse: {image: {tag: "%s"}}}\n' 26.8.2.7 > fd-ok.yaml
+printf 'kind: HelmRelease\nmetadata: {name: ch}\nspec:\n  chart: {spec: {chart: clickhouse}}\n  values: {clickhouse: {image: {tag: "%s"}}}\n' 99.1.1.1 > fd-bad.yaml
+check "fixed-digests: mapped tag passes"     0 python3 -I "$fd" "$root/pr-checks/fixed-digests.yaml" fd-ok.yaml
+check "fixed-digests: unmapped tag fails"    1 python3 -I "$fd" "$root/pr-checks/fixed-digests.yaml" fd-bad.yaml
+
 exit $fail
