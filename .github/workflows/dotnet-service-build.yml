@@ -617,6 +617,34 @@ jobs:
           jq --arg h "$host" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
           # <<< nora-cred-helper
 
+      # >>> nora-image-cache restore (test)
+      # A RunsOn runner starts with an empty image store and RunsOn's ECR pull-through
+      # mirror covers docker.io only, so every image named packages.maestra.io/... (moby/buildkit,
+      # Testcontainers via TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX) came from nora in full on every
+      # job and saturated the 1 Gbit link of nora's node (HostNetworkInterfaceSaturated,
+      # us-iota-lw-kube-infra-02, 16.11.2026). The images this job pulled from nora are saved
+      # by ID into the Magic Cache (S3 next to the runner) and loaded here; a later pull by tag
+      # or digest then fetches only the manifest from nora: Docker 28 skips every layer when
+      # the config digest (the image ID) is already local (moby distribution/pull_v2.go
+      # pullSchema2Layers). A miss or a failed load only means the pulls go to nora as before.
+      - name: nora image cache (restore)
+        id: nora-images
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/nora-images
+          key: nora-images-test-${{ github.run_id }}
+          restore-keys: nora-images-test-
+      - name: nora image cache (load)
+        if: ${{ steps.nora-images.outputs.cache-matched-key != '' }}
+        continue-on-error: true
+        run: |
+          f="$RUNNER_TEMP/nora-images/images.tar.zst"
+          [ -s "$f" ] || exit 0
+          zstd -dcq "$f" | docker load -q \
+            || echo "::warning::nora image cache: docker load failed, images come from nora"
+      # <<< nora-image-cache restore
+
       # ISO week for a Dockerfile's `ARG BASE_REFRESH` (README, layer cache): a new value
       # rebuilds the apt/apk stages the cache would otherwise serve forever.
       - id: week
@@ -996,6 +1024,35 @@ jobs:
         if: ${{ always() }}
         run: docker image ls --format '{{.Repository}}:{{.Tag}}' | sort || true
 
+      # >>> nora-image-cache save (test)
+      # Everything this job holds from packages.maestra.io, by image ID; saved only when the set
+      # differs from the restored one (the key is a hash of the IDs).
+      - name: nora image cache (pack)
+        id: nora-images-pack
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          MATCHED: ${{ steps.nora-images.outputs.cache-matched-key }}
+        run: |
+          ids=$(docker image ls --no-trunc --format '{{.Repository}} {{.ID}}' \
+            | awk '$1 ~ /^packages\.maestra\.io\// {print $2}' | sort -u)
+          [ -n "$ids" ] || { echo "nora image cache: no packages.maestra.io images"; exit 0; }
+          key="nora-images-test-$(sha256sum <<<"$ids" | cut -c1-16)"
+          [ "$key" != "$MATCHED" ] || { echo "nora image cache: unchanged ($key)"; exit 0; }
+          mkdir -p "$RUNNER_TEMP/nora-images"
+          # shellcheck disable=SC2086 # one ID per word
+          docker save $ids | zstd -T0 -3 -q -o "$RUNNER_TEMP/nora-images/images.tar.zst"
+          echo "nora image cache: $(wc -l <<<"$ids") images, $(du -h "$RUNNER_TEMP/nora-images/images.tar.zst" | cut -f1) -> $key"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+      - name: nora image cache (save)
+        if: ${{ steps.nora-images-pack.outputs.key != '' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/nora-images
+          key: ${{ steps.nora-images-pack.outputs.key }}
+      # <<< nora-image-cache save
+
       # Flaky-test telemetry (maestra-io/issues-maestra#1592): TRX of every attempt, pass or fail.
       # github.job is the CALLED job id (test/package), the same for every call of this
       # workflow in one run, and an artifact name cannot repeat: a per-job suffix.
@@ -1204,12 +1261,69 @@ jobs:
           jq --arg h "$host" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
           # <<< nora-cred-helper
 
+      # >>> nora-image-cache restore (images)
+      # A RunsOn runner starts with an empty image store and RunsOn's ECR pull-through
+      # mirror covers docker.io only, so every image named packages.maestra.io/... (moby/buildkit,
+      # Testcontainers via TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX) came from nora in full on every
+      # job and saturated the 1 Gbit link of nora's node (HostNetworkInterfaceSaturated,
+      # us-iota-lw-kube-infra-02, 16.11.2026). The images this job pulled from nora are saved
+      # by ID into the Magic Cache (S3 next to the runner) and loaded here; a later pull by tag
+      # or digest then fetches only the manifest from nora: Docker 28 skips every layer when
+      # the config digest (the image ID) is already local (moby distribution/pull_v2.go
+      # pullSchema2Layers). A miss or a failed load only means the pulls go to nora as before.
+      - name: nora image cache (restore)
+        id: nora-images
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/nora-images
+          key: nora-images-images-${{ github.run_id }}
+          restore-keys: nora-images-images-
+      - name: nora image cache (load)
+        if: ${{ steps.nora-images.outputs.cache-matched-key != '' }}
+        continue-on-error: true
+        run: |
+          f="$RUNNER_TEMP/nora-images/images.tar.zst"
+          [ -s "$f" ] || exit 0
+          zstd -dcq "$f" | docker load -q \
+            || echo "::warning::nora image cache: docker load failed, images come from nora"
+      # <<< nora-image-cache restore
+
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
           driver-opts: image=packages.maestra.io/docker-hub/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
           name: ${{ steps.runs-on.outputs.buildkit-builder }}
           driver: docker-container
           cleanup: ${{ !inputs.sticky-buildkit }}
+
+      # >>> nora-image-cache save (images)
+      # Everything this job holds from packages.maestra.io, by image ID; saved only when the set
+      # differs from the restored one (the key is a hash of the IDs).
+      - name: nora image cache (pack)
+        id: nora-images-pack
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          MATCHED: ${{ steps.nora-images.outputs.cache-matched-key }}
+        run: |
+          ids=$(docker image ls --no-trunc --format '{{.Repository}} {{.ID}}' \
+            | awk '$1 ~ /^packages\.maestra\.io\// {print $2}' | sort -u)
+          [ -n "$ids" ] || { echo "nora image cache: no packages.maestra.io images"; exit 0; }
+          key="nora-images-images-$(sha256sum <<<"$ids" | cut -c1-16)"
+          [ "$key" != "$MATCHED" ] || { echo "nora image cache: unchanged ($key)"; exit 0; }
+          mkdir -p "$RUNNER_TEMP/nora-images"
+          # shellcheck disable=SC2086 # one ID per word
+          docker save $ids | zstd -T0 -3 -q -o "$RUNNER_TEMP/nora-images/images.tar.zst"
+          echo "nora image cache: $(wc -l <<<"$ids") images, $(du -h "$RUNNER_TEMP/nora-images/images.tar.zst" | cut -f1) -> $key"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+      - name: nora image cache (save)
+        if: ${{ steps.nora-images-pack.outputs.key != '' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/nora-images
+          key: ${{ steps.nora-images-pack.outputs.key }}
+      # <<< nora-image-cache save
       - run: mkdir -p .nuget # bind-mount source of the GitLab-era Dockerfiles
 
       - name: aws credentials
