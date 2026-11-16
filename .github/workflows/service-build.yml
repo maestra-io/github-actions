@@ -1164,8 +1164,25 @@ jobs:
           if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "release $TAG already exists"; exit 0
           fi
-          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "$TAG" --generate-notes
+          # >>> github-release-create (scripts/test-github-release-create.sh runs this block)
+          # A new tag on a commit whose .github/workflows differ from the default branch tip
+          # needs a token that may modify workflows, which GITHUB_TOKEN never is (REST docs,
+          # "Create a release"): GitHub answers 403 "Resource not accessible by integration"
+          # once main moved past this commit with a workflow change while it was built.
+          if ! gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "$TAG" --generate-notes; then
+            head=$(gh api "repos/$GITHUB_REPOSITORY/commits/HEAD" --jq .sha 2>/dev/null || true)
+            wf=""
+            if [ -n "$head" ] && [ "$head" != "$GITHUB_SHA" ]; then
+              wf=$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...$head" \
+                --jq '[.files[].filename | select(startswith(".github/workflows/"))] | join(", ")' 2>/dev/null || true)
+            fi
+            if [ -n "$wf" ]; then
+              echo "::error::release $TAG not created: the default branch moved to ${head:0:7} and changed $wf since ${GITHUB_SHA:0:7}, and GITHUB_TOKEN may not tag a commit whose workflow files differ from the default branch tip. The release of ${head:0:7} (its own run) supersedes this one; to release ${GITHUB_SHA:0:7} itself, create release $TAG by hand with a token that has the workflows permission."
+            fi
+            exit 1
+          fi
+          # <<< github-release-create
 
   bake:
     needs: [version, release]
