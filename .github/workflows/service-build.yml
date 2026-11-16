@@ -529,6 +529,7 @@ jobs:
         continue-on-error: true
         env:
           MATCHED: ${{ steps.nora-images-1.outputs.cache-matched-key }}
+        shell: bash
         run: |
           ids=$(docker image ls --no-trunc --format '{{.Repository}} {{.ID}}' \
             | awk '$1 ~ /^packages\.maestra\.io\// {print $2}' | sort -u)
@@ -717,6 +718,7 @@ jobs:
         continue-on-error: true
         env:
           MATCHED: ${{ steps.nora-images-2.outputs.cache-matched-key }}
+        shell: bash
         run: |
           ids=$(docker image ls --no-trunc --format '{{.Repository}} {{.ID}}' \
             | awk '$1 ~ /^packages\.maestra\.io\// {print $2}' | sort -u)
@@ -908,6 +910,7 @@ jobs:
         continue-on-error: true
         env:
           MATCHED: ${{ steps.nora-images-3.outputs.cache-matched-key }}
+        shell: bash
         run: |
           ids=$(docker image ls --no-trunc --format '{{.Repository}} {{.ID}}' \
             | awk '$1 ~ /^packages\.maestra\.io\// {print $2}' | sort -u)
