@@ -38,6 +38,7 @@ on:
       - "go-nora/**"
       - "cargo-nora/**"
       - "nora-session/**"
+      - "nora-service/**"
       - "check-encoding/**"
       - "translation-checker/**"
       - "nora-image-prewarm/**"
@@ -97,6 +98,9 @@ jobs:
 
       - name: nora-session JWT exchanged for a session token, fallback, refusal (stub curl)
         run: bash scripts/test-nora-session.sh
+
+      - name: nora-service pull credential, docker run flags, health wait, post cleanup (stub docker/curl)
+        run: bash scripts/test-nora-service.sh
 
       - name: go-nora GOPROXY, GOAUTH helper, token output (stub curl)
         run: bash scripts/test-go-nora.sh
@@ -216,6 +220,37 @@ jobs:
             grep -qF -- "$line" ansible/tests/test-host-limit-selector.sh \
               || { echo "::error::test no longer contains: $line"; exit 1; }
           done
+
+  # nora-service for real: Postgres pulled through nora by digest with the job's OIDC token,
+  # reached on the published port and by docker exec, removed by the post step.
+  nora-service:
+    runs-on: runs-on=${{ github.run_id }}-nora-service/runner=t3a-small
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # nora session token for the pull
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./nora-service
+        id: pg
+        with:
+          image: packages.maestra.io/docker-hub/library/postgres:17@sha256:3b0cda93be7c8dba2ed484d19393d93845dc3dafb88973e248ba8e6d99d784e1
+          ports: 127.0.0.1:5432:5432
+          env: POSTGRES_HOST_AUTH_METHOD=trust
+          options: --health-cmd "pg_isready -U postgres" --health-interval 2s --health-timeout 5s --health-retries 30
+      - name: Postgres answers by docker exec and on the published port
+        env:
+          PG: ${{ steps.pg.outputs.id }}
+        run: |
+          [ "$(docker exec "$PG" psql -U postgres -Atc 'select 1')" = 1 ]
+          timeout 5 bash -c '</dev/tcp/127.0.0.1/5432'
+          docker image inspect --format '{{join .RepoDigests " "}}' "$(docker inspect -f '{{.Image}}' "$PG")" \
+            | grep -qF 'packages.maestra.io/docker-hub/library/postgres@sha256:3b0cda93be7c8dba2ed484d19393d93845dc3dafb88973e248ba8e6d99d784e1'
+          # the pull's credential stayed out of the runner's docker config
+          ! grep -qs packages.maestra.io "${DOCKER_CONFIG:-$HOME/.docker}/config.json"
 
   # check-encoding and translation-checker for real over this repo: check-encoding runs
   # the Python port, translation-checker pulls our image from ECR with the runner's

@@ -425,6 +425,39 @@ warning; any other answer fails the step. Needs `id-token: write`.
 
 Tested by [`scripts/test-nora-session.sh`](scripts/test-nora-session.sh) (stub `curl`, run by `selftest`).
 
+## Service containers through nora (`nora-service`)
+
+The runner pulls `services:` and `container:` images before the first step, so they cannot
+use the job's OIDC token: only `credentials:` from a stored secret, which nora does not hand
+out. Without one they come straight from Docker Hub, past nora's 3-day quarantine
+(issues-maestra#1649). This action starts the dependency as a step instead: the image,
+`packages.maestra.io/<path>:<tag>@sha256:<digest>` (refused otherwise), is pulled with a nora
+session token held only in a throwaway 0600 docker config for that pull, run with
+`docker run -d`, and waited on (healthy with a health check, running without one; `timeout`,
+default 180 s). The post step removes it whatever the job's result (a node action for that
+step; the work is [`nora-service.sh`](nora-service/nora-service.sh)). Inputs mirror the service
+keys: `ports` and `env` one per line, `options` as `services.<id>.options` takes them, `name`;
+output `id` for `docker exec` (`job.services.<id>.id` before). Steps reach it on
+`localhost:<published port>`. Needs `id-token: write`. Renovate moves the pin
+(`testImagePins` reads the `image:` input under this action's `uses:`).
+
+```yaml
+    permissions:
+      id-token: write
+    steps:
+      - uses: maestra-io/github-actions/nora-service@<40-hex sha> # vX.Y.Z
+        id: pg
+        with:
+          image: packages.maestra.io/docker-hub/library/postgres:17@sha256:<digest>
+          ports: 5432:5432
+          env: |
+            POSTGRES_PASSWORD=ci-only
+          options: --health-cmd "pg_isready -U postgres" --health-interval 2s --health-retries 30
+```
+
+Tested by [`scripts/test-nora-service.sh`](scripts/test-nora-service.sh) (stub `docker`/`curl`)
+and the `nora-service` job of `selftest` (a real pull through nora).
+
 ## BuildKit through nora (`setup-buildx`)
 
 `docker/setup-buildx-action`'s docker-container driver runs `moby/buildkit:buildx-stable-1`,
