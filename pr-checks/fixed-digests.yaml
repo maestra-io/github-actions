@@ -1,0 +1,9 @@
+# Vendored from maestra-io/fluxcd base/kyverno-nora-pull-through/chart/values.yaml
+# `fixedDigests` @ feat/1649-pin-clickhouse-server (maestra-io/fluxcd#29807), 2026-11-16.
+# fluxcd is private and callers' GITHUB_TOKEN cannot read it. Refresh: copy the map
+# again and move this line. Add a tag in fluxcd FIRST, then here: until both are
+# merged an app PR using the tag fails (the safe direction). Read by
+# check-fixed-digests.py (issues-maestra#1726).
+fixedDigests:
+  "docker-hub/clickhouse/clickhouse-server:26.3.21.7": sha256:9a901f8d961005ea428be385211f96822f74fb4e299443a896e23fb6d4b5549e
+  "docker-hub/clickhouse/clickhouse-server:26.8.2.7": sha256:fa394da808cc53f76d0344429421d6c422a6ee85fe7450135c0e3cff4df9bcbb
