@@ -62,7 +62,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: ${{ inputs.helm-version }}
 
@@ -117,9 +117,9 @@ jobs:
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: ${{ inputs.helm-version }}
-      - uses: maestra-io/github-actions/push-helm-chart-to-aws-ecr@4810e33793d010b8ff485d52a0798d48fc7df5a6 # v1.46.1
+      - uses: maestra-io/github-actions/push-helm-chart-to-aws-ecr@2450cdaaf4688887cb65579fc45ab5304cb81967 # v1.46.2
         with:
           chartPath: ${{ inputs.chart-path }}
