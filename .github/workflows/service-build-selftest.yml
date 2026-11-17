@@ -41,7 +41,7 @@ jobs:
     with:
       image-targets: selftest_other=ci/fixtures/service-build/Dockerfile.worker:other
       test-command: test -f /src/ci/fixtures/service-build/Dockerfile && test "$SELFTEST" = in-container && test -n "$PACKAGES_TOKEN"
-      test-image: docker.io/library/busybox:1.37
+      test-image: packages.maestra.io/docker-hub/library/busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
       test-env: SELFTEST=in-container
 
   # base-image: the base is built once in `test`, then handed to the leg whose

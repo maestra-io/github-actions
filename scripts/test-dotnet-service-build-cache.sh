@@ -539,7 +539,10 @@ seed=${seed//packages.maestra.io\/mcr\//mcr.microsoft.com/}; extract=${extract//
 # Builders of their own (id=nuget as in the workflow, nothing shared with other runs).
 for b in a b c; do
   builders+=("selftest-nuget-mount-$b-$nonce")
-  docker buildx create --name "selftest-nuget-mount-$b-$nonce" --driver docker-container >/dev/null
+  # moby/buildkit through nora by digest (issues-maestra#1649), as setup-buildx does: the default
+  # buildx-stable-1 comes from Docker Hub. selftest.yml logs the daemon in to nora first.
+  docker buildx create --name "selftest-nuget-mount-$b-$nonce" --driver docker-container \
+    --driver-opt image=packages.maestra.io/docker-hub/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe >/dev/null
 done
 cp "$work/Dockerfile.fixed" "$work/ctx/Dockerfile.mount"
 # The docker-container driver has no host-gateway: the docker daemon resolves it.
