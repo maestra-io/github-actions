@@ -18,7 +18,9 @@
 #                        for every netN.M target framework of the solution's project/props
 #                        files, plus global.json when present; the build then runs on the
 #                        SDK of the highest one (temporary global.json pin, see "pin the
-#                        build SDK"). Set = exactly these SDKs and no pin.
+#                        build SDK"). Set = exactly these SDKs, pinned to their highest major.
+#                        The SDKs come from nora (dotnet-nora, sha256-pinned), never from
+#                        builds.dotnet.microsoft.com (issues-maestra#1649).
 #   version              Explicit package version (-p:PackageVersion). Empty = the
 #                        repo's own scheme, $(VersionMajor).$(VersionMinor).$(BuildNumber)$(VersionTag)
 #                        in Directory.Build.props, fed BuildNumber below (GitLab parity).
@@ -228,12 +230,13 @@ jobs:
           echo "global-json=${global_json:-true}" >> "$GITHUB_OUTPUT"
           echo "SDKs: ${versions//$'\n'/ }"
           # sdk-set: end
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      # setup-dotnet syntax, from nora raw instead of builds.dotnet.microsoft.com (README).
+      - uses: maestra-io/github-actions/dotnet-nora@b7c17975563c5d169c99c3dcd1f79cf42df5056b # v1.97.0
         with:
           dotnet-version: ${{ steps.sdk.outputs.versions }}
           global-json-file: ${{ inputs.dotnet-version == '' && steps.sdk.outputs.global-json == 'true' && hashFiles('global.json') != '' && 'global.json' || '' }}
 
-      # The runner image ships the newest SDK and setup-dotnet only adds SDKs, so
+      # The runner image ships the newest SDK and dotnet-nora only adds SDKs, so
       # without a global.json pin (none, or rollForward latestMajor/major) the newest
       # one builds. Its new analyzers and EOL-framework warnings then fail
       # /warnaserror where the GitLab sdk:<N> image passed (DumpTool, GraphQL,
