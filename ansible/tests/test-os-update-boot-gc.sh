@@ -38,6 +38,8 @@ cat > "$tmp/bin/apt-get" <<'SH'
 echo "$*" >> "$S/calls"
 case " $* " in
   *" -s "*) cat "$S/sim" ;;
+  # The apt module refreshes an empty package index first (a CI runner has none).
+  *" update "*) : ;;
   *" autoremove "*)
     # The apt module reads "changed" off this block, as real apt-get prints it.
     printf 'The following packages will be REMOVED:\n  linux-image*\n'
