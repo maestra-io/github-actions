@@ -43,7 +43,7 @@ jobs:
         run: |
           for v in a b; do
             d="$RUNNER_TEMP/ctx-$v"; mkdir -p "$d"
-            printf 'FROM docker.io/library/busybox:1.37\nRUN echo shared > /shared\nRUN echo %s > /variant\n' "$v" > "$d/Dockerfile"
+            printf 'FROM packages.maestra.io/docker-hub/library/busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec\nRUN echo shared > /shared\nRUN echo %s > /variant\n' "$v" > "$d/Dockerfile"
           done
           echo "value=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
         id: epoch
