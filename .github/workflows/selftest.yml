@@ -126,9 +126,9 @@ jobs:
       - name: dotnet-service-build image-targets / bakes, global.json SDK, AWS credentials wait (workflow copy)
         run: bash scripts/test-dotnet-service-build.sh
 
-      # Real tools at the pr-checks.yml pins and the real commons-app chart from ECR with the
-      # runner's instance role: the same path a service PR takes, so a runner image without
-      # PyYAML or ECR read fails here, not on the first service PR with a block.
+      # Real tools at the pr-checks.yml pins and the real commons-app / commons-app-init charts
+      # from ECR with the runner's instance role: the same path a service PR takes, so a runner
+      # image without PyYAML or ECR read fails here, not on the first service PR with a block.
       - name: pr-checks networkPolicy gate (fixture pilot tree, ECR chart pull, kubeconform, broad gate)
         run: bash scripts/test-network-policy-gate.sh
 

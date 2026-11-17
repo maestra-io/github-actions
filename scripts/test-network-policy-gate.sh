@@ -3,12 +3,14 @@
 # universal-channel-http-sender pilot): the omicron block renders, passes kubeconform and the
 # broad gate; a block without ports fails with the chart's schema text; a block in
 # overlays/omega or in base renders like any other; a policy that is not allow-only is refused; no block = one line; an unpinned chart version is refused; a
-# stub helm that renders a broad / invalid policy is caught by the broad gate / kubeconform.
+# stub helm that renders a broad / invalid policy is caught by the broad gate / kubeconform; the
+# commons-app-init hook Job policies render, fail on the chart's text, render nothing disabled.
 #
 # Real kustomize, helm and kubeconform (downloaded at the workflow's pins when not on PATH) and
-# the real commons-app chart: from $CHARTS_DIR when it holds commons-app-<version>.tgz, else
-# pulled from ECR after an `aws ecr get-login-password` login (the runner's instance role) — the
-# same path the pr-checks step takes, so a runner without ECR read fails here first.
+# the real commons-app and commons-app-init charts: from $CHARTS_DIR when it holds both
+# <chart>-<version>.tgz, else pulled from ECR after an `aws ecr get-login-password` login (the
+# runner's instance role) — the same path the pr-checks step takes, so a runner without ECR
+# read fails here first.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -38,12 +40,13 @@ tool KUBECONFORM kubeconform "https://github.com/yannh/kubeconform/releases/down
 echo "kustomize $("$KUSTOMIZE" version), helm $("$HELM" version --template '{{.Version}}'), kubeconform $("$KUBECONFORM" -v)"
 
 version=$(sed -n 's/^ *version: "\(.*\)"/\1/p' "$fixture/base/helm-release-app.yaml")
+init_version=$(sed -n 's/^ *version: "\(.*\)"/\1/p' "$fixture/base/helm-release-init.yaml")
 charts=${CHARTS_DIR:-$work/charts}
-if [ ! -f "$charts/commons-app-$version.tgz" ]; then
+if [ ! -f "$charts/commons-app-$version.tgz" ] || [ ! -f "$charts/commons-app-init-$init_version.tgz" ]; then
 	registry=$(pin ECR_REGISTRY)
 	aws ecr get-login-password --region "$(cut -d. -f4 <<<"$registry")" | "$HELM" registry login --username AWS --password-stdin "$registry" \
-		|| { echo "FAIL ECR login: no AWS credentials (set CHARTS_DIR to a dir holding commons-app-$version.tgz to test offline)"; exit 1; }
-	echo "chart commons-app-$version pulled from ECR by the gate"
+		|| { echo "FAIL ECR login: no AWS credentials (set CHARTS_DIR to a dir holding commons-app-$version.tgz and commons-app-init-$init_version.tgz to test offline)"; exit 1; }
+	echo "charts commons-app-$version, commons-app-init-$init_version pulled from ECR by the gate"
 fi
 
 check() { # name expected-exit grep-pattern command...
@@ -59,6 +62,12 @@ gate() { # <tree> [gate args]
 	(cd "$work" && python3 -I "$gate" --kustomize-path "$tree" --charts-dir "$charts" "$@" "${points[@]}")
 }
 tree() { rm -rf "${work:?}/$1"; cp -r "$fixture" "$work/$1"; }
+init_np() { # <enabled> [no-ports]: a networkPolicy block for the omicron commons-app-init release
+	local ports='              ports: [8080]\n'
+	if [ "${2:-}" = no-ports ]; then ports=; fi
+	printf '    networkPolicy:\n      enabled: %s\n      jobs:\n        sql-migration:\n          egress:\n            - to: {namespace: mailings, app: mailings-services}\n%b' \
+		"$1" "$ports" >>"$work/k/overlays/omicron/patch-init.yaml"
+}
 
 tree k
 check "pilot block renders, 1 policy, kubeconform + broad gate" 0 "ok   k/overlays/omicron: .* commons-app $version: 1 Cilium policies, kubeconform ok, broad gate ok" gate k
@@ -88,9 +97,25 @@ printf '  values:\n    networkPolicy:\n      egress:\n        - to: {preset: dra
 check "base block: omega renders nothing" 0 "ok   k/overlays/omega: .* 0 Cilium policies" gate k
 grep -q "^ok   k/overlays/omicron: .* 1 Cilium policies" "$work/out" && echo "ok   base block: omicron still renders" || { echo "FAIL base block omicron"; cat "$work/out"; fail=1; }
 
+# commons-app-init: its policies are helm hooks, plain `helm template` renders them.
+tree k
+init_np true
+check "init block enabled: hook Job policy renders and passes" 0 "ok   k/overlays/omicron: .*-init commons-app-init $init_version: 1 Cilium policies, kubeconform ok, broad gate ok" gate k
+if grep -q "2 release(s) rendered" "$work/out"; then echo "ok   app and init both rendered"; else echo "FAIL init summary"; fail=1; fi
+
+tree k
+init_np true no-ports
+check "init rule without ports: chart schema text in the error" 1 "missing property 'ports'" gate k
+if grep -q "^::error file=k/overlays/omicron/patch-init.yaml::.*-init: helm template commons-app-init" "$work/out"; then echo "ok   init error names the init patch file"; else echo "FAIL init error file"; fail=1; fi
+if grep -q "^ok   k/overlays/omicron: .* commons-app $version: 1 Cilium policies" "$work/out"; then echo "ok   app still rendered"; else echo "FAIL app beside init error"; fail=1; fi
+
+tree k
+init_np false
+check "init block disabled: renders nothing, passes" 0 "ok   k/overlays/omicron: .*-init commons-app-init $init_version: 0 Cilium policies" gate k
+
 tree k
 sed -i.bak '/networkPolicy:/,$d' "$work/k/overlays/omicron/patch-app.yaml"
-check "no block anywhere: one line, exit 0" 0 "^no networkPolicy block in a commons-app/postgres HelmRelease under k$" gate k
+check "no block anywhere: one line, exit 0" 0 "^no networkPolicy block in a commons-app/commons-app-init/postgres HelmRelease under k$" gate k
 
 tree k
 sed -i.bak "s/version: \"$version\"/version: \">=18.0.0\"/" "$work/k/base/helm-release-app.yaml"
@@ -147,6 +172,14 @@ EOF2
 tree k
 HELM="$work/stub-helm" STUB_RENDER="$work/denying.yaml" gate k >"$work/out" 2>&1 && got=0 || got=$?
 if [ "$got" = 1 ] && grep -q "not allow-only (x-netpol)" "$work/out"; then echo "ok   denying policy refused"; else echo "FAIL denying policy: exit $got"; cat "$work/out"; fail=1; fi
+# The init release carries the app's name in its values: each error names only its own file.
+tree k
+init_np true
+HELM="$work/stub-helm" STUB_RENDER="$work/denying.yaml" gate k >"$work/out" 2>&1 || true
+if grep -q "sender: rendered policies are not allow-only .* Files: k/overlays/omicron/patch-app.yaml$" "$work/out" \
+	&& grep -q "sender-init: rendered policies are not allow-only .* Files: k/overlays/omicron/patch-init.yaml$" "$work/out"; then
+	echo "ok   app and init errors name their own files"
+else echo "FAIL app/init files"; cat "$work/out"; fail=1; fi
 tree k
 HELM="$work/stub-helm" STUB_RENDER="$work/broad.yaml" gate k >"$work/out" 2>&1 && got=0 || got=$?
 if [ "$got" = 1 ] && grep -q "x-netpol:V2 — egress: \['world'\] without ports" "$work/out"; then echo "ok   broad policy: netpol-broad-gate V2"; else echo "FAIL broad policy: exit $got"; cat "$work/out"; fail=1; fi

@@ -4,3 +4,4 @@ resources:
   - ../../base
 patches:
   - path: patch-app.yaml
+  - path: patch-init.yaml

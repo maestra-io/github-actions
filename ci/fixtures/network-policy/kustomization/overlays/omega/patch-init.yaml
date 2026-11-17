@@ -1,0 +1,22 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: universal-channel-http-sender-init
+  namespace: universal-channel-http-sender
+spec:
+  values:
+    packageVersion: ${APP_PACKAGE_VERSION_TO_BE_REPLACED}
+    name: universal-channel-http-sender
+    global:
+      deployEnv: ${ENV}
+    migrations:
+      enabled: false
+    checkRollback:
+      enabled: false
+    initialization:
+      enabled: false
+      imageName: universal_channel_http_sender_worker
+    sqlmigrator:
+      imageName: universal_channel_http_sender_worker
+    appSecrets:
+      k8sSecretName: universal-channel-http-sender-app-secrets
