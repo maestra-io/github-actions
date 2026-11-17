@@ -16,8 +16,11 @@
 # what the PR adds is scanned, never the whole tree. The checkout is full depth
 # (fetch-depth: 0) because that range reaches back to the parent of the PR's first
 # commit. The action reads only the first page of that list (30 commits), so a PR
-# with more than 30 commits fails before the scan instead of passing on a partial one
-# (squash or split it). Merge commits and side branches merged into the PR are not
+# with more than 30 commits (an upstream sync merged with a merge commit) is scanned
+# by the gitleaks CLI instead, over the same commits: `--no-merges --first-parent
+# <base sha>..<head sha>`, the sha256-pinned release of GITLEAKS_VERSION, the same
+# config and `.gitleaksignore`; findings are redacted in the job log, no PR review
+# comments or SARIF artifact on that path. Merge commits and side branches merged into the PR are not
 # scanned (`--first-parent --no-merges` is fixed in the action). Red on a finding; the job summary
 # lists the findings (redacted), each one gets a review comment on the PR, and the
 # SARIF report is uploaded as a run artifact (the action's defaults).
@@ -48,7 +51,9 @@
 # fingerprint `<commit>:<file>:<rule-id>:<line>` per line (the job log prints it; the
 # summary lists its parts).
 #
-# gitleaks-action installs the newest gitleaks release (GITLEAKS_VERSION latest).
+# gitleaks-action downloads the gitleaks release GITLEAKS_VERSION names from github.com
+# itself (no URL or checksum input): the version is pinned, never `latest`, so a new
+# release reaches every repo only through a reviewed bump here.
 #
 # Inputs:
 #   ref   ref of maestra-io/github-actions the central config is read from (default
@@ -72,14 +77,12 @@ jobs:
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: runs-on=${{ github.run_id }}-gitleaks/pool=small
     timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      # sha256 of gitleaks_<GITLEAKS_VERSION>_linux_x64.tar.gz (the release's checksums.txt).
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      # gitleaks-action scans the first 30 commits of a PR and no more (one page of
-      # the commits API): a longer PR must not pass on a partial scan.
-      - if: ${{ github.event.pull_request.commits > 30 }}
-        run: |
-          echo "::error::this PR has ${{ github.event.pull_request.commits }} commits; gitleaks-action scans only the first 30. Squash or split it."
-          exit 1
       # Full history: the scanned range starts at the parent of the PR's first commit.
       # No token left in git config.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -95,12 +98,32 @@ jobs:
           path: .github-actions
           sparse-checkout: gitleaks
           persist-credentials: false
-      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+      # gitleaks-action scans the first 30 commits of a PR and no more (one page of
+      # the commits API), so a longer PR goes through the CLI step below instead.
+      - if: ${{ github.event.pull_request.commits <= 30 }}
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
-          GITLEAKS_VERSION: latest
           GITLEAKS_CONFIG: .github-actions/gitleaks/gitleaks.toml
+      - name: gitleaks CLI (PR longer than 30 commits)
+        if: ${{ github.event.pull_request.commits > 30 }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/gitleaks.tar.gz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+          # gitleaks exits 0 on a range git cannot resolve: resolve it first.
+          n=$(git rev-list --count --no-merges --first-parent "${BASE_SHA}..${HEAD_SHA}")
+          echo "scanning ${n} first-parent non-merge commits of ${BASE_SHA}..${HEAD_SHA}"
+          # The commits gitleaks-action would scan (no merges, first parent), all of them.
+          "$RUNNER_TEMP/gitleaks" git . --config .github-actions/gitleaks/gitleaks.toml \
+            --log-opts="--no-merges --first-parent ${BASE_SHA}..${HEAD_SHA}" \
+            --redact --verbose --exit-code 1
 
   actions-pinned:
     name: actions pinned
@@ -132,10 +155,13 @@ jobs:
             - ignore: true
               conditions:
                 - expr: ActionName contains "/.github/workflows/"
+                - expr: ActionVersion matches "^[0-9a-f]{40}$"
           YAML
           git diff HEAD^1 HEAD > "$RUNNER_TEMP/pr.diff"
-          # --no-api: a syntactic check (40-hex SHA plus a version comment), no token needed.
+          # --no-api: a syntactic check, no token needed. Any 40-hex SHA passes (the second
+          # rule), whatever its comment says: a branch pin `@<sha> # main` is pinned too, and
+          # pinact --no-api would reject its non-semver comment.
           if ! "$RUNNER_TEMP/pinact" run --fix=false --no-api -c "$RUNNER_TEMP/pinact.yaml" --diff-file "$RUNNER_TEMP/pr.diff"; then
-            echo "::error::an action this PR adds or changes is not pinned to a full commit SHA with a version comment. Run \`pinact run\` locally and commit the result."
+            echo "::error::an action this PR adds or changes is not pinned to a full commit SHA. Run \`pinact run\` locally and commit the result."
             exit 1
           fi

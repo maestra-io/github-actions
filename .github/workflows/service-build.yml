@@ -5,7 +5,7 @@
 # repo's own test jobs (issues-maestra#1442 W3, #1568).
 #
 #   version ─► test ─► images (matrix) ─► release ─► bake
-#   pull_request: version ─► test, checks (pr-checks.yml) ─► pr-gate (the required check)
+#   pull_request: version ─► test, checks (pr-checks.yml), base-images ─► pr-gate (the required check)
 #
 # Warehouse refresh: no job here. The GitHub org webhook (workflow_run completed)
 # refreshes every Kargo Warehouse labelled maestra.io/source-repo=<lower-case repo name>
@@ -46,12 +46,15 @@
 #   dockerfile          Default Dockerfile path (default Dockerfile, context = repo root);
 #                       also the Dockerfile of docker-test-target.
 #   test-command        Bash run on the runner from the repo root (the GitLab test
-#                       jobs). Gets PACKAGES_TOKEN (GitHub OIDC token nora accepts as
-#                       Basic `token:<it>`), PACKAGES_URL and the test-env variables.
-#                       The token expires within minutes: run `packages-token` (on PATH)
-#                       for a fresh one before each later install, e.g.
+#                       jobs). Gets PACKAGES_TOKEN (nora session token, 1 h, nora takes it
+#                       as Basic `token:<it>`), PACKAGES_URL and the test-env variables.
+#                       `packages-token` (on PATH) prints a fresh GitHub OIDC token
+#                       (~5 min) for a later install, e.g.
 #                       `poetry config http-basic.maestra token "$(packages-token)"`.
-#                       Docker is available (Testcontainers / docker compose).
+#                       Docker is available (Testcontainers / docker compose), and a
+#                       BuildKit builder with the type=gha cache env: an image it builds
+#                       is cached with `docker buildx build --load --cache-from/--cache-to
+#                       type=gha,scope=<x>` (mindbox-airflow Dockerfile_test).
 #   docker-test-target  Dockerfile stage that runs the tests instead (built with the
 #                       build secrets, then `docker run`). Both empty = no tests.
 #   test-shards         Run the tests as N parallel `test (i/N)` jobs (default 1, a
@@ -60,6 +63,12 @@
 #                       e.g. `playwright test --shard=$SHARD_INDEX/$SHARD_TOTAL`.
 #   python-version      actions/setup-python before test-command (empty = skip).
 #   node-version        actions/setup-node before test-command (empty = skip).
+#   uv-version          astral-sh/setup-uv with this uv version before test-command
+#                       (empty = skip). test-command always gets uv credentials for
+#                       packages.maestra.io: UV_INDEX_MAESTRA_USERNAME=token and a `keyring`
+#                       helper (UV_KEYRING_PROVIDER=subprocess) that mints a fresh token
+#                       whenever uv asks, so `uv sync --locked` needs no token handling
+#                       (pyproject.toml: [[tool.uv.index]] name = "maestra", default = true).
 #   test-env            Extra environment for the tests, KEY=VALUE per line, not
 #                       secret (shown in the log); exported to test-command and passed
 #                       with --env-file to the docker-test-target container. Images on
@@ -90,7 +99,7 @@
 #                       <service>-manifests keep the bare release; the prefix also
 #                       gives the line its own concurrency group.
 # Secrets:
-#   private-packages-token  Optional override of the nora OIDC token.
+#   private-packages-token  Optional override of the nora session token.
 # Outputs:
 #   release             The release number (1.1.N, or release-version).
 #
@@ -123,6 +132,9 @@ on:
         type: string
         default: ""
       node-version:
+        type: string
+        default: ""
+      uv-version:
         type: string
         default: ""
       test-env:
@@ -359,15 +371,77 @@ jobs:
         with:
           persist-credentials: false
 
+      # Testcontainers, docker compose and BuildKit pull packages.maestra.io images (the
+      # nora pull-through, issues-maestra#1649) with ~/.docker/config.json. nora takes the
+      # OIDC token, which lives minutes: a credential helper mints a fresh one per pull.
+      - name: nora docker credentials
+        env:
+          AUDIENCE: ${{ inputs.packages-audience }}
+          PACKAGES_URL: ${{ inputs.packages-url }}
+        run: |
+          # >>> nora-cred-helper (scripts/test-dotnet-service-build.sh runs this block; all copies equal)
+          bin="$RUNNER_TEMP/nora-bin"; mkdir -p "$bin"
+          # The helper runs in the caller's environment, which tox and other test runners
+          # scrub: the job's OIDC request URL and token go to a 0600 file next to it.
+          # nora's origin: PACKAGES_URL may carry a path (python-package-publish: …/simple/)
+          o="${PACKAGES_URL#*://}"; o="${PACKAGES_URL%%://*}://${o%%/*}"
+          ( umask 077; printf 'url=%q\ntoken=%q\naud=%q\nnora=%q\n' "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+            "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$AUDIENCE" "$o" > "$bin/oidc.env" )
+          cat > "$bin/docker-credential-nora" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          [ "${1:-}" = get ] || exit 0
+          server=$(cat) # docker sends it without a newline
+          . "${BASH_SOURCE[0]%/*}/oidc.env"
+          t=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $token" \
+            "$url&audience=$aud" | jq -r '.value // empty')
+          [ -n "$t" ]
+          # Testcontainers keeps the first credential for its whole run, so a ~5 min JWT failed
+          # pulls made later (api-mimic#72): hand out nora's 1 h session token for it instead.
+          # ponytail: a test process over 1 h still outlives it; 403/404 = no exchange, the JWT.
+          # the body to a 0600 file: curl truncates it before a retry, stdout would keep every attempt's
+          f=$(mktemp); trap 'rm -f "$f"' EXIT
+          code=$(curl -sS --retry 3 --connect-timeout 10 --max-time 30 -X POST -H "Authorization: Bearer $t" \
+            -o "$f" -w '%{http_code}' "$nora/api/oidc/session")
+          case "$code" in
+            200) t=$(jq -r '.token // empty' "$f"); [[ "$t" == nrs_* ]] ;;
+            403|404) ;;
+            *) exit 1 ;;
+          esac
+          jq -cn --arg s "$server" --arg t "$t" '{ServerURL: $s, Username: "token", Secret: $t}'
+          EOF
+          chmod 755 "$bin/docker-credential-nora"
+          echo "$bin" >> "$GITHUB_PATH"
+          host="${PACKAGES_URL#*://}"; host="${host%%/*}"
+          cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"; mkdir -p "$(dirname "$cfg")"
+          [ -s "$cfg" ] || echo '{}' > "$cfg"
+          jq --arg h "$host" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+          # <<< nora-cred-helper
+
+      # The GitHub OIDC token lives ~5 min: a build or test that runs longer (mvn
+      # dependency:go-offline) got 401 mid-way. nora's session token lives 1 h (issues-maestra#1649).
+      - name: packages token override
+        id: override
+        env:
+          OVERRIDE: ${{ secrets.private-packages-token }}
+        run: echo "set=${OVERRIDE:+true}" >> "$GITHUB_OUTPUT"
+      - name: nora session token
+        id: session
+        if: ${{ steps.override.outputs.set != 'true' }}
+        uses: maestra-io/github-actions/nora-session@1b6e07a656e9eb1045ba563d4b9394631ecaa640 # v1.74.0
+        with:
+          url: ${{ inputs.packages-url }}
+          audience: ${{ inputs.packages-audience }}
       - name: mint packages token
         id: token
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           OVERRIDE: ${{ secrets.private-packages-token }}
-          AUDIENCE: ${{ inputs.packages-audience }}
+          SESSION: ${{ steps.session.outputs.token }}
         with:
           script: |
-            const t = process.env.OVERRIDE || await core.getIDToken(process.env.AUDIENCE);
+            const t = process.env.OVERRIDE || process.env.SESSION;
+            if (!t) core.setFailed('no packages token');
             core.setSecret(t);
             core.setOutput('token', t);
 
@@ -413,9 +487,68 @@ jobs:
               | docker login --username AWS --password-stdin "$ECR_REGISTRY"
           fi
 
+      # ISO week for a Dockerfile's `ARG BASE_REFRESH` (README, layer cache): a new value
+      # rebuilds the apt/apk stages the cache would otherwise serve forever.
+      - id: week
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
       # ── Dockerfile stage (GitLab .run-docker-test) ───────────────────────
+      # >>> nora-image-cache restore (test)
+      # moby/buildkit comes from nora (packages.maestra.io), which RunsOn's ECR pull-through mirror
+      # (docker.io only) does not cover, so every fresh runner pulled it in full from nora
+      # (HostNetworkInterfaceSaturated, us-iota-lw-kube-infra-02, 16.11.2026). Same block as
+      # dotnet-service-build.yml: the image is cached by ID in the Magic Cache and loaded here, so
+      # the pull below fetches only the manifest. A miss or a failed load means a pull as before.
+      - name: nora image cache (restore)
+        id: nora-images-1
+        if: ${{ inputs.docker-test-target != '' }}
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/nora-images
+          key: nora-images-svc-test-${{ github.run_id }}
+          restore-keys: nora-images-svc-test-
+      - name: nora image cache (load)
+        if: ${{ inputs.docker-test-target != '' && steps.nora-images-1.outputs.cache-matched-key != '' }}
+        continue-on-error: true
+        run: |
+          f="$RUNNER_TEMP/nora-images/images.tar.zst"
+          [ -s "$f" ] || exit 0
+          zstd -dcq "$f" | docker load -q \
+            || echo "::warning::nora image cache: docker load failed, images come from nora"
+      # <<< nora-image-cache restore
       - if: ${{ inputs.docker-test-target != '' }}
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          # moby/buildkit through nora, not Docker Hub (issues-maestra#1649); every copy equal:
+          # scripts/test-dotnet-service-build.sh
+          driver-opts: image=packages.maestra.io/docker-hub/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
+      # >>> nora-image-cache save (test)
+      - name: nora image cache (pack)
+        id: nora-images-1-pack
+        if: ${{ !cancelled() && inputs.docker-test-target != '' }}
+        continue-on-error: true
+        env:
+          MATCHED: ${{ steps.nora-images-1.outputs.cache-matched-key }}
+        shell: bash
+        run: |
+          ids=$(docker image ls --no-trunc --format '{{.Repository}} {{.ID}}' \
+            | awk '$1 ~ /^packages\.maestra\.io\// {print $2}' | sort -u)
+          [ -n "$ids" ] || { echo "nora image cache: no packages.maestra.io images"; exit 0; }
+          key="nora-images-svc-test-$(sha256sum <<<"$ids" | cut -c1-16)"
+          [ "$key" != "$MATCHED" ] || { echo "nora image cache: unchanged ($key)"; exit 0; }
+          mkdir -p "$RUNNER_TEMP/nora-images"
+          # shellcheck disable=SC2086 # one ID per word
+          docker save $ids | zstd -T0 -3 -q -f -o "$RUNNER_TEMP/nora-images/images.tar.zst"
+          echo "nora image cache: $(wc -l <<<"$ids") images, $(du -h "$RUNNER_TEMP/nora-images/images.tar.zst" | cut -f1) -> $key"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+      - name: nora image cache (save)
+        if: ${{ !cancelled() && steps.nora-images-1-pack.outputs.key != '' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/nora-images
+          key: ${{ steps.nora-images-1-pack.outputs.key }}
+      # <<< nora-image-cache save
       # Layer cache only for a Dockerfile that never writes the token into a layer:
       # a cached layer replays it after it expired (dotnet-service-build.yml header).
       - if: ${{ inputs.docker-test-target != '' }}
@@ -475,7 +608,7 @@ jobs:
           else
             scopes=$(printf '%s\n' "$SCOPES" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . || true)
             from=$(awk '{print "type=gha,scope=" $0}' <<<"$scopes")
-            to="type=gha,mode=max,scope=$(head -n1 <<<"$scopes")"
+            to="type=gha,mode=max,ignore-error=true,scope=$(head -n1 <<<"$scopes")"
           fi
           { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; echo "nocache=$nocache"; echo "nocachefilter=$nocachefilter"; } >> "$GITHUB_OUTPUT"
           # <<< layer-cache
@@ -487,7 +620,9 @@ jobs:
           target: ${{ inputs.docker-test-target }}
           load: true
           tags: local/${{ inputs.docker-test-target }}:latest
-          build-args: ${{ inputs.build-args }}
+          build-args: |
+            ${{ inputs.build-args }}
+            BASE_REFRESH=${{ steps.week.outputs.week }}
           secrets: ${{ steps.secrets.outputs.value }}
           cache-from: ${{ steps.cache.outputs.from }}
           cache-to: ${{ steps.cache.outputs.to }}
@@ -507,11 +642,17 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ inputs.node-version }}
+      - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' && inputs.uv-version != '' }}
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: ${{ inputs.uv-version }}
+          enable-cache: false
       # The GitHub OIDC token lives minutes: a test-command that installs packages more
       # than once (tox envs) mints a fresh one with `packages-token` before each install.
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
         env:
           AUDIENCE: ${{ inputs.packages-audience }}
+          PACKAGES_URL: ${{ inputs.packages-url }}
         run: |
           mkdir -p "$RUNNER_TEMP/bin"
           cat > "$RUNNER_TEMP/bin/packages-token" <<'SH'
@@ -522,8 +663,89 @@ jobs:
           printf '%s' "$t"
           SH
           chmod +x "$RUNNER_TEMP/bin/packages-token"
+          # >>> uv-keyring (scripts/test-service-build.sh runs this block)
+          # uv (UV_KEYRING_PROVIDER=subprocess) runs `keyring get <url> <user>` after nora's
+          # 401: a fresh token per uv process, for nora's own URLs only (maestra-io/github-actions uv-nora).
+          host="${PACKAGES_URL%/}"
+          cat > "$RUNNER_TEMP/bin/keyring" <<SH
+          #!/usr/bin/env bash
+          set -euo pipefail
+          [ "\${1:-}" = get ] || exit 1
+          case "\${2:-}" in "$host"/*|"$host") ;; *) exit 1 ;; esac
+          packages-token; echo
+          SH
+          chmod +x "$RUNNER_TEMP/bin/keyring"
+          { echo "UV_KEYRING_PROVIDER=subprocess"; echo "UV_INDEX_MAESTRA_USERNAME=token"; } >> "$GITHUB_ENV"
+          # <<< uv-keyring
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           echo "PACKAGES_AUDIENCE=$AUDIENCE" >> "$GITHUB_ENV"
+      # >>> nora-image-cache restore (test)
+      # moby/buildkit comes from nora (packages.maestra.io), which RunsOn's ECR pull-through mirror
+      # (docker.io only) does not cover, so every fresh runner pulled it in full from nora
+      # (HostNetworkInterfaceSaturated, us-iota-lw-kube-infra-02, 16.11.2026). Same block as
+      # dotnet-service-build.yml: the image is cached by ID in the Magic Cache and loaded here, so
+      # the pull below fetches only the manifest. A miss or a failed load means a pull as before.
+      - name: nora image cache (restore)
+        id: nora-images-2
+        if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/nora-images
+          key: nora-images-svc-test-${{ github.run_id }}
+          restore-keys: nora-images-svc-test-
+      - name: nora image cache (load)
+        if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' && steps.nora-images-2.outputs.cache-matched-key != '' }}
+        continue-on-error: true
+        run: |
+          f="$RUNNER_TEMP/nora-images/images.tar.zst"
+          [ -s "$f" ] || exit 0
+          zstd -dcq "$f" | docker load -q \
+            || echo "::warning::nora image cache: docker load failed, images come from nora"
+      # <<< nora-image-cache restore
+      # A test-command that builds an image can cache its layers like the images job:
+      # `docker buildx build --load --cache-from type=gha,scope=<x> --cache-to type=gha,mode=max,scope=<x>`.
+      # That needs a BuildKit builder (plain `docker build` keeps using the default one) and the
+      # Actions runtime env buildx reads for type=gha, which a run step does not see on its own.
+      - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: image=packages.maestra.io/docker-hub/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
+      # >>> nora-image-cache save (test)
+      - name: nora image cache (pack)
+        id: nora-images-2-pack
+        if: ${{ !cancelled() && inputs.docker-test-target == '' && inputs.test-command != '' }}
+        continue-on-error: true
+        env:
+          MATCHED: ${{ steps.nora-images-2.outputs.cache-matched-key }}
+        shell: bash
+        run: |
+          ids=$(docker image ls --no-trunc --format '{{.Repository}} {{.ID}}' \
+            | awk '$1 ~ /^packages\.maestra\.io\// {print $2}' | sort -u)
+          [ -n "$ids" ] || { echo "nora image cache: no packages.maestra.io images"; exit 0; }
+          key="nora-images-svc-test-$(sha256sum <<<"$ids" | cut -c1-16)"
+          [ "$key" != "$MATCHED" ] || { echo "nora image cache: unchanged ($key)"; exit 0; }
+          mkdir -p "$RUNNER_TEMP/nora-images"
+          # shellcheck disable=SC2086 # one ID per word
+          docker save $ids | zstd -T0 -3 -q -f -o "$RUNNER_TEMP/nora-images/images.tar.zst"
+          echo "nora image cache: $(wc -l <<<"$ids") images, $(du -h "$RUNNER_TEMP/nora-images/images.tar.zst" | cut -f1) -> $key"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+      - name: nora image cache (save)
+        if: ${{ !cancelled() && steps.nora-images-2-pack.outputs.key != '' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/nora-images
+          key: ${{ steps.nora-images-2-pack.outputs.key }}
+      # <<< nora-image-cache save
+      - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            for (const k of ['ACTIONS_RUNTIME_TOKEN', 'ACTIONS_RUNTIME_URL', 'ACTIONS_CACHE_URL', 'ACTIONS_RESULTS_URL', 'ACTIONS_CACHE_SERVICE_V2']) {
+              if (process.env[k]) core.exportVariable(k, process.env[k]);
+            }
+            core.setSecret(process.env.ACTIONS_RUNTIME_TOKEN);
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
         env:
           PACKAGES_TOKEN: ${{ steps.token.outputs.token }}
@@ -567,15 +789,77 @@ jobs:
         with:
           persist-credentials: false
 
+      # Testcontainers, docker compose and BuildKit pull packages.maestra.io images (the
+      # nora pull-through, issues-maestra#1649) with ~/.docker/config.json. nora takes the
+      # OIDC token, which lives minutes: a credential helper mints a fresh one per pull.
+      - name: nora docker credentials
+        env:
+          AUDIENCE: ${{ inputs.packages-audience }}
+          PACKAGES_URL: ${{ inputs.packages-url }}
+        run: |
+          # >>> nora-cred-helper (scripts/test-dotnet-service-build.sh runs this block; all copies equal)
+          bin="$RUNNER_TEMP/nora-bin"; mkdir -p "$bin"
+          # The helper runs in the caller's environment, which tox and other test runners
+          # scrub: the job's OIDC request URL and token go to a 0600 file next to it.
+          # nora's origin: PACKAGES_URL may carry a path (python-package-publish: …/simple/)
+          o="${PACKAGES_URL#*://}"; o="${PACKAGES_URL%%://*}://${o%%/*}"
+          ( umask 077; printf 'url=%q\ntoken=%q\naud=%q\nnora=%q\n' "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+            "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$AUDIENCE" "$o" > "$bin/oidc.env" )
+          cat > "$bin/docker-credential-nora" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          [ "${1:-}" = get ] || exit 0
+          server=$(cat) # docker sends it without a newline
+          . "${BASH_SOURCE[0]%/*}/oidc.env"
+          t=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $token" \
+            "$url&audience=$aud" | jq -r '.value // empty')
+          [ -n "$t" ]
+          # Testcontainers keeps the first credential for its whole run, so a ~5 min JWT failed
+          # pulls made later (api-mimic#72): hand out nora's 1 h session token for it instead.
+          # ponytail: a test process over 1 h still outlives it; 403/404 = no exchange, the JWT.
+          # the body to a 0600 file: curl truncates it before a retry, stdout would keep every attempt's
+          f=$(mktemp); trap 'rm -f "$f"' EXIT
+          code=$(curl -sS --retry 3 --connect-timeout 10 --max-time 30 -X POST -H "Authorization: Bearer $t" \
+            -o "$f" -w '%{http_code}' "$nora/api/oidc/session")
+          case "$code" in
+            200) t=$(jq -r '.token // empty' "$f"); [[ "$t" == nrs_* ]] ;;
+            403|404) ;;
+            *) exit 1 ;;
+          esac
+          jq -cn --arg s "$server" --arg t "$t" '{ServerURL: $s, Username: "token", Secret: $t}'
+          EOF
+          chmod 755 "$bin/docker-credential-nora"
+          echo "$bin" >> "$GITHUB_PATH"
+          host="${PACKAGES_URL#*://}"; host="${host%%/*}"
+          cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"; mkdir -p "$(dirname "$cfg")"
+          [ -s "$cfg" ] || echo '{}' > "$cfg"
+          jq --arg h "$host" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+          # <<< nora-cred-helper
+
+      # The GitHub OIDC token lives ~5 min: a build or test that runs longer (mvn
+      # dependency:go-offline) got 401 mid-way. nora's session token lives 1 h (issues-maestra#1649).
+      - name: packages token override
+        id: override
+        env:
+          OVERRIDE: ${{ secrets.private-packages-token }}
+        run: echo "set=${OVERRIDE:+true}" >> "$GITHUB_OUTPUT"
+      - name: nora session token
+        id: session
+        if: ${{ steps.override.outputs.set != 'true' }}
+        uses: maestra-io/github-actions/nora-session@1b6e07a656e9eb1045ba563d4b9394631ecaa640 # v1.74.0
+        with:
+          url: ${{ inputs.packages-url }}
+          audience: ${{ inputs.packages-audience }}
       - name: mint packages token
         id: token
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           OVERRIDE: ${{ secrets.private-packages-token }}
-          AUDIENCE: ${{ inputs.packages-audience }}
+          SESSION: ${{ steps.session.outputs.token }}
         with:
           script: |
-            const t = process.env.OVERRIDE || await core.getIDToken(process.env.AUDIENCE);
+            const t = process.env.OVERRIDE || process.env.SESSION;
+            if (!t) core.setFailed('no packages token');
             core.setSecret(t);
             core.setOutput('token', t);
 
@@ -593,7 +877,59 @@ jobs:
             echo '__SECRETS__'
           } >> "$GITHUB_OUTPUT"
 
+      # >>> nora-image-cache restore (images)
+      # moby/buildkit comes from nora (packages.maestra.io), which RunsOn's ECR pull-through mirror
+      # (docker.io only) does not cover, so every fresh runner pulled it in full from nora
+      # (HostNetworkInterfaceSaturated, us-iota-lw-kube-infra-02, 16.11.2026). Same block as
+      # dotnet-service-build.yml: the image is cached by ID in the Magic Cache and loaded here, so
+      # the pull below fetches only the manifest. A miss or a failed load means a pull as before.
+      - name: nora image cache (restore)
+        id: nora-images-3
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/nora-images
+          key: nora-images-svc-images-${{ github.run_id }}
+          restore-keys: nora-images-svc-images-
+      - name: nora image cache (load)
+        if: ${{ steps.nora-images-3.outputs.cache-matched-key != '' }}
+        continue-on-error: true
+        run: |
+          f="$RUNNER_TEMP/nora-images/images.tar.zst"
+          [ -s "$f" ] || exit 0
+          zstd -dcq "$f" | docker load -q \
+            || echo "::warning::nora image cache: docker load failed, images come from nora"
+      # <<< nora-image-cache restore
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: image=packages.maestra.io/docker-hub/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
+      # >>> nora-image-cache save (images)
+      - name: nora image cache (pack)
+        id: nora-images-3-pack
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          MATCHED: ${{ steps.nora-images-3.outputs.cache-matched-key }}
+        shell: bash
+        run: |
+          ids=$(docker image ls --no-trunc --format '{{.Repository}} {{.ID}}' \
+            | awk '$1 ~ /^packages\.maestra\.io\// {print $2}' | sort -u)
+          [ -n "$ids" ] || { echo "nora image cache: no packages.maestra.io images"; exit 0; }
+          key="nora-images-svc-images-$(sha256sum <<<"$ids" | cut -c1-16)"
+          [ "$key" != "$MATCHED" ] || { echo "nora image cache: unchanged ($key)"; exit 0; }
+          mkdir -p "$RUNNER_TEMP/nora-images"
+          # shellcheck disable=SC2086 # one ID per word
+          docker save $ids | zstd -T0 -3 -q -f -o "$RUNNER_TEMP/nora-images/images.tar.zst"
+          echo "nora image cache: $(wc -l <<<"$ids") images, $(du -h "$RUNNER_TEMP/nora-images/images.tar.zst" | cut -f1) -> $key"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+      - name: nora image cache (save)
+        if: ${{ !cancelled() && steps.nora-images-3-pack.outputs.key != '' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/nora-images
+          key: ${{ steps.nora-images-3-pack.outputs.key }}
+      # <<< nora-image-cache save
 
       # BuildKit pulls base images with ~/.docker/config.json; log in to this
       # account's ECR when the Dockerfile names it (instance role, read only).
@@ -666,7 +1002,7 @@ jobs:
           else
             scopes=$(printf '%s\n' "$SCOPES" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . || true)
             from=$(awk '{print "type=gha,scope=" $0}' <<<"$scopes")
-            to="type=gha,mode=max,scope=$(head -n1 <<<"$scopes")"
+            to="type=gha,mode=max,ignore-error=true,scope=$(head -n1 <<<"$scopes")"
           fi
           { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; echo "nocache=$nocache"; echo "nocachefilter=$nocachefilter"; } >> "$GITHUB_OUTPUT"
           # <<< layer-cache
@@ -684,6 +1020,11 @@ jobs:
       - name: source date epoch
         id: epoch
         run: echo "value=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
+      # ISO week for a Dockerfile's `ARG BASE_REFRESH` (README, layer cache): a new value
+      # rebuilds the apt/apk stages the cache would otherwise serve forever. One value per
+      # job: the push build below must hit the cache of the first build.
+      - id: week
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
       - name: build ${{ matrix.image }} (${{ matrix.target }})
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -700,6 +1041,7 @@ jobs:
             revision=${{ needs.version.outputs.release }} (${{ github.sha }})
             release=${{ needs.version.outputs.release }} (${{ github.sha }})
             ${{ inputs.build-args }}
+            BASE_REFRESH=${{ steps.week.outputs.week }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
@@ -729,7 +1071,10 @@ jobs:
           # >>> ecr-push-check (scripts/test-ecr-push-check.sh runs this block)
           # Idempotent re-run: the immutable tag may already hold this run's image from an
           # earlier attempt. Same digest (SOURCE_DATE_EPOCH makes the rebuild reproducible)
-          # = pushed already: skip. Another digest would end in ECR TAG_INVALID: fail and say what to do.
+          # = pushed already: skip. Another digest built from this commit (its config label
+          # org.opencontainers.image.revision = GITHUB_SHA: a retry after a spot interruption
+          # that rebuilt non-reproducibly) = skip and keep the pushed image. Anything else would
+          # end in ECR TAG_INVALID: fail and say what to do.
           [ -n "$DIGEST" ] || { echo "::error::no image digest from the build step"; exit 1; }
           if ! out=$(aws ecr describe-images --repository-name "$IMAGE" --image-ids imageTag="$RELEASE" --output json 2>&1); then
             if grep -qE 'ImageNotFoundException|RepositoryNotFoundException' <<<"$out"; then echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0; fi
@@ -738,13 +1083,29 @@ jobs:
           existing=$(jq -r '.imageDetails[0].imageDigest // empty' <<<"$out")
           if [ "$existing" = "$DIGEST" ]; then
             echo "${IMAGE}:${RELEASE} is already in ECR (${DIGEST}): push skipped"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
+            printf 'skip=true\ndigest=%s\n' "$existing" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          revision=""
+          if [ -n "$existing" ] \
+            && manifest=$(aws ecr batch-get-image --repository-name "$IMAGE" --image-ids imageDigest="$existing" \
+                 --accepted-media-types application/vnd.oci.image.manifest.v1+json application/vnd.docker.distribution.manifest.v2+json \
+                 --query 'images[0].imageManifest' --output text) \
+            && config=$(jq -er '.config.digest' <<<"$manifest") \
+            && url=$(aws ecr get-download-url-for-layer --repository-name "$IMAGE" --layer-digest "$config" --query downloadUrl --output text) \
+            && blob=$(curl -sfL --retry 3 "$url"); then
+            revision=$(jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' <<<"$blob" || true)
+          fi
+          if [ -n "$GITHUB_SHA" ] && [ "$revision" = "$GITHUB_SHA" ]; then
+            echo "${IMAGE}:${RELEASE} is already in ECR (${existing}), built from this commit ${GITHUB_SHA} by an earlier attempt (rebuild: ${DIGEST}): push skipped"
+            printf 'skip=true\ndigest=%s\n' "$existing" >> "$GITHUB_OUTPUT"
           else
-            echo "::error::${IMAGE}:${RELEASE} already exists in ECR (${existing:-<none>}) and is not the image built now (${DIGEST}); tags are immutable. Dispatch the release workflow again: it takes the next release number."
+            echo "::error::${IMAGE}:${RELEASE} already exists in ECR (${existing:-<none>}, revision ${revision:-unknown}) and is not the image built now (${DIGEST}, revision ${GITHUB_SHA}); tags are immutable. Dispatch the release workflow again: it takes the next release number."
             exit 1
           fi
           # <<< ecr-push-check
       - name: push ${{ matrix.image }}:${{ needs.version.outputs.release }}
+        id: push
         if: ${{ needs.version.outputs.publish == 'true' && steps.existing.outputs.skip != 'true' }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         env:
@@ -760,12 +1121,25 @@ jobs:
             revision=${{ needs.version.outputs.release }} (${{ github.sha }})
             release=${{ needs.version.outputs.release }} (${{ github.sha }})
             ${{ inputs.build-args }}
+            BASE_REFRESH=${{ steps.week.outputs.week }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ needs.version.outputs.release }}
           secrets: ${{ steps.secrets.outputs.value }}
           cache-from: ${{ steps.cache.outputs.from }}
+      # Keyless cosign signature + CycloneDX SBOM attestation of the pushed digest,
+      # stored as OCI referrers next to the image. Best-effort: never fails the
+      # release (sign-image/action.yml, issues-maestra#1648); capped at 10 min so a
+      # slow Fulcio/Rekor/syft never times out the job that pushed the image.
+      - name: sign ${{ matrix.image }}:${{ needs.version.outputs.release }}
+        if: ${{ needs.version.outputs.publish == 'true' }}
+        continue-on-error: true
+        timeout-minutes: 10
+        uses: maestra-io/github-actions/sign-image@21da9a74395b7d6fb7dfa71ba2805c280d11fe32 # v1.64.2
+        with:
+          image: ${{ steps.ecr.outputs.registry }}/${{ matrix.image }}
+          digest: ${{ steps.push.outputs.digest || steps.existing.outputs.digest || steps.build.outputs.digest }}
 
   # Git tag + GitHub Release BEFORE the bake: bake-oci-manifests checks out the
   # release tag. Bare `1.1.N`, same shape as create-gitlab-release (or
@@ -790,8 +1164,25 @@ jobs:
           if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "release $TAG already exists"; exit 0
           fi
-          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "$TAG" --generate-notes
+          # >>> github-release-create (scripts/test-github-release-create.sh runs this block)
+          # A new tag on a commit whose .github/workflows differ from the default branch tip
+          # needs a token that may modify workflows, which GITHUB_TOKEN never is (REST docs,
+          # "Create a release"): GitHub answers 403 "Resource not accessible by integration"
+          # once main moved past this commit with a workflow change while it was built.
+          if ! gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "$TAG" --generate-notes; then
+            head=$(gh api "repos/$GITHUB_REPOSITORY/commits/HEAD" --jq .sha 2>/dev/null || true)
+            wf=""
+            if [ -n "$head" ] && [ "$head" != "$GITHUB_SHA" ]; then
+              wf=$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...$head" \
+                --jq '[.files[].filename | select(startswith(".github/workflows/"))] | join(", ")' 2>/dev/null || true)
+            fi
+            if [ -n "$wf" ]; then
+              echo "::error::release $TAG not created: the default branch moved to ${head:0:7} and changed $wf since ${GITHUB_SHA:0:7}, and GITHUB_TOKEN may not tag a commit whose workflow files differ from the default branch tip. The release of ${head:0:7} (its own run) supersedes this one; to release ${GITHUB_SHA:0:7} itself, create release $TAG by hand with a token that has the workflows permission."
+            fi
+            exit 1
+          fi
+          # <<< github-release-create
 
   bake:
     needs: [version, release]
@@ -804,7 +1195,7 @@ jobs:
       id-token: write # Teleport join + cosign keyless
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: maestra-io/github-actions/bake-oci-manifests@2450cdaaf4688887cb65579fc45ab5304cb81967 # v1.46.2
+      - uses: maestra-io/github-actions/bake-oci-manifests@07b2e09efe4030d748b9d18d7ea52a165df1d584 # v1.71.4
         with:
           service: ${{ needs.version.outputs.service }}
           images: ${{ needs.version.outputs.images }}
@@ -821,12 +1212,22 @@ jobs:
     permissions:
       contents: read
 
+  # Pull requests only: no new base image nora still holds in its 3-day quarantine
+  # (base-images.yml, issues-maestra#1649). Never on a push: a default branch that already
+  # carries a held digest releases as before.
+  base-images:
+    if: ${{ github.event_name == 'pull_request' }}
+    uses: maestra-io/github-actions/.github/workflows/base-images.yml@main
+    permissions:
+      contents: read
+      id-token: write # nora session token
+
   # The single check a branch ruleset requires (`<caller job> / pr gate`): red when
   # any PR job failed or was cancelled. Skipped jobs (images without pr-images) pass.
   pr-gate:
     name: pr gate
     if: ${{ always() && github.event_name == 'pull_request' }}
-    needs: [version, test, images, checks]
+    needs: [version, test, images, checks, base-images]
     runs-on: runs-on=${{ github.run_id }}-pr-gate/pool=small
     timeout-minutes: 5
     steps:

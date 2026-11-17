@@ -7,6 +7,15 @@ finding, and because the `os_update` contract is shared across four repos:
 anything that changes a variable name or a hook expectation has to be findable
 from one place.
 
+## 1.4.1
+
+- `os_update`: the holds the role sets are recorded in `os_update_holds_file`
+  (`/var/lib/os-update/holds.json`) before `apt-mark hold`. A host that went
+  UNREACHABLE mid-run skipped `rescue`/`always`, so its holds were never
+  restored and every later run read them as a foreign pin (consul, frr,
+  teleport stuck on us-omicron-lw-burst-gw-02 after run 42571562749). The next
+  apply/stage run and the `undrain-only` hatch now release recorded holds.
+
 ## 1.4.0
 
 - `wireguard_burst`: the `embedded` mode is gone (it had no consumer; the NAT

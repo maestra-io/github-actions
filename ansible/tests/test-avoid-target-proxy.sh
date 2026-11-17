@@ -58,8 +58,9 @@ run "DNS empty: nothing written" "" "23.81.177.42" ""
 run "no sudo (ARC): fail open" "$IOTA" "23.81.177.42" "" SUDO_FAIL=1
 
 # The os-update apply leg must actually ask for it, with its own matrix host.
-awk '/^  apply:/{f=1} /^  [a-z_-]+:$/ && !/^  apply:/{f=0} f' "$OSU" \
-  | grep -q 'teleport_avoid_host: ${{ matrix.host }}' \
+# Captured, not piped: under pipefail `awk | grep -q` fails with SIGPIPE when grep exits early.
+apply=$(awk '/^  apply:/{f=1} /^  [a-z_-]+:$/ && !/^  apply:/{f=0} f' "$OSU")
+grep -qF 'teleport_avoid_host: ${{ matrix.host }}' <<<"$apply" \
   && ok "apply job passes teleport_avoid_host: matrix.host" \
   || bad "apply job does not pass teleport_avoid_host: \${{ matrix.host }}"
 

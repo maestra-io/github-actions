@@ -36,6 +36,12 @@ on:
         required: false
         type: string
         default: "ansible"
+      uv_project:
+        description: >-
+          Directory of the caller's pyproject.toml + uv.lock (see ansible-run.yml).
+        required: false
+        type: string
+        default: "ansible"
       region:
         required: true
         type: string
@@ -155,10 +161,50 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
-          enable-cache: true
+          version: "0.13.6"
+          enable-cache: false
+
+      # Credentials for nora (packages.maestra.io), the caller's only Python index.
+      - uses: maestra-io/github-actions/uv-nora@22ccbf9ff3d76fe13025cbc009d395024f025198 # v1.67.0
 
       - name: Install ansible
-        run: uv pip install --system -r ansible/requirements-pip.txt
+        env:
+          DEPS_PROJECT: ${{ inputs.uv_project }}
+          DEPS_GROUP: ""
+          DEPS_TARGET: system
+        run: |
+          # >>> python-deps (identical in every ansible workflow; ansible/tests/test-python-deps.sh)
+          set -euo pipefail
+          if [ -f "${DEPS_PROJECT}/uv.lock" ]; then
+            # nora only: every package source is the nora registry (or the project
+            # itself), every URL is on packages.maestra.io. Anything else (another
+            # index, git, ssh, a path, a direct URL) is refused, never followed.
+            lock="${DEPS_PROJECT}/uv.lock"
+            if bad=$(grep -E '^source = ' "$lock" | sort -u | grep -vxF \
+                  -e 'source = { registry = "https://packages.maestra.io/simple/" }' \
+                  -e 'source = { virtual = "." }' -e 'source = { editable = "." }'); then
+              echo "::error file=${lock}::uv.lock has sources other than the nora registry: ${bad//$'\n'/ }"
+              exit 1
+            fi
+            if other=$(grep -oE '[a-z+]+://[^/"]+' "$lock" | sort -u | grep -vxF 'https://packages.maestra.io'); then
+              echo "::error file=${lock}::uv.lock names hosts other than packages.maestra.io: ${other//$'\n'/ }"
+              exit 1
+            fi
+            args=(--locked --no-install-project --project "$DEPS_PROJECT")
+            [ -z "${DEPS_GROUP:-}" ] || args+=(--group "$DEPS_GROUP")
+            if [ "$DEPS_TARGET" = active ]; then
+              args+=(--active)
+            else
+              # setup-python's interpreter, as `pip install --system` did; --inexact keeps its pip.
+              export UV_PROJECT_ENVIRONMENT="${pythonLocation:?actions/setup-python must run first}"
+              args+=(--inexact)
+            fi
+            uv sync "${args[@]}"
+          else
+            echo "::error::no ${DEPS_PROJECT}/uv.lock: the Ansible toolchain comes from pyproject.toml + uv.lock through nora (input uv_project; issues-maestra#1649)"
+            exit 1
+          fi
+          # <<< python-deps
 
       - name: Get Teleport version from proxy
         id: tp-version
@@ -336,6 +382,7 @@ jobs:
       playbook: ${{ inputs.playbook }}
       inventory: ${{ inputs.inventory }}
       working_directory: ${{ inputs.working_directory }}
+      uv_project: ${{ inputs.uv_project }}
       region: ${{ inputs.region }}
       environment: ${{ inputs.environment }}
       site: ${{ inputs.site }}
@@ -394,6 +441,7 @@ jobs:
       playbook: ${{ inputs.playbook }}
       inventory: ${{ inputs.inventory }}
       working_directory: ${{ inputs.working_directory }}
+      uv_project: ${{ inputs.uv_project }}
       region: ${{ inputs.region }}
       environment: ${{ inputs.environment }}
       site: ${{ inputs.site }}

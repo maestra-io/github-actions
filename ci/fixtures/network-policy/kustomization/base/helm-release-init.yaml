@@ -1,0 +1,24 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: universal-channel-http-sender-init
+  namespace: universal-channel-http-sender
+spec:
+  interval: 1h
+  timeout: 15m
+  dependsOn:
+    - name: external-vault-agent
+  chart:
+    spec:
+      chart: commons-app-init
+      version: "7.10.0"
+      sourceRef:
+        kind: HelmRepository
+        name: maestra-helm-charts
+        namespace: universal-channel-http-sender
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3

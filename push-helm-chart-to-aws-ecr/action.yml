@@ -4,6 +4,9 @@ description: >-
   in us-west-2, the GitHub port of the GitLab helm-ci helm-chart-push-aws job.
   The version is Chart.yaml's or the `version` input (build-number charts).
   An already published version is skipped (release tags are immutable).
+  The chart digest is then cosign-keyless-signed (when not signed yet: a re-run
+  signs a version published before signing existed) and verified with the
+  identity the clusters check (Flux OCIRepository spec.verify, issues-maestra#1680).
   Auth: Teleport workload identity -> role/teleport-image-push, the job needs
   `id-token: write`. A `tbot` already on PATH (the caller installed it) skips
   the Teleport download.
@@ -57,6 +60,9 @@ outputs:
   pushed:
     description: 'true when this run pushed the chart.'
     value: ${{ steps.push.outputs.pushed }}
+  digest:
+    description: 'Digest of the published (and signed) chart.'
+    value: ${{ steps.sign.outputs.digest }}
 runs:
   using: "composite"
   steps:
@@ -159,6 +165,7 @@ runs:
         IFS=: read -r _ _ _ _ account _ <<<"${AWS_ROLE_ARN}"  # arn:<partition>:iam::<account>:role/<name>
         [[ "$account" =~ ^[0-9]{12}$ ]] || { echo "::error::awsRoleArn ${AWS_ROLE_ARN} carries no 12-digit account"; exit 1; }
         registry="${account}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+        printf 'registry=%s\nrepository=%s\n' "$registry" "$repo" >> "$GITHUB_OUTPUT"
         if err=$(aws ecr describe-images --repository-name "$repo" --image-ids "imageTag=${VERSION}" 2>&1 >/dev/null); then
           echo "::warning::Chart ${NAME}@${VERSION} already exists in ECR ${AWS_REGION}; skipping push. Bump version in Chart.yaml to release."
           echo "pushed=false" >> "$GITHUB_OUTPUT"
@@ -179,3 +186,48 @@ runs:
         helm push "${pkg}/${NAME}-${VERSION}.tgz" "oci://${registry}/${PREFIX}"
         echo "pushed=true" >> "$GITHUB_OUTPUT"
         echo "Pushed oci://${registry}/${repo}:${VERSION}"
+
+    # Sign after the push: `helm push` names the tag after the chart version, so
+    # there is no staging tag to sign first (bake-oci-manifests does that). A
+    # failed sign fails the job loudly; the published version then has no
+    # signature, and every cluster OCIRepository with spec.verify refuses it until
+    # a re-run signs it (the push is skipped, the signing is not).
+    - id: cosign-install
+      if: ${{ steps.chart.outputs.version != '0.0.0' }}
+      continue-on-error: true
+      uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+    - if: ${{ steps.chart.outputs.version != '0.0.0' && steps.cosign-install.outcome == 'failure' }}
+      shell: bash
+      run: sleep 20
+    - if: ${{ steps.chart.outputs.version != '0.0.0' && steps.cosign-install.outcome == 'failure' }}
+      uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+
+    - name: cosign sign + verify chart
+      if: ${{ steps.chart.outputs.version != '0.0.0' }}
+      id: sign
+      shell: bash
+      env:
+        REGISTRY: ${{ steps.push.outputs.registry }}
+        REPOSITORY: ${{ steps.push.outputs.repository }}
+        VERSION: ${{ steps.chart.outputs.version }}
+      run: |
+        set -euo pipefail
+        digest=$(aws ecr describe-images --repository-name "$REPOSITORY" --image-ids "imageTag=${VERSION}" \
+          --query 'imageDetails[0].imageDigest' --output text)
+        [[ "$digest" == sha256:* ]] || { echo "::error::no digest for ${REPOSITORY}:${VERSION} (${digest})"; exit 1; }
+        ref="${REGISTRY}/${REPOSITORY}@${digest}"
+        aws ecr get-login-password | cosign login "$REGISTRY" --username AWS --password-stdin >/dev/null
+        if err=$(aws ecr describe-images --repository-name "$REPOSITORY" \
+             --image-ids "imageTag=sha256-${digest#sha256:}.sig" 2>&1 >/dev/null); then
+          echo "${ref} already signed: sign skipped"
+        elif [[ "$err" == *ImageNotFoundException* ]]; then
+          cosign sign --yes "$ref"
+        else
+          echo "$err" >&2; exit 1
+        fi
+        cosign verify \
+          --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+          --certificate-identity-regexp '^https://github\.com/maestra-io/' \
+          "$ref" >/dev/null
+        echo "${ref}: signature verified"
+        echo "digest=$digest" >> "$GITHUB_OUTPUT"

@@ -15,14 +15,18 @@ on:
     paths:
       - ".github/workflows/ecr-push-selftest.yml"
       - ".github/workflows/service-build.yml"
+      - ".github/workflows/dotnet-service-build.yml"
+      - "scripts/test-ecr-push-check.sh"
       - "push-to-aws-ecr-repository/**"
+      - "sign-image/**"
+      - "setup-buildx/**"
 jobs:
   push:
     runs-on: runs-on=${{ github.run_id }}-ecr-push/pool=build
     timeout-minutes: 20
     permissions:
       contents: read
-      id-token: write # Teleport join
+      id-token: write # Teleport join, nora
     env:
       REPOSITORY: selftest-ecr-push
       TAG: ${{ github.run_number }}-${{ github.run_attempt }} # a re-run keeps run_number, the tag-absent case needs a fresh tag
@@ -31,7 +35,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      # moby/buildkit through nora (issues-maestra#1649): the composite this repository ships
+      - uses: ./setup-buildx
+      - name: BuildKit from nora
+        run: docker buildx inspect | tee /dev/stderr | grep -q 'image="packages.maestra.io/docker-hub/moby/buildkit:'
       - name: contexts
         run: |
           for v in a b; do
@@ -95,6 +102,34 @@ jobs:
           stored=$(aws ecr describe-images --repository-name "$REPOSITORY" --image-ids imageTag="$TAG" --query 'imageDetails[0].imageDigest' --output text)
           [ "$stored" = "$BUILT" ] || { echo "::error::ECR stores $stored for $REPOSITORY:$TAG, built $BUILT"; exit 1; }
           echo "$REPOSITORY:$TAG @ $stored"
+      # sign-image on the pushed digest: keyless signature + CycloneDX attestation
+      # as OCI referrers, then read both back the way an admission policy would.
+      - name: sign + attest a
+        id: sign
+        uses: ./sign-image
+        with:
+          image: ${{ steps.ecr.outputs.registry }}/${{ env.REPOSITORY }}
+          digest: ${{ steps.push.outputs.digest }}
+      - name: signature and SBOM attestation verify
+        env:
+          STATUS: ${{ steps.sign.outputs.status }}
+          REF: ${{ steps.ecr.outputs.registry }}/${{ env.REPOSITORY }}@${{ steps.push.outputs.digest }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          [ "$STATUS" = sbom+signature ] || { echo "::error::sign-image status '$STATUS', expected sbom+signature"; exit 1; }
+          id=(--certificate-oidc-issuer https://token.actions.githubusercontent.com
+              --certificate-identity-regexp '^https://github\.com/maestra-io/github-actions/')
+          cosign verify "${id[@]}" "$REF" > /dev/null
+          cosign verify-attestation "${id[@]}" --type cyclonedx "$REF" \
+            | jq -se '.[0].payload | @base64d | fromjson | .predicate.bomFormat == "CycloneDX"'
+          # ECR's referrer annotations are what SOC reads (registry:no-provenance / no-sbom):
+          # one signature and one CycloneDX attestation must be told apart there.
+          types=$(aws ecr list-image-referrers --region us-west-2 --repository-name "$REPOSITORY" \
+            --subject-id imageDigest="$DIGEST" \
+            --query 'referrers[].annotations."dev.sigstore.bundle.predicateType"' --output text)
+          echo "referrer predicateTypes: $types"
+          grep -qw 'https://sigstore.dev/cosign/sign/v1' <<<"$types" || { echo "::error::no cosign signature referrer"; exit 1; }
+          grep -qF 'https://cyclonedx.org/bom' <<<"$types" || { echo "::error::no referrer annotated https://cyclonedx.org/bom"; exit 1; }
       - name: re-run of a (expect skip)
         env:
           IMAGE: ${{ env.REPOSITORY }}
@@ -136,6 +171,41 @@ jobs:
           provenance: false
           push: true
           tags: ${{ steps.ecr.outputs.registry }}/${{ env.REPOSITORY }}:${{ env.TAG }}-b
+      # Retry after a non-reproducible rebuild: the tag holds an image of THIS commit
+      # (revision label = github.sha) with another digest -> skip and keep the stored one.
+      - name: push c as ${{ env.TAG }}-c (labelled with this commit)
+        id: push-c
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.value }}
+        with:
+          context: ${{ runner.temp }}/ctx-a
+          provenance: false
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.REPOSITORY }}:${{ env.TAG }}-c
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+      - name: b against the tag of c (expect skip, same commit)
+        env:
+          IMAGE: ${{ env.REPOSITORY }}
+          RELEASE: ${{ env.TAG }}-c
+          DIGEST: ${{ steps.build-b.outputs.digest }}
+          STORED: ${{ steps.push-c.outputs.digest }}
+          AWS_REGION: us-west-2
+        run: |
+          [ "$DIGEST" != "$STORED" ] || { echo "::error::b and c built to the same digest"; exit 1; }
+          : > "$RUNNER_TEMP/out"; GITHUB_OUTPUT="$RUNNER_TEMP/out" bash -eo pipefail "$RUNNER_TEMP/check.sh"
+          grep -q '^skip=true$' "$RUNNER_TEMP/out"
+          grep -qx "digest=$STORED" "$RUNNER_TEMP/out" || { echo "::error::check did not hand on the stored digest $STORED"; cat "$RUNNER_TEMP/out"; exit 1; }
+      - name: b against the tag of c from another commit (expect fail)
+        env:
+          IMAGE: ${{ env.REPOSITORY }}
+          RELEASE: ${{ env.TAG }}-c
+          DIGEST: ${{ steps.build-b.outputs.digest }}
+          AWS_REGION: us-west-2
+        run: |
+          : > "$RUNNER_TEMP/out"
+          if GITHUB_SHA=0000000000000000000000000000000000000000 GITHUB_OUTPUT="$RUNNER_TEMP/out" bash -eo pipefail "$RUNNER_TEMP/check.sh" > "$RUNNER_TEMP/check.log" 2>&1; then echo "::error::check accepted an image of another commit"; exit 1; fi
+          grep -q 'already exists in ECR' "$RUNNER_TEMP/check.log" || { echo "::error::check failed for another reason:"; cat "$RUNNER_TEMP/check.log"; exit 1; }
       - name: a and b share every layer but the last
         env:
           AWS_REGION: us-west-2

@@ -181,7 +181,10 @@ workflows (`service-build.yml`, `dotnet-service-build.yml`, `mcf-build.yml`) bui
 `outputs: type=image,push=false`, call this action with `push: false`, and push with a second,
 fully cached `docker/build-push-action` run (`push: true`, tag `${registry}/<repository>:<tag>`).
 `SOURCE_DATE_EPOCH` (the commit time) keeps the manifest digest reproducible, so a re-run finds
-its own image under the immutable tag and skips the push instead of failing on `TAG_INVALID`:
+its own image under the immutable tag and skips the push instead of failing on `TAG_INVALID`.
+A rebuild with another digest is also skipped (the stored image is kept) when the stored
+image's `org.opencontainers.image.revision` label is this commit, e.g. a retry after a spot
+interruption killed the job after its push; any other image under the tag fails the job:
 
 ```yaml
 - uses: docker/build-push-action@v7.4.0
@@ -251,6 +254,31 @@ If you have three services: `api`, `frontend`, and `worker`, you would:
 
 This will push all three images to their respective ECR repositories with the `v1.0.0` tag.
 
+### Sign and attest the pushed image
+
+[`sign-image`](sign-image/action.yml) runs after the push: cosign 3 keyless-signs the digest
+(GitHub OIDC -> Fulcio, Rekor) and attests a CycloneDX SBOM of it (syft), both stored next to the
+image as OCI referrers (`aws ecr list-image-referrers`, artifactType
+`application/vnd.dev.sigstore.bundle.v0.3+json`, annotation `dev.sigstore.bundle.predicateType`
+`https://sigstore.dev/cosign/sign/v1` or `https://cyclonedx.org/bom`). No tags are written, so the
+immutable repositories need no `sha256-*` exclusion for it. The job needs `id-token: write` and the
+registry login above. Best-effort: a Fulcio/Rekor/syft failure is a warning and the `status` output
+(`sbom+signature` / `signature` / `none`) says what landed
+([issues-maestra#1648](https://github.com/maestra-io/issues-maestra/issues/1648)).
+
+```yaml
+- uses: maestra-io/github-actions/sign-image@<sha> # vX.Y.Z
+  with:
+    image: ${{ steps.ecr.outputs.registry }}/my-service
+    digest: ${{ steps.push.outputs.digest }}
+```
+
+A job that pushes several images passes `refs:` instead, one `<image>@sha256:<digest>` per line.
+
+Verify: `cosign verify --certificate-oidc-issuer https://token.actions.githubusercontent.com
+--certificate-identity-regexp '^https://github\.com/maestra-io/' <image>@<digest>`
+(`verify-attestation --type cyclonedx` for the SBOM).
+
 ### Second region
 
 The dual-push of the ECR eu-central-1 → us-west-2 migration
@@ -261,7 +289,7 @@ dropped the step.
 
 ## Bake OCI manifests artifact
 
-Bakes a microservice's `kustomization/` tree into an OCI artifact at `${ECR_REGISTRY}/<service>-manifests:<tag>`, cosign-keyless-signs the digest, and verifies the pulled artifact contains no leftover `${APP_PACKAGE_VERSION_TO_BE_REPLACED}` placeholders. This is the GitHub-side half of the **OCI + Kargo** deploy pattern documented in [`maestra-io/fluxcd/docs/microservice-deployment.md`](https://github.com/maestra-io/fluxcd/blob/main/docs/microservice-deployment.md).
+Bakes a microservice's `kustomization/` tree into an OCI artifact at `${ECR_REGISTRY}/<service>-manifests:<tag>`, cosign-keyless-signs the digest before `<tag>` exists (push under the non-semver staging tag `bake-<tag>-<sha>`, sign, `cosign verify` with the identity the clusters check, then tag; the staging tag stays; a failed sign leaves no `<tag>` for Kargo, [issues-maestra#1680](https://github.com/maestra-io/issues-maestra/issues/1680)), and verifies the pulled artifact contains no leftover `${APP_PACKAGE_VERSION_TO_BE_REPLACED}` placeholders. This is the GitHub-side half of the **OCI + Kargo** deploy pattern documented in [`maestra-io/fluxcd/docs/microservice-deployment.md`](https://github.com/maestra-io/fluxcd/blob/main/docs/microservice-deployment.md).
 
 ### Usage
 
@@ -328,7 +356,8 @@ jobs:
 - `service`: kebab-case service name. Derives `TELEPORT_TOKEN` (`image-push-github-actions-<service>`) and `IMAGE_MANIFESTS` (`<service>-manifests`). **(required)**
 - `images`: comma-separated list of image basenames the action will verify exist in ECR before baking. If any is missing, the bake fails. **(required)**
 - `tag`: explicit bare-semver tag to bake. Default `''`. When empty, the tag is taken from the `workflow_dispatch` input (if any) or `GITHUB_REF_NAME` (the tag that triggered the run) — the behaviour for mirrored repos. **Set this for GitHub-native repos** that bake from a `needs: build` job in a push-to-`main` release run: there the release tag is created with `GITHUB_TOKEN`, which GitHub will not let trigger a separate `on: push: tags` workflow, and `GITHUB_REF_NAME` is `main` rather than the semver tag. Precedence: `tag` → `workflow_dispatch.inputs.tag` → `GITHUB_REF_NAME`.
-- `flux-version`: flux CLI version, no `v-` prefix. Default `2.8.6`.
+- `flux-version`: flux CLI version, no `v-` prefix. Default `2.8.6`. Change `flux-sha256` with it.
+- `flux-sha256`: sha256 of `flux_<flux-version>_linux_amd64.tar.gz`. The default matches `2.8.6`.
 - `aws-region`: ECR region. Default `us-west-2` (phase 6 of [issues-maestra#1354](https://github.com/maestra-io/issues-maestra/issues/1354) — the eu-central-1 registry is frozen).
 - `ecr-registry`: ECR registry host. Default `515260921971.dkr.ecr.us-west-2.amazonaws.com`.
 - `teleport-fqdn`: Teleport proxy. Default `teleport.maestra.io:443`.
@@ -375,6 +404,274 @@ Vault app join for PR hot-test stands) and `maestra-io/dockerfiles` `.github/wor
 
 Tested by [`scripts/test-tbot-join.sh`](scripts/test-tbot-join.sh) (stub `tbot`, run by `selftest`).
 
+## A nora credential for a long build (`nora-session`)
+
+A GitHub OIDC token lives ~5 minutes, and nora checks `exp`. A credential written once
+(Maven `settings.xml`, `.npmrc`, bower, a Docker build secret) needs a longer one: the action
+exchanges the job's OIDC token at nora (`POST /api/oidc/session`) for a session token, `nrs_…`,
+with the token's role and namespace scope, that lives 1 hour (issues-maestra#1649). The
+`token` outputs of `go-nora`, `cargo-nora` and `uv-nora` are such session tokens; their
+GOAUTH / credential / keyring helpers still mint a fresh OIDC token on every call. A nora
+without the exchange (404) or a provider without sessions (403) gets the OIDC token, with a
+warning; any other answer fails the step. Needs `id-token: write`.
+
+```yaml
+  - uses: maestra-io/github-actions/nora-session@<40-hex sha> # vX.Y.Z
+    id: nora
+  - run: mvn -s ci-settings.xml -B verify   # <password>${env.NORA_TOKEN}</password>
+    env:
+      NORA_TOKEN: ${{ steps.nora.outputs.token }}
+```
+
+Tested by [`scripts/test-nora-session.sh`](scripts/test-nora-session.sh) (stub `curl`, run by `selftest`).
+
+## Service containers through nora (`nora-service`)
+
+The runner pulls `services:` and `container:` images before the first step, so they cannot
+use the job's OIDC token: only `credentials:` from a stored secret, which nora does not hand
+out. Without one they come straight from Docker Hub, past nora's 3-day quarantine
+(issues-maestra#1649). This action starts the dependency as a step instead: the image,
+`packages.maestra.io/<path>:<tag>@sha256:<digest>` (refused otherwise), is pulled with a nora
+session token held only in a throwaway 0600 docker config for that pull, run with
+`docker run -d`, and waited on (healthy with a health check, running without one; `timeout`,
+default 180 s). The post step removes it whatever the job's result (a node action for that
+step; the work is [`nora-service.sh`](nora-service/nora-service.sh)). Inputs mirror the service
+keys: `ports` and `env` one per line, `options` as `services.<id>.options` takes them, `name`;
+output `id` for `docker exec` (`job.services.<id>.id` before). Steps reach it on
+`localhost:<published port>`. Needs `id-token: write`. Renovate moves the pin
+(`testImagePins` reads the `image:` input under this action's `uses:`).
+
+```yaml
+    permissions:
+      id-token: write
+    steps:
+      - uses: maestra-io/github-actions/nora-service@<40-hex sha> # vX.Y.Z
+        id: pg
+        with:
+          image: packages.maestra.io/docker-hub/library/postgres:17@sha256:<digest>
+          ports: 5432:5432
+          env: |
+            POSTGRES_PASSWORD=ci-only
+          options: --health-cmd "pg_isready -U postgres" --health-interval 2s --health-retries 30
+```
+
+Tested by [`scripts/test-nora-service.sh`](scripts/test-nora-service.sh) (stub `docker`/`curl`)
+and the `nora-service` job of `selftest` (a real pull through nora).
+
+## BuildKit through nora (`setup-buildx`)
+
+`docker/setup-buildx-action`'s docker-container driver runs `moby/buildkit:buildx-stable-1`,
+pulled by the runner's Docker daemon straight from Docker Hub, past nora's 3-day quarantine
+(issues-maestra#1649). This composite is that action with the BuildKit image pinned by digest
+at `packages.maestra.io/docker-hub/moby/buildkit`, after the nora docker credential helper (the
+same block as the reusable workflows, so later packages.maestra.io pulls of the job work too).
+Inputs: `name`, `driver-opts` (more options, one per line), `buildkitd-config-inline`, `cleanup`;
+output `name`. Needs `id-token: write`. The `docker` driver starts no BuildKit: keep
+`docker/setup-buildx-action` for it. SOC flags any other `docker/setup-buildx-action` without a
+nora `image=` (`github.package_sources_via_nora`).
+
+```yaml
+  - uses: maestra-io/github-actions/setup-buildx@<40-hex sha> # vX.Y.Z
+```
+
+`ecr-push-selftest` builds and pushes with it; `scripts/test-dotnet-service-build.sh` keeps every
+BuildKit pin and credential-helper copy equal.
+
+## Terraform providers through nora (`terraform-nora`)
+
+Every `registry.terraform.io` provider installs from `https://packages.maestra.io/terraform/`
+(nora's network mirror: quarantine, versions younger than 3 days hidden), not from the public
+registry or a third-party mirror (issues-maestra#1649). Providers from other hosts
+(`terraform.releases.teleport.dev`, ...) still install directly. Add it right after
+`hashicorp/setup-terraform`; the job needs `id-token: write`:
+
+```yaml
+permissions:
+  id-token: write
+steps:
+  - uses: hashicorp/setup-terraform@<sha> # v4.0.1
+  - uses: maestra-io/github-actions/terraform-nora@<40-hex sha> # vX.Y.Z
+  - run: terraform init
+```
+
+It writes a CLI config to `$RUNNER_TEMP/terraform-nora/terraform.tfrc`, exports
+`TF_CLI_CONFIG_FILE` (keeping the credentials setup-terraform put in `~/.terraformrc`) and installs
+a credentials helper (`~/.terraform.d/plugins/terraform-credentials-nora`) that mints a fresh GitHub
+OIDC token (`aud` `packages.maestra.io`) each time Terraform asks, so a second `terraform init`
+later in the job does not hit an expired token. A private provider from a local directory:
+`fs-mirror-path` + `fs-mirror-include` (e.g. `registry.terraform.io/mindbox-private/*`).
+
+A version younger than 3 days is hidden from nora's version lists, so `terraform init` without a
+lock picks the newest older one; a `.terraform.lock.hcl` that pins a younger version fails until it
+matures (`host packages.maestra.io rejected the given authentication credentials` is that 403).
+Test: `scripts/test-terraform-nora.sh` (selftest).
+
+## Go modules and crates through nora (`go-nora`, `cargo-nora`)
+
+Public Go modules come from `https://packages.maestra.io/go` (nora's proxy of proxy.golang.org;
+a version whose `.info` Time is younger than 3 days is refused) and crates.io from
+`https://packages.maestra.io/cargo` (sparse index, versions younger than 3 days held), not
+straight from upstream (issues-maestra#1649). The job needs `id-token: write`.
+
+```yaml
+permissions:
+  id-token: write
+steps:
+  - uses: actions/setup-go@<sha>                                     # Go >= 1.24 (GOAUTH)
+  - uses: maestra-io/github-actions/go-nora@<40-hex sha> # vX.Y.Z
+    id: nora
+  # or, after the Rust toolchain step:
+  - uses: maestra-io/github-actions/cargo-nora@<40-hex sha> # vX.Y.Z
+    id: nora
+  - run: go test ./...        # cargo test --locked
+  # An image build: within the hour (the token is a nora session token, see nora-session).
+  - uses: docker/build-push-action@<sha>
+    with:
+      secrets: PRIVATE_PACKAGES_TOKEN=${{ steps.nora.outputs.token }}
+```
+
+- `go-nora` exports `GOPROXY` (no `direct` fallback; `GOPRIVATE` modules still come from git)
+  and `GOAUTH=$RUNNER_TEMP/go-nora/goauth`, a helper that mints a fresh GitHub OIDC token
+  for every `go` process and again after a 4xx.
+- `cargo-nora` appends source replacement and
+  `credential-provider = ["cargo:token-from-stdout", <helper>]` to `$CARGO_HOME/config.toml`;
+  the helper mints a fresh token whenever cargo asks.
+
+In the Dockerfile the token comes as the `PRIVATE_PACKAGES_TOKEN` secret, the same one
+`service-build.yml` and `dockerfiles` already pass (a local build without it keeps upstream):
+
+```dockerfile
+RUN --mount=type=secret,id=PRIVATE_PACKAGES_TOKEN,env=NORA_TOKEN \
+    GOPROXY="${NORA_TOKEN:+https://token:${NORA_TOKEN}@packages.maestra.io/go}" go mod download
+
+RUN --mount=type=secret,id=PRIVATE_PACKAGES_TOKEN,env=NORA_TOKEN \
+    if [ -n "${NORA_TOKEN:-}" ]; then printf '%s\n' '[source.crates-io]' 'replace-with = "nora"' \
+      '[source.nora]' 'registry = "sparse+https://packages.maestra.io/cargo/index/"' \
+      '[registries.nora]' 'index = "sparse+https://packages.maestra.io/cargo/index/"' \
+      'credential-provider = ["cargo:token"]' >> "${CARGO_HOME:-$HOME/.cargo}/config.toml"; \
+      export CARGO_REGISTRIES_NORA_TOKEN="Basic $(printf 'token:%s' "$NORA_TOKEN" | base64 | tr -d '\n')"; \
+    fi && cargo fetch --locked
+RUN cargo build --release --offline
+```
+
+Go redacts the userinfo (`token:xxxxx`) in its errors. Tests: `scripts/test-go-nora.sh`,
+`scripts/test-cargo-nora.sh` (selftest).
+
+## Python packages through nora (`uv-nora`)
+
+Every Python repo uses uv with a committed `uv.lock` and nora as its only index
+(issues-maestra#1649): a version younger than the hold is not served, and nothing falls back
+to pypi.org. The index is declared in `pyproject.toml`:
+
+```toml
+[[tool.uv.index]]
+name = "maestra"
+url = "https://packages.maestra.io/simple/"
+default = true
+```
+
+```yaml
+permissions:
+  id-token: write
+steps:
+  - uses: astral-sh/setup-uv@<sha>
+    with: { version: "<pinned>" }
+  - uses: maestra-io/github-actions/uv-nora@<40-hex sha> # vX.Y.Z
+    id: nora
+  - run: uv sync --locked && uv run pytest
+  # An image build: right after the action (its token is minted there).
+  - uses: docker/build-push-action@<sha>
+    with:
+      secrets: PRIVATE_PACKAGES_TOKEN=${{ steps.nora.outputs.token }}
+```
+
+`uv-nora` exports `UV_INDEX_MAESTRA_USERNAME=token` and `UV_KEYRING_PROVIDER=subprocess` and puts
+a `keyring` helper on PATH that mints a fresh GitHub OIDC token whenever uv asks (after nora's
+401), for nora's URLs only. In the Dockerfile the token is the `PRIVATE_PACKAGES_TOKEN` secret
+(`service-build.yml` passes it too):
+
+```dockerfile
+# Into the image's own Python (as pip did; --inexact keeps what the base image ships).
+ENV UV_NO_CACHE=1 UV_PYTHON_DOWNLOADS=never UV_COMPILE_BYTECODE=1 UV_INDEX_MAESTRA_USERNAME=token \
+    UV_PROJECT_ENVIRONMENT=/usr/local
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=bind,from=ghcr.io/astral-sh/uv:<version>@sha256:<digest>,source=/uv,target=/usr/local/bin/uv \
+    --mount=type=secret,id=PRIVATE_PACKAGES_TOKEN,required=true \
+    UV_INDEX_MAESTRA_PASSWORD="$(cat /run/secrets/PRIVATE_PACKAGES_TOKEN)" \
+    uv sync --locked --inexact --no-dev --no-install-project
+```
+
+uv is bind-mounted from its image, so nothing of it stays in a layer and no pip is involved (pip
+before 23.1 cannot read nora's PEP 691 `dist-info-metadata` objects).
+
+Test: `scripts/test-uv-nora.sh` (selftest).
+
+## Ansible Galaxy through nora
+
+`ansible-pr.yml` and `ansible-run.yml` install Galaxy collections from
+`https://packages.maestra.io/ansible/` (`ANSIBLE_GALAXY_SERVER_*`, a GitHub OIDC token): nora
+hides versions younger than 3 days, so a range like `>=8.0.0` resolves to the newest mature
+release. Roles and collections with a git `src` still come from git.
+
+## Prewarm external images in nora (`nora-image-prewarm`)
+
+nora holds every image digest it sees for the first time for 3 days (issues-maestra#1649). This
+action asks `packages.maestra.io` once for each external image a PR brings in, so that clock starts
+when the PR opens, not when a cluster first pulls the merged image. One manifest GET per image:
+nora dates everything the manifest names (platform manifests, config, layers) at that first sight.
+A `tag@sha256` reference is asked by its tag first, then by its digest: with `trust_upstream_dates`
+nora dates a tag pull from Docker Hub or quay by the registry's own push date, so an image older
+than the quarantine passes at once, and a digest alone carries no tag to look up.
+Images come from `images` (one per line) and/or `flate-diff`, a `flate diff ... -o json` file (the
+images a changed object's `new` has and its `old` lacks). Hosts are mapped to nora prefixes as in
+fluxcd `base/kyverno-nora-pull-through`; our ECR and other hosts are skipped. nora or the token
+service being unreachable is a warning, never a failure (an unreachable image is also a row in the
+step summary). It does fail on a caller error: no `id-token: write` permission, or a `flate-diff`
+file that is missing or not JSON (fluxcd calls it with `continue-on-error`). Needs `id-token: write`:
+
+```yaml
+permissions:
+  id-token: write
+steps:
+  - uses: maestra-io/github-actions/nora-image-prewarm@<40-hex sha> # vX.Y.Z
+    with:
+      images: |
+        ghcr.io/cloudnative-pg/cloudnative-pg:1.30.1
+```
+
+Test: `python3 nora-image-prewarm/prewarm.py --self-test` (selftest).
+
+## Mindbox lint drop-ins (`check-encoding`, `translation-checker`)
+
+Drop-ins, same inputs, for `mindbox-cloud/check-encoding` and
+`mindbox-cloud/github-actions/localization/translation-checker`, Docker actions whose images
+(`mindboxmoscow/*`, Mindbox's Docker Hub) the runner pulls in "Set up job", past nora
+(issues-maestra#1649).
+
+- `check-encoding` runs our port [`pr-checks/check-encoding.py`](pr-checks/check-encoding.py)
+  on the runner ([`check-encoding/check-encoding.sh`](check-encoding/check-encoding.sh)): every
+  tracked file with the extensions must decode as UTF-8 (ASCII included). No image, no token.
+  `command: fix` and a `target_encoding` other than UTF-8/ASCII fail instead of passing.
+- `translation-checker` runs our build of the checker:
+  [maestra-io/localization-github-actions](https://github.com/maestra-io/localization-github-actions)
+  releases `translation-checker-gha:<release>` to this account's private ECR, and the action
+  pins it by `tag@digest`. It logs in to ECR with the runner's instance role (RunsOn, read only;
+  the same login the shared workflows use), using a throwaway `DOCKER_CONFIG`, and runs the image
+  over the workspace. No token. A bump: release that repo, then update the image in
+  [`translation-checker/action.yml`](translation-checker/action.yml).
+
+```yaml
+    runs-on: runs-on=${{ github.run_id }}/pool=small   # RunsOn: the ECR pull uses its instance role
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@<version tag>
+      - uses: maestra-io/github-actions/check-encoding@<40-hex sha> # vX.Y.Z
+      - uses: maestra-io/github-actions/translation-checker@<40-hex sha> # vX.Y.Z
+```
+
+Tested by the `mindbox-lint` job of `selftest` (real runs over this repo); the script of
+`check-encoding` also by `scripts/test-pr-checks.sh`.
+
 ## Gitleaks on pull requests (`gitleaks.yml`)
 
 The reusable workflow [`gitleaks.yml`](.github/workflows/gitleaks.yml) runs the official
@@ -408,7 +705,7 @@ jobs:
 - **Findings**: red job, listed (redacted) in the job summary and a review comment on
   the PR per finding, and the SARIF report as a run artifact (the action's defaults).
 
-The action installs the newest gitleaks release (`GITLEAKS_VERSION: latest`). One input,
+The action installs the pinned gitleaks release (`GITLEAKS_VERSION: 8.30.1`); a new one arrives only through a reviewed bump. One input,
 `ref`: the ref of this repo the central config is read from (default `main`).
 
 **Config**: only the central [`gitleaks/gitleaks.toml`](gitleaks/gitleaks.toml) (gitleaks'
@@ -450,19 +747,26 @@ the PyPI token: packages go to nora with the GitHub OIDC token, images to ECR
 through the Teleport image-push bot. Inputs, jobs and auth are documented at the
 top of each file.
 
+Layer cache freshness: a Dockerfile stage that installs from apt/apk or the network
+without a pin declares `ARG BASE_REFRESH` directly before its first such `RUN`;
+`dotnet-service-build.yml` and `service-build.yml` pass the ISO week (`YYYY-Www`, e.g. `2026-W45`) as that
+build-arg, so the stage is rebuilt on the first build of a new week instead of being served
+from the layer cache (sticky disk, `type=gha`) for as long as it lives. A Dockerfile without
+the ARG only gets BuildKit's "build-arg not consumed" warning.
+
 | workflow | does | GitLab original |
 | --- | --- | --- |
-| [`dotnet-service-build.yml`](.github/workflows/dotnet-service-build.yml) | `version` → `test` → `images` (matrix) → `release` → `bake` | dotnet-service-cicd-components release-template, create-release-number, docker-push-to-all, maestra-bake-oci-manifests |
+| [`dotnet-service-build.yml`](.github/workflows/dotnet-service-build.yml) | `version` → `test` → `images` (matrix) → `release` → `bake`; input `graphql-schemas: true` downloads the StrawberryShake schemas named by the repo's `.graphqlrc.json` files once in `test` and hands them to `images` (GitHub OIDC → auth-jwt omega JWT, client `github-dotnet-graphql-schema`, bound to this workflow at `@refs/heads/main`: call it at `@main`, a tag or SHA is rejected by auth-jwt) | dotnet-service-cicd-components release-template, create-release-number, docker-push-to-all, maestra-bake-oci-manifests |
 | [`service-build.yml`](.github/workflows/service-build.yml) | same jobs as `dotnet-service-build.yml` for any language: `test` runs the repo's `test-command` (optional `python-version` / `node-version`) or a Dockerfile `docker-test-target`; build secrets under the Dockerfile's own ids (`build-secret-ids`) | docker-push-to-all, maestra-bake-oci-manifests, create-release-number, the repo's own GitLab test jobs |
 | [`nuget-package-publish.yml`](.github/workflows/nuget-package-publish.yml) | restore, build, test, pack, `dotnet nuget push` | dotnet-nuget-cicd-components |
-| [`npm-package-publish.yml`](.github/workflows/npm-package-publish.yml) | `npm ci`, lib@3 checks (`checks` input: graphql-codegen, check-types, check-scripts, check-styles, test; `--if-present`, all reported), optional PR coverage comment (`report-coverage`), `npm run release` (semantic-release); RunsOn `pool` input `small` (default) or `build` | frontend-ci-components `templates/lib` |
-| [`python-package-publish.yml`](.github/workflows/python-package-publish.yml) | poetry/uv build, test, `twine upload` | — |
-| [`mcf-build.yml`](.github/workflows/mcf-build.yml) | micro-frontends: `install` (node_modules cached by lockfile hash, `npm ci` only on a miss) → `codegen` (GitHub OIDC → auth-jwt omega JWT) → `checks`, `test`, `build` → `image` (rclone + `<static-prefix>`, default `v2_static/<mcf>`; `static-prefix: v2_static/core` and `manifest: core` for the admin shell frontend-core-v2) → `release` → `bake`, `sourcemaps` (Datadog US3, key from the central Vault); the bucket upload runs at promotion from the MCF's own `kustomization/`. With `tests/`: `tests-install`, `tests-checks` and, after `build`, `functional` (Playwright against the built static, [below](#mcf-build-tests-and-functional-tests)), and on pull requests `e2e-stand` → `e2e` (Playwright against the PR's e2e stand, input `e2e`, [below](#mcf-build-e2e-stand-and-e2e-tests)). On pull requests `pr gate` is the check a branch ruleset requires (`build / pr gate`): red when a PR job failed or was cancelled; `functional` and `e2e` count only with `functional-required` / `e2e-required` | frontend-ci-components `templates/mcf` (mcf@3) |
-| [`hot-test-publish.yml`](.github/workflows/hot-test-publish.yml) | hot-test stand of a pull request ([issues-maestra#1574](https://github.com/maestra-io/issues-maestra/issues/1574)): the PR's static artifact + an entry from `frontend-entry-static-builder --single-run` with the PR's manifest → R2 `admin-hot-test-static-omicron/hot-test-<repo>-pr-<N>/` (Teleport GitHub join from the PR → Vault omicron → 10-minute editor keys); the stand URL `https://hot-test-<repo>-pr-<N>.testing-env.omicron.maestra.io` is in the PR as a deployment of environment `hot-test` and in the job's step summary. Called by `mcf-build.yml` on pull_request (input `hot-test`) and by the legacy admin monorepo's own `pr.yml` (`static-prefix: public`, `manifest: none`: its dist goes to `public/` of the PR folder, the entry is the released shell, and the backend links `/public/...` from the stand's host on `X-Testing-Frontend`); the routes come from the builder's chart per open PR. Input `stand-prefix` (default `hot-test`) is the first word of the stand name, environment and bucket folder: `mcf-build.yml` calls the workflow a second time with `e2e` for the [e2e stand](#mcf-build-e2e-stand-and-e2e-tests). Outputs: `url`, and `route` (`true` once the stand's `/entry/index.html` answered 200, `false` when the static is published but fluxcd has no route for it: ⚠️, the job stays green). Inputs: `bucket` (stands' bucket, write), `base-static-url` (release static the entry is built from), `hot-test-domain`, `static-prefix` (the PR's own folder, default `v2_static/<mcf>`, the module federation folder; a repo whose files live elsewhere — `frontend` `public`, `frontend-core-v2` `v2_static/core` — sets the same path as `staticPrefix` in its fluxcd registration, which the stand's route sends to the PR folder), `manifest` (`mcf`, `core` for frontend-core-v2: its `manifest.json` and `build-info.json` become the builder's core overrides, or `none`); the tenant and the cluster's copies of these addresses live only in fluxcd (component `base/microfrontend/hot-test`). After the route is up the job compares every release manifest the entry was built from (`v2_static/core/manifest.json` and `v2_static/<mcf>/mf-manifest.json` of each MCF in its `entry/mcf-manifests.json` but those under `static-prefix`) through the stand with the ones under `base-static-url`: another release bucket in the cluster's `baseStaticDomain` (first differing path in the summary) or a non-200 from the stand is ❌ and fails the job | frontend-ci-components mcf@3 hot-test environments |
-| [`frontend-codegen.yml`](.github/workflows/frontend-codegen.yml) | one job `codegen` for a frontend with its own pipeline (maestra-io/frontend): restores the `install` job's `node_modules` cache, GitHub OIDC → auth-jwt omega JWT (client `github-frontend-graphql-schema`, bound to this workflow at `@refs/heads/main`) → `npm run graphql-codegen`; artifact `codegen`. The same job as `codegen` in `mcf-build.yml` | frontend-ci-components graphql-codegen |
-| [`helm-chart.yml`](.github/workflows/helm-chart.yml) | PR: `check` (version bump, CHANGELOG, lint, helm-unittest); main: `release` → ECR `helm-charts/<name>` ([`push-helm-chart-to-aws-ecr`](push-helm-chart-to-aws-ecr/action.yml)) | system/components/helm-ci helm-merge-request + helm-release |
+| [`npm-package-publish.yml`](.github/workflows/npm-package-publish.yml) | `npm ci`, lib@3 checks (`checks` input: graphql-codegen, check-types, check-scripts, check-styles, test; `--if-present`, all reported; check-scripts with `eslint --concurrency=auto` on ESLint >= 9.34), optional PR coverage comment (`report-coverage`), `npm run release` (semantic-release); RunsOn `pool` input `small` (default) or `build` | frontend-ci-components `templates/lib` |
+| [`python-package-publish.yml`](.github/workflows/python-package-publish.yml) | poetry/uv build, test, `twine upload`; uv, poetry and twine through nora (`uv-nora`) | — |
+| [`mcf-build.yml`](.github/workflows/mcf-build.yml) | micro-frontends: `install` (fails when `package.json` and `package-lock.json` disagree; node_modules cached by lockfile hash, `npm ci` only on a miss; then codegen in the same job: GitHub OIDC → auth-jwt omega JWT → artifact `codegen`) → `checks`, `test`, `build` → `image` (rclone + `<static-prefix>`, default `v2_static/<mcf>`; `static-prefix: v2_static/core`, `static-manifest: manifest.json` and `static-version-file: build-info.json` for the admin shell frontend-core-v2; the defaults are `mf-manifest.json` and no version file) → `deps-image` (`<image>-with-deps:<release>`: the sources and `node_modules`, uid 10001, no `.git`; chart `mcf-schema-check` runs the schema check from it at promotion, [issues-maestra#1573](https://github.com/maestra-io/issues-maestra/issues/1573); after `image`, as ECR tags are immutable and a re-run reuses the release number) and, with `tests/e2e/`, `e2e-image` (`<image>-e2e:<release>`, [below](#mcf-build-e2e-image)) → `release` → `bake`, `sourcemaps` (Datadog US3, key from the central Vault); the bucket upload runs at promotion from the MCF's own `kustomization/`. With `tests/`: `tests-install`, `tests-checks` and, after `build`, `functional` (Playwright against the built static, [below](#mcf-build-tests-and-functional-tests)), and on pull requests `e2e-stand` → `e2e` (Playwright against the PR's e2e stand, input `e2e`, [below](#mcf-build-e2e-stand-and-e2e-tests)). Input `hot-test-pages` goes to `hot-test-publish.yml` as `pages`: more pages of the hot-test stand linked from the PR. On pull requests `pr gate` is the check a branch ruleset requires (`build / pr gate`): red when a PR job failed or was cancelled; `functional` and `e2e` count only with `functional-required` / `e2e-required` (`e2e` always on `renovate/*`) | frontend-ci-components `templates/mcf` (mcf@3) |
+| [`hot-test-publish.yml`](.github/workflows/hot-test-publish.yml) | hot-test stand of a pull request ([issues-maestra#1574](https://github.com/maestra-io/issues-maestra/issues/1574)): the PR's static artifact + an entry from `frontend-entry-static-builder --single-run` with the PR's manifest → R2 `admin-hot-test-static-omicron-wnam/hot-test-<repo>-pr-<N>/` (Teleport GitHub join from the PR → Vault omicron → 10-minute editor keys); the stand URL `https://hot-test-<repo>-pr-<N>.testing-env.omicron.maestra.io` is in the PR as a deployment of environment `hot-test` and in the job's step summary. Called by `mcf-build.yml` on pull_request (input `hot-test`) and by the legacy admin monorepo's own `pr.yml` (`static-prefix: public`, `static-manifest: ""`: its dist goes to `public/` of the PR folder, the entry is the released shell, and the backend links `/public/...` from the stand's host on `X-Testing-Frontend`); the routes come from the builder's chart per open PR. Input `stand-prefix` (default `hot-test`) is the first word of the stand name, environment and bucket folder: `mcf-build.yml` calls the workflow a second time with `e2e` for the [e2e stand](#mcf-build-e2e-stand-and-e2e-tests). Input `pages` (one `<name> <path>` per line, default none): once the stand answers, each page gets its own deployment of environment `<stand-prefix>-<name>` with the url `<stand url><path>`, so the PR links it next to the stand (frontend-email-editor: `standard-blocks /email-editor/common-block-templates-preview?standardFlexBlocks=true`); like the stand's deployment it needs no token permission. Outputs: `url`, and `route` (`true` once the stand's `/entry/index.html` answered 200, `false` when the static is published but fluxcd has no route for it: ⚠️, the job stays green). Inputs: `bucket` (stands' bucket, write), `base-static-url` (release static the entry is built from), `hot-test-domain`, `static-prefix` (the PR's own folder, default `v2_static/<mcf>`, the module federation folder; a repo whose files live elsewhere — `frontend` `public`, `frontend-core-v2` `v2_static/core` — sets the same path as `staticPrefix` in its fluxcd registration, which the stand's route sends to the PR folder), `static-manifest` (default `mf-manifest.json`, the entry's override; empty for no manifest) and `static-version-file` (default none); under `static-prefix: v2_static/core` the two are frontend-core-v2's `manifest.json` and `build-info.json` and become the builder's core overrides; the tenant and the cluster's copies of these addresses live only in fluxcd (component `base/microfrontend/hot-test`). After the route is up the job compares every release manifest the entry was built from (`v2_static/core/manifest.json` and `v2_static/<mcf>/mf-manifest.json` of each MCF in its `entry/mcf-manifests.json` but those under `static-prefix`) through the stand with the ones under `base-static-url`: another release bucket in the cluster's `baseStaticDomain` (first differing path in the summary) or a non-200 from the stand is ❌ and fails the job | frontend-ci-components mcf@3 hot-test environments |
+| [`frontend-codegen.yml`](.github/workflows/frontend-codegen.yml) | one job `codegen` for a frontend with its own pipeline (maestra-io/frontend): restores the `install` job's `node_modules` cache, GitHub OIDC → auth-jwt omega JWT (client `github-frontend-graphql-schema`, bound to this workflow at `@refs/heads/main`) → `npm run graphql-codegen`; artifact `codegen`. The same steps as the codegen of the `install` job in `mcf-build.yml` | frontend-ci-components graphql-codegen |
+| [`helm-chart.yml`](.github/workflows/helm-chart.yml) | PR: `check` (version bump, CHANGELOG, lint, helm-unittest); main: `release` → ECR `helm-charts/<name>` ([`push-helm-chart-to-aws-ecr`](push-helm-chart-to-aws-ecr/action.yml), cosign-signed and verified after the push) | system/components/helm-ci helm-merge-request + helm-release |
 | [`gitleaks.yml`](.github/workflows/gitleaks.yml) | PR only: one job `gitleaks`, [`gitleaks/gitleaks-action`](https://github.com/gitleaks/gitleaks-action) on the PR's commits with the central `gitleaks/gitleaks.toml`; needs the `GITLEAKS_LICENSE` org secret; each repo calls it from its own `.github/workflows/gitleaks.yml` (no shared workflow here runs it) | — |
-| [`pr-checks.yml`](.github/workflows/pr-checks.yml) | PR only: check-encoding of the changed files and `kustomize build` of a changed overlays tree; its `gitleaks` input is deprecated and ignored | — |
+| [`pr-checks.yml`](.github/workflows/pr-checks.yml) | PR only: check-encoding of the changed files, `kustomize build` of a changed overlays tree, kyverno-cli over the images that change adds (warning only until `image-signatures-enforce`), and the `networkPolicy` values gate of a changed tree (`helm template` of the pinned commons-app / commons-app-init / postgres chart from ECR, kubeconform against the Cilium CRD schema, fluxcd's netpol-broad-gate; every policy allow-only, `enableDefaultDeny` false both ways; [`pr-checks/check-network-policy.py`](pr-checks/check-network-policy.py), tests `scripts/test-network-policy-gate.sh`); its `gitleaks` input is deprecated and ignored | — |
 
 Warehouse refresh: GitHub org webhook → Kargo cluster receiver, see fluxcd `iota/us-iota-lw-kube-infra/kargo/webhook-receivers.yaml`; Warehouses still poll every 5 min as fallback.
 
@@ -483,20 +787,28 @@ changes in the MCF repo: the jobs switch on by files.
 - **`tests-checks`** (`tests/package.json`): `npm run check-types` and `check-scripts` in
   `tests/`, each in its own log group, fails the run and holds the `image` (no release).
 - **`functional`** (`tests/functional/playwright.config.ts`; on pull requests and pushes, not on
-  `renovate/*` or `LocalizationPull`): the `static` artifact of `build` (source maps
-  removed) is unpacked to an empty `site/` and served by `http-server@14.1.1` (installed
-  from nora) on `http://localhost:8080`, the port the tests expect; then
+  `LocalizationPull` or PRs from forks): the `static` artifact of `build` (source maps
+  removed) is unpacked to an empty `site/` and served by `http-server@14.1.1` (from nora,
+  cached per repo after the first install) on `http://localhost:8080`, the port the tests expect; then
   `BASE_URL=http://localhost:8080 RETRIES=2 WORKERS=<functional-workers> npm run functional:ci`
   in `tests/`. The backend is mocked by the tests: no secrets, no stand.
-- **Browser.** `npx playwright install --with-deps chromium` from `tests/`, so it is the
-  Chromium of the Playwright the tests resolve; `~/.cache/ms-playwright` is cached by that
-  version. frontend-playwright prefers `/usr/bin/google-chrome` with `--no-sandbox`
-  when the file exists, so on a runner image with Chrome the tests run in that Chrome.
-- **Advisory first.** The job has `continue-on-error: ${{ !inputs.functional-required }}`:
-  a red run shows ❌ and "not blocking: functional-required is false" in its step
-  summary but does not fail the workflow or hold the release. A repo opts in to blocking with
-  `functional-required: true`: a red run then fails the workflow and the `image` (and so
-  `release`, `bake`) does not run. The default turns `true` once the MCFs are green.
+- **Browser.** No browser download ([issues-maestra#1649](https://github.com/maestra-io/issues-maestra/issues/1649)):
+  `npm run functional:ci` runs inside `PLAYWRIGHT_IMAGE` (`packages.maestra.io/mcr/playwright`,
+  MCR's Playwright image through nora) with the tag `v<X>-noble`, `<X>` the `@playwright/test`
+  of `tests/`, resolved to its index digest per run (logged as `Playwright browsers: <tag> =
+  <image>@sha256:…`) and run by that digest, so the browsers are the ones of the tests'
+  Playwright. The job's Node (`node-version`) is mounted in, `--network host` reaches
+  http-server on `:8080`, `--user` is the runner's; nora docker credentials come from the
+  `nora-cred-helper` block. A Playwright release nora still quarantines (3 days) fails the
+  job with `nora does not serve …`. frontend-playwright prefers `/usr/bin/google-chrome`,
+  which the image does not have, so the tests run in the image's Chromium.
+  `functional-system-chrome: true` (default `false`, opt-in per repo) runs the tests on the
+  runner in its Chrome instead, no image pull; off the runner image's Chrome it falls back to
+  the image.
+- **Blocking.** `functional-required` defaults to `true`: a red run fails the workflow and
+  `pr gate`, and the `image` (and so `release`, `bake`) does not run. A repo opts out with
+  `functional-required: false`: the job gets `continue-on-error`, a red run shows ❌ and
+  "not blocking: functional-required is false" in its step summary but holds nothing.
 - **Results.** Step summary from the JUnit (tests, passed, failed = `failures` + `errors`,
   flaky, skipped, duration, every failed test by name). Artifacts:
   `functional-junit-<attempt>` (`tests/functional/test-results/results.xml`, 7 days, always)
@@ -504,42 +816,43 @@ changes in the MCF repo: the jobs switch on by files.
   with traces and screenshots, 3 days; traces are on for every test, 19–86 MB). The
   JUnit also goes to [test-results-ingest](#test-results-ingest-flaky-test-telemetry).
 
-`scripts/test-functional.sh` (selftest) runs the detection, the server wait and the
-summary blocks of the workflow.
+`scripts/test-functional.sh` (selftest) runs the detection, the server wait, the
+`docker run` and the summary blocks of the workflow.
 
 ### mcf-build: e2e stand and e2e tests
 
 The port of mcf@3 e2e ([issues-maestra#1573](https://github.com/maestra-io/issues-maestra/issues/1573)):
 the Playwright tests of `tests/e2e/` (`@mindbox-cloud/frontend-playwright`) run on pull
 requests against a stand of the PR. Both jobs need `tests/e2e/playwright.config.ts` (with
-`tests/package.json`; not on `renovate/*` or `LocalizationPull`); the stand is published
+`tests/package.json`; not on `LocalizationPull` or PRs from forks); the stand is published
 unconditionally, the tests run only with input `e2e`.
 
 - **`e2e-stand`** (pull requests from this repository, the conditions of `hot-test` without
-  its input): a second call of
+  its input and with `renovate/*`): a second call of
   [`hot-test-publish.yml`](.github/workflows/hot-test-publish.yml) with `stand-prefix: e2e`, so the
   PR's own entry (its `CDN_URL` is the stand host) goes to
-  `admin-hot-test-static-omicron/e2e-<repo>-pr-<N>/` and the stand is
+  `admin-hot-test-static-omicron-wnam/e2e-<repo>-pr-<N>/` and the stand is
   `https://e2e-<repo>-pr-<N>.testing-env.omicron.maestra.io`, environment `e2e`. fluxcd renders
-  its routes like the hot-test ones but sends the API to the e2e tenant (`autotests-eu.maestra.io`);
+  its routes like the hot-test ones but sends the API to the e2e tenant (`ci-gate.omicron.maestra.io`);
   fluxcd registers an e2e provider for every MCF with `tests/e2e/` (except the legacy `frontend`).
 - **No route → skipped.** When fluxcd has no e2e provider for the repo, `e2e-stand` publishes the
   static, shows ⚠️ "not registered in fluxcd for e2e stands" and outputs `route: false`; `e2e` is
   then skipped, it never fails on the login.
-- **`e2e`** (input `e2e`, default `false`: the repo turns its tests on with `e2e: true` in its
-  `pr.yml`, and that PR is also its first e2e run; the input goes away once every repo is on;
-  `pool=build`, 60 min): the root and `tests/` caches as `functional`, Chromium of the
-  tests' Playwright, then `npm run e2e:ci` in `tests/` with `CI=true`,
-  `BASE_URL=https://e2e-<repo>-pr-<N>.testing-env.omicron.maestra.io`, `ADMINSITE_USERNAME`,
-  `ADMINSITE_PASSWORD`, `TEST_ENVIRONMENT=pull-request`, `RETRIES=2`, `WORKERS=<e2e-workers>`
-  (default 4).
+- **`e2e`** (input `e2e`, default `true`: every repo with `tests/e2e/` runs them, `e2e: false` in
+  `pr.yml` opts out; `e2e: true` is a no-op left from the opt-in period;
+  `pool=build`, 60 min): the root and `tests/` caches as `functional`, then `npm run e2e:ci`
+  in `tests/` inside `PLAYWRIGHT_IMAGE` by digest, as `functional` (no browser download), with
+  `CI=true`, `BASE_URL=https://e2e-<repo>-pr-<N>.testing-env.omicron.maestra.io`,
+  `ADMINSITE_USERNAME`, `ADMINSITE_PASSWORD`, `TEST_ENVIRONMENT=pull-request`, `RETRIES=2`,
+  `WORKERS=<e2e-workers>` (default 4), each passed to the container by name (`-e NAME`).
 - **Credentials.** `hashicorp/vault-action` against the central Vault (`jwt-github`), role
-  `e2e-vault-role` (default `ci-e2e-autotests-eu`), keys `ADMINSITE_USERNAME` and
+  `e2e-vault-role` (default `ci-gate-e2e`), keys `ADMINSITE_USERNAME` and
   `ADMINSITE_PASSWORD` of the KV v2 secret `e2e-vault-secret` (default
-  `gitlab/data/ci-e2e/autotests-eu`, i.e. `vault kv get gitlab/ci-e2e/autotests-eu`). The values
+  `gitlab/data/ci-e2e/ci-gate`, i.e. `vault kv get gitlab/ci-e2e/ci-gate`). The values
   are masked step outputs passed to the test step only (`exportEnv: false`), never printed. The
   role must be bound to `mcf-build.yml` in its `job_workflow_ref`.
-- **Advisory.** `continue-on-error: ${{ !inputs.e2e-required }}`, default `false`. `e2e` is not
+- **Advisory.** `continue-on-error` unless `e2e-required` (default `false`) or the PR's branch is
+  `renovate/*`: Renovate auto-merges on a green `pr gate`, so a red `e2e` holds its PR. `e2e` is not
   in the `needs` of `image` or `release`: the run takes 20–50 min, and `e2e-required` only makes
   a red run fail the workflow; gating the release on it is a later change.
 - **Results.** Step summary from `tests/e2e/test-results/results.xml` (stand URL, tests, passed,
@@ -548,8 +861,35 @@ unconditionally, the tests run only with input `e2e`.
   (`tests/e2e/test-results` with traces, 3 days). The JUnit also goes to
   [test-results-ingest](#test-results-ingest-flaky-test-telemetry).
 
-`scripts/test-e2e.sh` (selftest) runs the detection and summary blocks and checks the wiring of
-both jobs.
+### mcf-build: e2e image
+
+The same tests run after every promotion to omicron ([issues-maestra#1573](https://github.com/maestra-io/issues-maestra/issues/1573)):
+`e2e-image` bakes them into `<image>-e2e:<release>` next to `<image>-with-deps`, and chart
+`mcf-e2e` (maestra-io/helm-charts) runs it as a Job after the MCF's upload, against the
+admin of ci-gate.
+
+- **When.** On a release (`push` to the default branch), after `image`, alongside `deps-image`,
+  for a repo with `tests/e2e/playwright.config.ts` and `tests/package.json`. Input `e2e` does not
+  apply: it only switches the pull request job off; a repo without `helm-release-e2e.yaml` in its
+  `kustomization/` never runs the image.
+- **Contents.** The build context is `tests/` with `tests/node_modules` from the `tests-install`
+  cache; for a `tests` workspace of the root (no `tests/package-lock.json`) the root cache is
+  restored and every package npm hoisted to the root `node_modules` (and its `.bin` links) is
+  copied into `tests/node_modules`, those already there kept (a linked local package by its
+  contents; the workspace's link to `tests/` itself is skipped). A copied package resolves its
+  dependencies from `tests/node_modules` first, so a version `tests/` pins differently from the
+  root wins there; a repo that hits this gives `tests/` its own lockfile. Base
+  `packages.maestra.io/mcr/playwright:v<X>-noble@<digest>` (`PLAYWRIGHT_IMAGE`, MCR's image
+  through nora), `<X>` the installed `@playwright/test`, the digest resolved when the Dockerfile
+  is written, its global npm replaced by the npm of `DEPS_BASE` (pulled through nora; the
+  npm of an older Playwright image bundles a vulnerable `tar`, 1.62.1 ships 7.5.15), `WORKDIR /tests`, user `pwuser`, `CMD ["npm","run","e2e:ci"]`; the
+  `node_modules` and the sources are separate layers in the gha cache (scope `mcf-e2e-<image>`).
+  Labels and the best-effort signature as `-with-deps`.
+- **Release gate.** `release` waits for `e2e-image` when the repo has `tests/e2e/`: a failed bake
+  holds the release; without `tests/e2e/` the skipped job holds nothing.
+
+`scripts/test-e2e.sh` (selftest) runs the detection, summary, Playwright image (against a fake
+`docker`) and e2e image Dockerfile blocks and checks the wiring of the three jobs.
 
 [`scripts/dockerfile-from-fix.sh`](scripts/dockerfile-from-fix.sh) drops the
 `cr.yandex/crp2cvbrp76d7dmfegco/` mirror prefix from `FROM` lines (idempotent);
@@ -562,3 +902,16 @@ RUN (it writes the minutes-lived OIDC token into a cached layer, replayed after 
 expired) with `--mount=type=secret,id=NUGET_CREDENTIALS,env=NuGetPackageSourceCredentials_<source>`
 on every `dotnet` RUN that can reach the feed (idempotent). Until then the
 workflows build such a Dockerfile without the layer cache.
+
+## Create GitHub Release (`create-github-release`)
+
+A copy of `mindbox-cloud/github-actions/create-github-release` with the same inputs and
+outputs. Every inner action is SHA-pinned, because the org SHA-pinning policy also checks the
+`uses:` lines inside a composite. One change from upstream: the changelog goes into the shell
+through `env:`, not by interpolation. Swap the upstream reference for this one:
+
+```yaml
+- uses: maestra-io/github-actions/create-github-release@<40-hex sha> # v1.48.0
+  with:
+    release-number: ${{ steps.version.outputs.release-number }}
+```

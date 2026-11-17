@@ -10,7 +10,7 @@
 #
 # Path convention: `playbook` and `inventory` are relative to `working_directory`
 # (the Execute step runs with working-directory = inputs.working_directory).
-# `requirements_pip` / `requirements_galaxy` are workspace-root-relative (installed
+# `uv_project` / `requirements_galaxy` are workspace-root-relative (installed
 # before we cd into working_directory).
 name: Ansible Run (reusable)
 
@@ -67,7 +67,7 @@ on:
         type: boolean
         default: false
       checkout_ref:
-        description: "Git ref to check out and run instead of the caller's commit (empty = the caller's commit). Lets a caller run a check-mode plan of an older commit, e.g. a drift check of github.event.before before an apply."
+        description: "Git ref to check out and run instead of the caller's commit (empty = the caller's commit). Lets a caller run a check-mode plan of an older commit, e.g. a drift check of github.event.before before an apply. That commit must carry uv_project/uv.lock: a commit older than its repo's uv migration fails the install step."
         required: false
         type: string
         default: ""
@@ -251,10 +251,20 @@ on:
         required: false
         type: string
         default: "3.14"
-      requirements_pip:
+      uv_project:
+        description: >-
+          Directory (workspace-relative) of the caller's pyproject.toml + uv.lock
+          (next to ansible.cfg, so ansible/** path filters see a toolchain bump):
+          the Ansible toolchain as `[project].dependencies`, nora as the only index
+          (`[[tool.uv.index]] name = "maestra"`, default = true; issues-maestra#1649).
         required: false
         type: string
-        default: "ansible/requirements-pip.txt"
+        default: "ansible"
+      requirements_pip:
+        description: "Deprecated and ignored (issues-maestra#1649): Python packages come from uv_project's uv.lock only. Kept so a caller that still passes it does not break."
+        required: false
+        type: string
+        default: ""
       requirements_galaxy:
         required: false
         type: string
@@ -352,31 +362,88 @@ jobs:
         continue-on-error: true
         uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
-          enable-cache: true
+          version: "0.13.6"
+          enable-cache: false
 
       # Observed 2026-09-02 on the eu _haproxy_cdp check row (run 33612325844):
       # `Fetching manifest data from https://raw.githubusercontent.com/astral-sh/
-      # versions/main/v1/uv.ndjson` -> `##[error]fetch failed`. No version is
-      # pinned anywhere in the consumer repos, so the action resolves "latest",
-      # which makes that fetch mandatory on every single run.
+      # versions/main/v1/uv.ndjson` -> `##[error]fetch failed` (uv was unpinned then;
+      # it is pinned now, the retry stays for the download itself).
       - name: Set up uv — retry
         if: steps.setup-uv.outcome == 'failure'
         uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
-          enable-cache: true
+          version: "0.13.6"
+          enable-cache: false
+
+      # Credentials for nora (packages.maestra.io), the caller's only Python index.
+      - uses: maestra-io/github-actions/uv-nora@22ccbf9ff3d76fe13025cbc009d395024f025198 # v1.67.0
 
       # See the tp-version step: inputs reach the shell through env only.
-      - name: Install ansible + pip requirements
+      - name: Install ansible + Python dependencies
         env:
-          REQUIREMENTS_PIP: ${{ inputs.requirements_pip }}
-        run: uv pip install --system -r "$REQUIREMENTS_PIP"
+          DEPS_PROJECT: ${{ inputs.uv_project }}
+          DEPS_GROUP: ""
+          DEPS_TARGET: system
+        run: |
+          # >>> python-deps (identical in every ansible workflow; ansible/tests/test-python-deps.sh)
+          set -euo pipefail
+          if [ -f "${DEPS_PROJECT}/uv.lock" ]; then
+            # nora only: every package source is the nora registry (or the project
+            # itself), every URL is on packages.maestra.io. Anything else (another
+            # index, git, ssh, a path, a direct URL) is refused, never followed.
+            lock="${DEPS_PROJECT}/uv.lock"
+            if bad=$(grep -E '^source = ' "$lock" | sort -u | grep -vxF \
+                  -e 'source = { registry = "https://packages.maestra.io/simple/" }' \
+                  -e 'source = { virtual = "." }' -e 'source = { editable = "." }'); then
+              echo "::error file=${lock}::uv.lock has sources other than the nora registry: ${bad//$'\n'/ }"
+              exit 1
+            fi
+            if other=$(grep -oE '[a-z+]+://[^/"]+' "$lock" | sort -u | grep -vxF 'https://packages.maestra.io'); then
+              echo "::error file=${lock}::uv.lock names hosts other than packages.maestra.io: ${other//$'\n'/ }"
+              exit 1
+            fi
+            args=(--locked --no-install-project --project "$DEPS_PROJECT")
+            [ -z "${DEPS_GROUP:-}" ] || args+=(--group "$DEPS_GROUP")
+            if [ "$DEPS_TARGET" = active ]; then
+              args+=(--active)
+            else
+              # setup-python's interpreter, as `pip install --system` did; --inexact keeps its pip.
+              export UV_PROJECT_ENVIRONMENT="${pythonLocation:?actions/setup-python must run first}"
+              args+=(--inexact)
+            fi
+            uv sync "${args[@]}"
+          else
+            echo "::error::no ${DEPS_PROJECT}/uv.lock: the Ansible toolchain comes from pyproject.toml + uv.lock through nora (input uv_project; issues-maestra#1649)"
+            exit 1
+          fi
+          # <<< python-deps
 
       - name: Cache Ansible Galaxy collections
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.ansible/collections
-          key: galaxy-${{ runner.os }}-${{ hashFiles(inputs.requirements_galaxy) }}
+          # "nora": collections cached before Galaxy went through nora (a version
+          # younger than 3 days among them) are not restored.
+          key: galaxy-nora-${{ runner.os }}-${{ hashFiles(inputs.requirements_galaxy) }}
 
+      # Galaxy through nora (packages.maestra.io/ansible/, issues-maestra#1649 s9):
+      # collection versions younger than 3 days are hidden there, so a range like
+      # ">=8.0.0" resolves to the newest mature release. The ANSIBLE_GALAXY_SERVER_*
+      # variables reach every later step: the install below and ansible-lint's own
+      # requirements install. Auth: a GitHub OIDC token as Basic token:<jwt>
+      # (expires in minutes, enough for the install that follows).
+      - name: Galaxy through nora
+        if: ${{ hashFiles(inputs.requirements_galaxy) != '' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const t = await core.getIDToken('packages.maestra.io');
+            core.setSecret(t);
+            core.exportVariable('ANSIBLE_GALAXY_SERVER_LIST', 'nora');
+            core.exportVariable('ANSIBLE_GALAXY_SERVER_NORA_URL', 'https://packages.maestra.io/ansible/');
+            core.exportVariable('ANSIBLE_GALAXY_SERVER_NORA_USERNAME', 'token');
+            core.exportVariable('ANSIBLE_GALAXY_SERVER_NORA_PASSWORD', t);
       - name: Install Galaxy collections/roles
         if: ${{ hashFiles(inputs.requirements_galaxy) != '' }}
         # From working_directory so ansible.cfg's roles_path/collections_path apply —

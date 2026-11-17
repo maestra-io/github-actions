@@ -2,7 +2,7 @@
 #
 # Self-check for the tests/ jobs of mcf-build.yml: the tests/ detection (layout
 # lockfile / workspace / none, functional only with the Playwright config and
-# tests/package.json, not on excluded branches), the http-server wait (up / never
+# tests/package.json, not on LocalizationPull), the http-server wait (up / never
 # up), the functional step summary from Playwright JUnit (errors count as
 # failed) and the release gate (image waits for tests-checks and a required
 # functional; release, sourcemaps and bake follow image by result). Runs the inline
@@ -25,7 +25,7 @@ detect_prog=$(block tests-detect)
 # detect <repo dir> <playwright event>; prints the step outputs
 detect() {
   : > "$root/detect.out"
-  (cd "$1" && PLAYWRIGHT_EVENT="$2" GITHUB_HEAD_REF=renovate/x GITHUB_OUTPUT="$root/detect.out" \
+  (cd "$1" && PLAYWRIGHT_EVENT="$2" GITHUB_HEAD_REF=LocalizationPull GITHUB_OUTPUT="$root/detect.out" \
     bash -c "set -eo pipefail; $detect_prog") > "$root/detect.log" 2>&1 \
     || { echo "FAIL detect exited non-zero in $1"; cat "$root/detect.log"; exit 1; }
   tr '\n' ' ' < "$root/detect.out" | sed 's/ $//'
@@ -46,12 +46,12 @@ eq "$(detect "$workspace" true)" "tests=true tests-layout=workspace functional=t
 eq "$(detect "$none" true)" "tests=false tests-layout=none functional=false e2e=false" "no tests/"
 eq "$(detect "$no_cfg" true)" "tests=true tests-layout=lockfile functional=false e2e=false" "tests/ without the functional config"
 eq "$(detect "$lockfile" false)" "tests=true tests-layout=lockfile functional=false e2e=false" "excluded branch"
-grep -q 'renovate/x' "$root/detect.log" || { echo "FAIL excluded branch is not named in the log"; exit 1; }
+grep -q 'LocalizationPull' "$root/detect.log" || { echo "FAIL excluded branch is not named in the log"; exit 1; }
 eq "$(detect "$cfg_only" true)" "tests=false tests-layout=none functional=false e2e=false" "config without tests/package.json"
 grep -q '^::warning::' "$root/detect.log" || { echo "FAIL config without tests/package.json emits no ::warning::"; exit 1; }
 # shellcheck disable=SC2016 # the expression is matched literally
-grep -qF "PLAYWRIGHT_EVENT: \${{ !startsWith(github.head_ref, 'renovate/') && github.head_ref != 'LocalizationPull' }}" "$wf" \
-  || { echo "FAIL PLAYWRIGHT_EVENT does not exclude renovate/* and LocalizationPull"; exit 1; }
+grep -qxF "          PLAYWRIGHT_EVENT: \${{ github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref != 'LocalizationPull') }}" "$wf" \
+  || { echo "FAIL PLAYWRIGHT_EVENT is not 'non-PR events, or same-repo PRs but LocalizationPull' (renovate/* runs the tests, forks do not)"; exit 1; }
 echo "functional detect: ok"
 
 # Every restore of the root cache must list the same paths as its save, or it misses.
@@ -61,8 +61,45 @@ eq "$aliases" "$keys" "root cache steps with the shared path list (one save + al
 if grep -nE '^ +path: node_modules$' "$wf"; then echo "FAIL a root cache step lists node_modules alone"; exit 1; fi
 if grep -nF 'npx --no playwright --version' "$wf"; then echo "FAIL npx eats --version: the browser key gets npm's version"; exit 1; fi
 grep -qF "v=\$(node -p \"require('@playwright/test/package.json').version\" || true)" "$wf" \
-  || { echo "FAIL the browser cache key does not read @playwright/test/package.json"; exit 1; }
+  || { echo "FAIL the Playwright image tag does not read @playwright/test/package.json"; exit 1; }
+# Both http-server steps read one version: a bump must not leave the cache key behind.
+eq "$(grep -cF 'http-server@' "$wf")" "$(grep -cE '^ +(HTTP_SERVER: http-server@|#.*http-server@)' "$wf")" "http-server version only in the job env"
+# shellcheck disable=SC2016 # the expression is matched literally
+grep -qF 'key: mcf-${{ env.HTTP_SERVER }}-${{ runner.os }}-${{ runner.arch }}' "$wf" \
+  || { echo "FAIL the http-server cache key does not carry its version"; exit 1; }
+functional_job=$(awk '/^  functional:$/ { on = 1; next } on && /^  [a-z]/ { exit } on' "$wf")
+eq "$(grep -cF "if: \${{ steps.server-cache.outputs.cache-hit != 'true' }}" <<<"$functional_job")" "3" "token, install and save run only on an http-server cache miss"
+eq "$(grep -cF "steps.chrome.outputs.system != 'true'" <<<"$functional_job")" "2" "nora credentials and the Playwright image skip on system Chrome"
+grep -A2 '^      functional-system-chrome:$' "$wf" | grep -qx '        default: false' \
+  || { echo "FAIL functional-system-chrome is not opt-in"; exit 1; }
 echo "functional cache paths: ok"
+
+chrome_prog=$(block functional-chrome)
+# chrome <input> <path>: the step's output with that input and Chrome path
+chrome() {
+  : > "$root/chrome.out"
+  SYSTEM_CHROME="$1" CHROME_PATH="$2" GITHUB_OUTPUT="$root/chrome.out" bash -c "set -eo pipefail; $chrome_prog" >/dev/null
+  cat "$root/chrome.out"
+}
+printf '#!/bin/sh\n' > "$root/chrome"; chmod +x "$root/chrome"
+eq "$(chrome true "$root/chrome")" "system=true" "opted in, Chrome on the runner"
+eq "$(chrome true "$root/no-chrome")" "system=false" "opted in, no Chrome: the tests run in the Playwright image"
+eq "$(chrome false "$root/chrome")" "system=false" "not opted in"
+echo "functional system chrome: ok"
+
+docker_prog=$(block functional-docker)
+# cmd <image>: the command the run step executes with that step output
+cmd() { (cd "$root" && IMAGE="$1" GITHUB_WORKSPACE=/w bash -c "set -eo pipefail; cmd=(npm run functional:ci); $docker_prog"$'\n''printf "%s\n" "${cmd[@]}"'); }
+eq "$(cmd "" | tr '\n' ' ')" "npm run functional:ci " "system Chrome: the tests run on the runner"
+img=$(cmd packages.maestra.io/mcr/playwright@sha256:abc | tr '\n' ' ')
+for w in "docker run --rm --init --ipc=host --network host --user $(id -u):$(id -g) -v /w:/w " \
+  "-w $root " "-e HOME=/tmp " "-e PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 -e CI -e BASE_URL -e RETRIES -e WORKERS " \
+  "packages.maestra.io/mcr/playwright@sha256:abc npm run functional:ci "; do
+  grep -qF -- "$w" <<<"$img" || { printf 'FAIL functional in the image: no %s\n  in: %s\n' "$w" "$img"; exit 1; }
+done
+# shellcheck disable=SC2016 # matched literally
+grep -qF '"${cmd[@]}" 2>&1 | tee "$RUNNER_TEMP/functional.log"' "$wf" || { echo "FAIL functional does not run the command"; exit 1; }
+echo "functional image: ok"
 
 # job <name> <key>: the value of a top-level key (needs, if) of a job in the workflow
 job() { awk -v j="  $1:" -v k="    $2: " '$0 == j { on = 1; next } on && /^  [a-z]/ { exit }
@@ -70,7 +107,11 @@ job() { awk -v j="  $1:" -v k="    $2: " '$0 == j { on = 1; next } on && /^  [a-
 eq "$(job image needs)" "[version, checks, test, build, tests-checks, functional]" "image needs"
 eq "$(job image if)" "\${{ !cancelled() && needs.version.outputs.publish == 'true' && needs.checks.result == 'success' && needs.test.result == 'success' && needs.build.result == 'success' && (needs.version.outputs.tests != 'true' || needs.tests-checks.result == 'success') && (!inputs.functional-required || needs.version.outputs.functional != 'true' || needs.functional.result == 'success') }}" "image waits for tests-checks and a required functional"
 eq "$(job functional continue-on-error)" "\${{ !inputs.functional-required }}" "functional failure is advisory only when not required"
-eq "$(job release if)" "\${{ !cancelled() && needs.image.result == 'success' }}" "release follows image, not success() of skipped jobs"
+grep -A2 '^      functional-required:$' "$wf" | grep -qx '        default: true' \
+  || { echo "FAIL functional-required does not default to true"; exit 1; }
+eq "$(job deps-image needs)" "[version, install, image]" "deps-image needs"
+eq "$(job deps-image if)" "\${{ !cancelled() && needs.version.outputs.publish == 'true' && needs.install.result == 'success' && needs.image.result == 'success' }}" "deps-image follows image: an unreleased tag is never pushed"
+eq "$(job release if)" "\${{ !cancelled() && needs.image.result == 'success' && needs.deps-image.result == 'success' && (needs.version.outputs.e2e != 'true' || needs.e2e-image.result == 'success') }}" "release follows image, deps-image and e2e-image with tests/e2e/, not success() of skipped jobs"
 eq "$(job sourcemaps if)" "\${{ !cancelled() && needs.release.result == 'success' }}" "sourcemaps follows release"
 eq "$(job bake if)" "\${{ !cancelled() && needs.release.result == 'success' && needs.version.outputs.bake == 'true' }}" "bake follows release"
 echo "functional release gate: ok"

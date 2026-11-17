@@ -53,14 +53,26 @@ on:
         required: false
         type: string
         default: "."
+      uv_project:
+        description: >-
+          Directory (workspace-relative) of the caller's pyproject.toml + uv.lock
+          (next to ansible.cfg, so ansible/** path filters see a toolchain bump):
+          the Ansible toolchain as `[project].dependencies`, ansible-lint/yamllint
+          as the `lint` dependency group, nora as the only index
+          (`[[tool.uv.index]] name = "maestra"`, default = true; issues-maestra#1649).
+        required: false
+        type: string
+        default: "ansible"
       requirements_lint:
+        description: "Deprecated and ignored (issues-maestra#1649): Python packages come from uv_project's uv.lock only. Kept so a caller that still passes it does not break."
         required: false
         type: string
-        default: "ansible/requirements-lint.txt"
+        default: ""
       requirements_pip:
+        description: "Deprecated and ignored (issues-maestra#1649): Python packages come from uv_project's uv.lock only. Kept so a caller that still passes it does not break."
         required: false
         type: string
-        default: "ansible/requirements-pip.txt"
+        default: ""
       requirements_galaxy:
         required: false
         type: string
@@ -128,23 +140,81 @@ jobs:
       # the workspace, so yamllint/ansible-lint over `lint_paths` never see it.
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
-          enable-cache: true
+          version: "0.13.6"
+          enable-cache: false
           python-version: ${{ inputs.python_version }}
           activate-environment: true
           venv-path: ${{ runner.temp }}/lint-venv
+      # Credentials for nora (packages.maestra.io), the caller's only Python index.
+      - uses: maestra-io/github-actions/uv-nora@22ccbf9ff3d76fe13025cbc009d395024f025198 # v1.67.0
       # Inputs reach the shell through `env:`, never through ${{ }} in the script
       # body: GitHub substitutes the expression BEFORE bash parses the line, so a
       # quote or a `;` in a caller-supplied value would execute here. Same rule as
       # the tp-version / Execute steps in ansible-run.yml.
+      # The lock's runtime set (the repo's own ansible pin) plus the `lint` group,
+      # into the activated venv: ansible-lint judges against the ansible that runs.
       - name: Install lint deps
         env:
-          REQUIREMENTS_LINT: ${{ inputs.requirements_lint }}
-        run: uv pip install ansible -r "$REQUIREMENTS_LINT"
+          DEPS_PROJECT: ${{ inputs.uv_project }}
+          DEPS_GROUP: lint
+          DEPS_TARGET: active
+        run: |
+          # >>> python-deps (identical in every ansible workflow; ansible/tests/test-python-deps.sh)
+          set -euo pipefail
+          if [ -f "${DEPS_PROJECT}/uv.lock" ]; then
+            # nora only: every package source is the nora registry (or the project
+            # itself), every URL is on packages.maestra.io. Anything else (another
+            # index, git, ssh, a path, a direct URL) is refused, never followed.
+            lock="${DEPS_PROJECT}/uv.lock"
+            if bad=$(grep -E '^source = ' "$lock" | sort -u | grep -vxF \
+                  -e 'source = { registry = "https://packages.maestra.io/simple/" }' \
+                  -e 'source = { virtual = "." }' -e 'source = { editable = "." }'); then
+              echo "::error file=${lock}::uv.lock has sources other than the nora registry: ${bad//$'\n'/ }"
+              exit 1
+            fi
+            if other=$(grep -oE '[a-z+]+://[^/"]+' "$lock" | sort -u | grep -vxF 'https://packages.maestra.io'); then
+              echo "::error file=${lock}::uv.lock names hosts other than packages.maestra.io: ${other//$'\n'/ }"
+              exit 1
+            fi
+            args=(--locked --no-install-project --project "$DEPS_PROJECT")
+            [ -z "${DEPS_GROUP:-}" ] || args+=(--group "$DEPS_GROUP")
+            if [ "$DEPS_TARGET" = active ]; then
+              args+=(--active)
+            else
+              # setup-python's interpreter, as `pip install --system` did; --inexact keeps its pip.
+              export UV_PROJECT_ENVIRONMENT="${pythonLocation:?actions/setup-python must run first}"
+              args+=(--inexact)
+            fi
+            uv sync "${args[@]}"
+          else
+            echo "::error::no ${DEPS_PROJECT}/uv.lock: the Ansible toolchain comes from pyproject.toml + uv.lock through nora (input uv_project; issues-maestra#1649)"
+            exit 1
+          fi
+          # <<< python-deps
       - name: Cache Ansible Galaxy collections
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.ansible/collections
-          key: galaxy-${{ runner.os }}-${{ hashFiles(inputs.requirements_galaxy) }}
+          # "nora": collections cached before Galaxy went through nora (a version
+          # younger than 3 days among them) are not restored.
+          key: galaxy-nora-${{ runner.os }}-${{ hashFiles(inputs.requirements_galaxy) }}
+      # Galaxy through nora (packages.maestra.io/ansible/, issues-maestra#1649 s9):
+      # collection versions younger than 3 days are hidden there, so a range like
+      # ">=8.0.0" resolves to the newest mature release. The ANSIBLE_GALAXY_SERVER_*
+      # variables reach every later step: the install below and ansible-lint's own
+      # requirements install. Auth: a GitHub OIDC token as Basic token:<jwt>
+      # (expires in minutes, enough for the install that follows).
+      - name: Galaxy through nora
+        if: ${{ hashFiles(inputs.requirements_galaxy) != '' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const t = await core.getIDToken('packages.maestra.io');
+            core.setSecret(t);
+            core.exportVariable('ANSIBLE_GALAXY_SERVER_LIST', 'nora');
+            core.exportVariable('ANSIBLE_GALAXY_SERVER_NORA_URL', 'https://packages.maestra.io/ansible/');
+            core.exportVariable('ANSIBLE_GALAXY_SERVER_NORA_USERNAME', 'token');
+            core.exportVariable('ANSIBLE_GALAXY_SERVER_NORA_PASSWORD', t);
       - name: Install Galaxy collections/roles
         if: ${{ hashFiles(inputs.requirements_galaxy) != '' }}
         # From working_directory so ansible.cfg's roles_path/collections_path apply
@@ -208,7 +278,7 @@ jobs:
       no_hosts_fail_on_apply: ${{ inputs.no_hosts_fail_on_apply }}
       teleport_join_token: ${{ inputs.teleport_join_token }}
       teleport_fqdn: ${{ inputs.teleport_fqdn }}
-      requirements_pip: ${{ inputs.requirements_pip }}
+      uv_project: ${{ inputs.uv_project }}
       requirements_galaxy: ${{ inputs.requirements_galaxy }}
       python_version: ${{ inputs.python_version }}
       runs_on: ${{ matrix.env.runs_on || inputs.runs_on || format('runs-on={0}-check-{1}/runner=t3a-small', github.run_id, strategy.job-index) }}

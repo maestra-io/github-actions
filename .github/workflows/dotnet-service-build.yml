@@ -4,7 +4,7 @@
 # create-gitlab-release), issues-maestra#1442 wave W0c.
 #
 #   version ─► test ─► images (matrix) ─► release ─► bake
-#   pull_request: version ─► test, checks (pr-checks.yml) ─► pr-gate (the required check)
+#   pull_request: version ─► test, checks (pr-checks.yml), base-images ─► pr-gate (the required check)
 #
 # Warehouse refresh: no job here. The GitHub org webhook (workflow_run completed)
 # refreshes every Kargo Warehouse labelled maestra.io/source-repo=<lower-case repo name>
@@ -76,6 +76,8 @@
 #                       single-line and not secret (they show in the log). Images on
 #                       this account's ECR are pulled after an ECR login (see
 #                       mirror-test-images.yml for test-images/*).
+#                       TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX defaults to
+#                       packages.maestra.io/docker-hub/ (nora, issues-maestra#1649).
 #   pr-images           Build the images on pull_request too (default false: a PR runs
 #                       tests only; a broken Dockerfile surfaces in the release on the
 #                       default branch, before anything is pushed).
@@ -108,6 +110,19 @@
 #                       an export/import. Default true since 13.10.2026 (api-mimic canary:
 #                       images legs 385-455 s -> 55-62 s warm, 271-317 s cold); false
 #                       falls back to pool=build (eu-central-1) with the type=gha layer cache.
+#   graphql-schemas     true = download the GraphQL schemas the StrawberryShake clients generate
+#                       from (not kept in git), one per `**/.graphqlrc.json` with
+#                       extensions.strawberryShake (.git/bin/obj/node_modules skipped): its `url`, on
+#                       https://*.maestra.io, into <rc dir>/<its `schema`>, which must lie inside the
+#                       build context of at least one image-targets entry. `test` downloads them once
+#                       before anything builds (StrawberryShake.Tools `dotnet graphql download`, an
+#                       omega JWT from auth-jwt client github-dotnet-graphql-schema) and hands them to
+#                       every `images` leg as an artifact kept 1 day: "Re-run failed jobs" of an images
+#                       leg works only within 24 h of the run. No such .graphqlrc.json, a 401, a login
+#                       page or no SDL fails the job. The caller needs `id-token: write` and must call
+#                       this workflow at `@main` (a tag or SHA is rejected by auth-jwt, see GraphQL
+#                       schemas below). Cannot be combined with the private-packages-token secret (the
+#                       tool comes from nora). Default false.
 # Secrets:
 #   private-packages-token  Optional. Overrides the nora OIDC token passed as the
 #                       PRIVATE_PACKAGES_TOKEN build secret and used for restore
@@ -117,8 +132,10 @@
 #
 # Re-runs: images, GitHub release and bake are idempotent for "Re-run failed jobs"
 # of the same run (same release number). An image tag already in ECR is not pushed
-# again when its layers (rootfs diff_ids) equal the ones just built (the earlier
-# attempt pushed this very image), and fails clearly otherwise; the bake reuses
+# again when its digest equals the one just built, or when its revision label is
+# this commit (an attempt killed after its push, e.g. a spot interruption, and a
+# rebuild that came out with another digest: the stored image is kept), and fails
+# clearly otherwise; the bake reuses
 # an existing <service>-manifests:<release> baked from the same commit with the
 # same content (bake-oci-manifests). A tag that cannot be reused means: dispatch
 # the release workflow again, it takes the next release number.
@@ -187,6 +204,13 @@
 #
 # AWS: a fresh RunsOn instance can lack its instance-role credentials for a few seconds
 # (NoCredentials); `test` and `images` wait up to ~40 s for them before any AWS call.
+#
+# GraphQL schemas: auth-jwt client github-dotnet-graphql-schema at https://auth-jwt.maestra.io
+# (auth-jwt-terraform terraform/omega/clients.tf, no permissions) accepts only job_workflow_ref
+# maestra-io/github-actions/.github/workflows/dotnet-service-build.yml@refs/heads/main: a caller
+# pinned to a tag or SHA is rejected by auth-jwt. The audience, URL and client are constants, not inputs:
+# a caller must not redirect the token. The schema hosts are the repo's own choice (its
+# .graphqlrc.json files), limited to *.maestra.io.
 
 name: dotnet-service-build
 
@@ -262,6 +286,9 @@ on:
       sticky-buildkit:
         type: boolean
         default: true
+      graphql-schemas:
+        type: boolean
+        default: false
     secrets:
       private-packages-token:
         required: false
@@ -448,6 +475,8 @@ jobs:
     needs: version
     runs-on: runs-on=${{ github.run_id }}-test/pool=build
     timeout-minutes: ${{ inputs.test-timeout-minutes }}
+    outputs:
+      graphql-schemas-artifact: ${{ steps.graphql.outputs.artifact }}
     # The RunsOn image exports DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 although
     # libicu is installed; the GitLab sdk images ran with ICU. Invariant mode turns
     # satellite-resource locales into NETSDK1188 (an error under /warnaserror) and
@@ -456,7 +485,7 @@ jobs:
       DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: "false"
     permissions:
       contents: read
-      id-token: write # nora OIDC token
+      id-token: write # nora OIDC token; graphql-schemas: the auth-jwt login
       packages: read  # only for a private-packages-token: GITHUB_TOKEN override (GitHub Packages)
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
@@ -464,15 +493,30 @@ jobs:
         with:
           persist-credentials: false
 
+      # The GitHub OIDC token lives ~5 min: a build or test that runs longer (mvn
+      # dependency:go-offline) got 401 mid-way. nora's session token lives 1 h (issues-maestra#1649).
+      - name: packages token override
+        id: override
+        env:
+          OVERRIDE: ${{ secrets.private-packages-token }}
+        run: echo "set=${OVERRIDE:+true}" >> "$GITHUB_OUTPUT"
+      - name: nora session token
+        id: session
+        if: ${{ steps.override.outputs.set != 'true' }}
+        uses: maestra-io/github-actions/nora-session@1b6e07a656e9eb1045ba563d4b9394631ecaa640 # v1.74.0
+        with:
+          url: ${{ inputs.packages-url }}
+          audience: ${{ inputs.packages-audience }}
       - name: mint packages token
         id: token
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           OVERRIDE: ${{ secrets.private-packages-token }}
-          AUDIENCE: ${{ inputs.packages-audience }}
+          SESSION: ${{ steps.session.outputs.token }}
         with:
           script: |
-            const t = process.env.OVERRIDE || await core.getIDToken(process.env.AUDIENCE);
+            const t = process.env.OVERRIDE || process.env.SESSION;
+            if (!t) core.setFailed('no packages token');
             core.setSecret(t);
             core.setOutput('token', t);
 
@@ -511,6 +555,11 @@ jobs:
             printf '%s\n' "$line" >> "$GITHUB_ENV"
             echo "test env: ${key}"
           done <<< "$TEST_ENV"
+          # Testcontainers pulls Docker Hub images (test images and its ryuk reaper) through
+          # nora's proxy and its 3-day quarantine, not Docker Hub / RunsOn's ECR pull-through
+          # (issues-maestra#1649); a test-env line with its own prefix wins.
+          grep -q '^TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX=' "$RUNNER_TEMP/test.env" \
+            || echo "TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX=packages.maestra.io/docker-hub/" | tee -a "$RUNNER_TEMP/test.env" >> "$GITHUB_ENV"
           # Testcontainers pulls with ~/.docker/config.json, and so does BuildKit
           # for the docker-test-target stage; log in to this account's ECR when a
           # value or that Dockerfile names it (instance role, read only).
@@ -521,10 +570,93 @@ jobs:
               | docker login --username AWS --password-stdin "$ECR_REGISTRY"
           fi
 
+      # Testcontainers, docker compose and BuildKit pull packages.maestra.io images (the
+      # nora pull-through, issues-maestra#1649) with ~/.docker/config.json. nora takes the
+      # OIDC token, which lives minutes: a credential helper mints a fresh one per pull.
+      - name: nora docker credentials
+        env:
+          AUDIENCE: ${{ inputs.packages-audience }}
+          PACKAGES_URL: ${{ inputs.packages-url }}
+        run: |
+          # >>> nora-cred-helper (scripts/test-dotnet-service-build.sh runs this block; all copies equal)
+          bin="$RUNNER_TEMP/nora-bin"; mkdir -p "$bin"
+          # The helper runs in the caller's environment, which tox and other test runners
+          # scrub: the job's OIDC request URL and token go to a 0600 file next to it.
+          # nora's origin: PACKAGES_URL may carry a path (python-package-publish: …/simple/)
+          o="${PACKAGES_URL#*://}"; o="${PACKAGES_URL%%://*}://${o%%/*}"
+          ( umask 077; printf 'url=%q\ntoken=%q\naud=%q\nnora=%q\n' "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+            "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$AUDIENCE" "$o" > "$bin/oidc.env" )
+          cat > "$bin/docker-credential-nora" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          [ "${1:-}" = get ] || exit 0
+          server=$(cat) # docker sends it without a newline
+          . "${BASH_SOURCE[0]%/*}/oidc.env"
+          t=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $token" \
+            "$url&audience=$aud" | jq -r '.value // empty')
+          [ -n "$t" ]
+          # Testcontainers keeps the first credential for its whole run, so a ~5 min JWT failed
+          # pulls made later (api-mimic#72): hand out nora's 1 h session token for it instead.
+          # ponytail: a test process over 1 h still outlives it; 403/404 = no exchange, the JWT.
+          # the body to a 0600 file: curl truncates it before a retry, stdout would keep every attempt's
+          f=$(mktemp); trap 'rm -f "$f"' EXIT
+          code=$(curl -sS --retry 3 --connect-timeout 10 --max-time 30 -X POST -H "Authorization: Bearer $t" \
+            -o "$f" -w '%{http_code}' "$nora/api/oidc/session")
+          case "$code" in
+            200) t=$(jq -r '.token // empty' "$f"); [[ "$t" == nrs_* ]] ;;
+            403|404) ;;
+            *) exit 1 ;;
+          esac
+          jq -cn --arg s "$server" --arg t "$t" '{ServerURL: $s, Username: "token", Secret: $t}'
+          EOF
+          chmod 755 "$bin/docker-credential-nora"
+          echo "$bin" >> "$GITHUB_PATH"
+          host="${PACKAGES_URL#*://}"; host="${host%%/*}"
+          cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"; mkdir -p "$(dirname "$cfg")"
+          [ -s "$cfg" ] || echo '{}' > "$cfg"
+          jq --arg h "$host" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+          # <<< nora-cred-helper
+
+      # >>> nora-image-cache restore (test)
+      # A RunsOn runner starts with an empty image store and RunsOn's ECR pull-through
+      # mirror covers docker.io only, so every image named packages.maestra.io/... (moby/buildkit,
+      # Testcontainers via TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX) came from nora in full on every
+      # job and saturated the 1 Gbit link of nora's node (HostNetworkInterfaceSaturated,
+      # us-iota-lw-kube-infra-02, 16.11.2026). The images this job pulled from nora are saved
+      # by ID into the Magic Cache (S3 next to the runner) and loaded here; a later pull by tag
+      # or digest then fetches only the manifest from nora: Docker 28 skips every layer when
+      # the config digest (the image ID) is already local (moby distribution/pull_v2.go
+      # pullSchema2Layers). A miss or a failed load only means the pulls go to nora as before.
+      - name: nora image cache (restore)
+        id: nora-images
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/nora-images
+          key: nora-images-test-${{ github.run_id }}
+          restore-keys: nora-images-test-
+      - name: nora image cache (load)
+        if: ${{ steps.nora-images.outputs.cache-matched-key != '' }}
+        continue-on-error: true
+        run: |
+          f="$RUNNER_TEMP/nora-images/images.tar.zst"
+          [ -s "$f" ] || exit 0
+          zstd -dcq "$f" | docker load -q \
+            || echo "::warning::nora image cache: docker load failed, images come from nora"
+      # <<< nora-image-cache restore
+
+      # ISO week for a Dockerfile's `ARG BASE_REFRESH` (README, layer cache): a new value
+      # rebuilds the apt/apk stages the cache would otherwise serve forever.
+      - id: week
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
       # ── Dockerfile stage (GitLab .run-docker-test) ───────────────────────
       - if: ${{ inputs.docker-test-target != '' }}
         id: buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          # moby/buildkit through nora, not Docker Hub (issues-maestra#1649); every copy equal:
+          # scripts/test-dotnet-service-build.sh
+          driver-opts: image=packages.maestra.io/docker-hub/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
       - if: ${{ inputs.docker-test-target != '' }}
         # GitLab Dockerfiles bind-mount the CI NuGet cache dir; it must exist.
         run: mkdir -p .nuget
@@ -587,7 +719,7 @@ jobs:
           else
             scopes=$(printf '%s\n' "$SCOPES" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . || true)
             from=$(awk '{print "type=gha,scope=" $0}' <<<"$scopes")
-            to="type=gha,mode=max,scope=$(head -n1 <<<"$scopes")"
+            to="type=gha,mode=max,ignore-error=true,scope=$(head -n1 <<<"$scopes")"
           fi
           { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; echo "nocache=$nocache"; echo "nocachefilter=$nocachefilter"; } >> "$GITHUB_OUTPUT"
           # <<< layer-cache
@@ -617,6 +749,106 @@ jobs:
           # not masked (no workflow commands after the step): never print a secret in a RUN.
           ( while sleep 60; do t=$(mint) && [ -n "$t" ] && write "$t"; done ) </dev/null >/dev/null 2>&1 &
           # <<< token-files
+      # graphql-schemas: StrawberryShake.Tools 15.1.3 ships net8.0 and net9.0 and runs on the
+      # runner image's own dotnet (DOTNET_ROLL_FORWARD=Major): no extra SDK is installed.
+      - name: graphql schemas
+        id: graphql
+        if: ${{ inputs.graphql-schemas }}
+        env:
+          MATRIX: ${{ needs.version.outputs.matrix }}
+          HAS_TOKEN_OVERRIDE: ${{ secrets.private-packages-token != '' }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          PACKAGES_URL: ${{ inputs.packages-url }}
+          AUTH_JWT_URL: https://auth-jwt.maestra.io
+          AUTH_JWT_CLIENT: github-dotnet-graphql-schema
+          TOOL_VERSION: 15.1.3
+        run: |
+          # >>> graphql-schemas (scripts/test-dotnet-service-build-graphql.sh runs this block)
+          # One schema per StrawberryShake .graphqlrc.json: extensions.strawberryShake.url ->
+          # <rc dir>/<schema>. The JWT goes to Maestra hosts only; each file must land inside
+          # the build context of an images leg, or no docker build sees it.
+          if [ "$HAS_TOKEN_OVERRIDE" = true ]; then
+            echo "::error::graphql-schemas cannot be combined with the private-packages-token secret: StrawberryShake.Tools comes from nora with the nora OIDC token"; exit 1
+          fi
+          contexts=$(jq -r '.[].context' <<<"$MATRIX" | sed -E -e 's#/+#/#g' -e 's#^(\./)+##' -e ':a' -e 's#/\./#/#' -e 'ta' -e 's#/\.$##; s#/+$##; s#^$#.#' | sort -u)
+          pairs=()
+          while IFS= read -r rc; do
+            rc="${rc#./}"; dir=$(dirname "$rc")
+            ss=$(jq -r '.extensions.strawberryShake != null' "$rc" 2>/dev/null) \
+              || { echo "::error file=$rc::graphql-schemas: $rc is not valid JSON"; exit 1; }
+            if [ "$ss" != true ]; then echo "::notice file=$rc::no extensions.strawberryShake, skipped"; continue; fi
+            uri=$(jq -er '.extensions.strawberryShake.url | strings' "$rc") \
+              || { echo "::error file=$rc::graphql-schemas: $rc has no extensions.strawberryShake.url"; exit 1; }
+            schema=$(jq -er '.schema | strings' "$rc") \
+              || { echo "::error file=$rc::graphql-schemas: $rc has no schema file"; exit 1; }
+            path="$schema"; [ "$dir" = . ] || path="$dir/$schema"
+            [[ "$uri" =~ ^https://([A-Za-z0-9-]+\.)+maestra\.io(/[^[:space:]]*)?$ ]] \
+              || { echo "::error file=$rc::graphql-schemas: '$uri' is not an https://*.maestra.io URL"; exit 1; }
+            for p in "$schema" "$path"; do
+              case "/$p/" in //*|*/../*) echo "::error file=$rc::graphql-schemas: '$p' must be relative, without '..'"; exit 1 ;; esac
+            done
+            inside=false
+            while IFS= read -r ctx; do
+              if [ "$ctx" = . ] || [[ "$path" == "$ctx"/* ]]; then inside=true; break; fi
+            done <<<"$contexts"
+            $inside || { echo "::error file=$rc::graphql-schemas: '$path' is outside every images build context: $(tr '\n' ' ' <<<"$contexts")"; exit 1; }
+            pairs+=("$uri" "$path")
+          done < <(find . \( -name .git -o -name bin -o -name obj -o -name node_modules \) -prune -o -name .graphqlrc.json -type f -print | sort)
+          [ "${#pairs[@]}" -gt 0 ] || { echo "::error::graphql-schemas: no .graphqlrc.json with extensions.strawberryShake in the repo"; exit 1; }
+          id_token=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUTH_JWT_URL" | jq -r '.value // empty')
+          [ -n "$id_token" ] || { echo "::error::no GitHub OIDC token"; exit 1; }
+          echo "::add-mask::$id_token"
+          trap 'rm -f "$RUNNER_TEMP/jwt.json"' EXIT
+          code=$(jq -cn --arg c "$AUTH_JWT_CLIENT" '{clientId: $c, policy: "default"}' \
+            | curl -sS --connect-timeout 10 --max-time 60 -o "$RUNNER_TEMP/jwt.json" -w '%{http_code}' -X POST "$AUTH_JWT_URL/token" \
+                -H "Authorization: Bearer $id_token" -H "Content-Type: application/json" --data-binary @-) || code=000
+          [ "$code" = 200 ] || { echo "::error::auth-jwt $AUTH_JWT_URL/token as $AUTH_JWT_CLIENT: HTTP $code"; exit 1; }
+          JWT_TOKEN=$(jq -r '.token // .jwt // empty' "$RUNNER_TEMP/jwt.json" 2>/dev/null) || JWT_TOKEN=""
+          rm -f "$RUNNER_TEMP/jwt.json"
+          [ -n "$JWT_TOKEN" ] || { echo "::error::auth-jwt response has no token"; exit 1; }
+          echo "::add-mask::$JWT_TOKEN"
+          # The tool comes from nora like every package (packages token files above).
+          tool="$RUNNER_TEMP/graphql-tool"
+          printf '<configuration><packageSources><clear /><add key="private" value="%s/nuget/v3/index.json" /></packageSources></configuration>\n' \
+            "$PACKAGES_URL" > "$RUNNER_TEMP/graphql-tool.nuget.config"
+          (cd "$RUNNER_TEMP" && NuGetPackageSourceCredentials_private="$(cat "$RUNNER_TEMP/packages-token/NUGET_CREDENTIALS")" \
+            dotnet tool install StrawberryShake.Tools --version "$TOOL_VERSION" --tool-path "$tool" \
+              --configfile "$RUNNER_TEMP/graphql-tool.nuget.config")
+          # The tool's apphost finds the runtime through DOTNET_ROOT, not PATH.
+          dotnet_root="${DOTNET_ROOT:-$(dirname "$(readlink -f "$(command -v dotnet)")")}"
+          files=()
+          for ((i = 0; i < ${#pairs[@]}; i += 2)); do
+            uri="${pairs[i]}"; path="${pairs[i+1]}"
+            rm -f "$RUNNER_TEMP/introspection.json"
+            # The tool's own exit code is not trusted to catch a 401 or an HTML login page.
+            code=$(curl -sS -g --connect-timeout 10 --max-time 60 -o "$RUNNER_TEMP/introspection.json" -w '%{http_code}' -X POST "$uri" \
+              -H "Authorization: Bearer $JWT_TOKEN" -H "Content-Type: application/json" \
+              --data '{"query":"{ __schema { queryType { name } } }"}') || code=000
+            if [ "$code" != 200 ] || ! jq -e '.data.__schema.queryType.name' "$RUNNER_TEMP/introspection.json" >/dev/null 2>&1; then
+              echo "::error::$uri: HTTP $code, not a GraphQL introspection result: $(head -c 300 "$RUNNER_TEMP/introspection.json" | tr '\n' ' ')"; exit 1
+            fi
+            rm -f "$path"; mkdir -p "$(dirname "$path")"
+            DOTNET_ROLL_FORWARD=Major DOTNET_ROOT="$dotnet_root" "$tool/dotnet-graphql" download "$uri" -f "$PWD/$path" --token "$JWT_TOKEN"
+            grep -qE '^(schema|type|directive|scalar|interface|enum|input|union|extend) ' "$path" 2>/dev/null \
+              || { echo "::error::$uri: dotnet graphql download wrote no SDL to $path"; exit 1; }
+            echo "$path: $(wc -l < "$path" | tr -d ' ') lines from $uri"
+            files+=("./$path")
+          done
+          rm -f "$RUNNER_TEMP/introspection.json"
+          # Unpacked at the repo root by every images leg. An artifact name cannot repeat in a run,
+          # and one run can call this workflow several times (service-build-selftest.yml) and
+          # re-run `test` (RUN_ATTEMPT): attempt + timestamp keep the name unique.
+          tar -czf "$RUNNER_TEMP/graphql-schemas.tgz" "${files[@]}"
+          echo "artifact=graphql-schemas-${RUN_ATTEMPT}-$(date +%s%N)" >> "$GITHUB_OUTPUT"
+          # <<< graphql-schemas
+      # Only when `images` runs (its own `if`).
+      - if: ${{ steps.graphql.outputs.artifact != '' && (github.event_name != 'pull_request' || inputs.pr-images) }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.graphql.outputs.artifact }}
+          path: ${{ runner.temp }}/graphql-schemas.tgz
+          retention-days: 1
       # NuGet cache mount (id=nuget) of the docker-test-target build on the Magic Cache, like
       # ~/.nuget/packages of the host path below: this runner's builder is new, its mount
       # starts empty and gha never exports it, so every run re-downloaded every package
@@ -649,7 +881,7 @@ jobs:
           # STAMP keeps the RUN out of the layer cache. Never --no-cache: it starts every
           # cache mount empty (header, Registry token).
           printf 'FROM %s\nARG STAMP\nRUN --mount=type=cache,id=nuget,target=/m,sharing=locked --mount=type=bind,target=/s cp -R /s/. /m/\n' \
-              mcr.microsoft.com/azurelinux/busybox:1.36@sha256:f395e5c5642ddbdfb10e04ef3d4d13610315606719ffcb2255d3182e2a066c33 \
+              packages.maestra.io/mcr/azurelinux/busybox:1.36@sha256:f395e5c5642ddbdfb10e04ef3d4d13610315606719ffcb2255d3182e2a066c33 \
             | docker buildx build ${BUILDER:+--builder "$BUILDER"} --progress plain --build-arg "STAMP=$(date +%s%N)" -f - "$DIR"
           echo "NuGet cache mount: restored $(find "$DIR" -mindepth 2 -maxdepth 2 -type d | wc -l) package versions"
           # <<< nuget-mount-seed
@@ -661,6 +893,7 @@ jobs:
           target: ${{ inputs.docker-test-target }}
           load: true
           tags: local/${{ inputs.docker-test-target }}:latest
+          build-args: BASE_REFRESH=${{ steps.week.outputs.week }}
           secret-files: |
             PRIVATE_PACKAGES_TOKEN=${{ runner.temp }}/packages-token/PRIVATE_PACKAGES_TOKEN
             NUGET_CREDENTIALS=${{ runner.temp }}/packages-token/NUGET_CREDENTIALS
@@ -677,7 +910,7 @@ jobs:
           # >>> nuget-mount-extract (scripts/test-dotnet-service-build-cache.sh runs this block)
           rm -rf "$DIR"; mkdir -p "$DIR"
           printf 'FROM %s AS m\nARG STAMP\nRUN --mount=type=cache,id=nuget,target=/m,sharing=locked mkdir /o && cp -R /m/. /o/\nFROM scratch\nCOPY --from=m /o /\n' \
-              mcr.microsoft.com/azurelinux/busybox:1.36@sha256:f395e5c5642ddbdfb10e04ef3d4d13610315606719ffcb2255d3182e2a066c33 \
+              packages.maestra.io/mcr/azurelinux/busybox:1.36@sha256:f395e5c5642ddbdfb10e04ef3d4d13610315606719ffcb2255d3182e2a066c33 \
             | docker buildx build ${BUILDER:+--builder "$BUILDER"} --progress plain --build-arg "STAMP=$(date +%s%N)" \
                 --output "type=local,dest=$DIR" -f - "$(mktemp -d)"
           n=$(find "$DIR" -mindepth 2 -maxdepth 2 -type d | wc -l)
@@ -785,6 +1018,13 @@ jobs:
             dotnet test --no-restore "${sln[@]}" --configuration Release "${filter[@]}" "${wae[@]}"
           # <<< dotnet-test
 
+      # Where the test containers came from (issues-maestra#1649): Testcontainers' Docker Hub
+      # images show as packages.maestra.io/docker-hub/…
+      - name: test images
+        if: ${{ always() }}
+        run: docker image ls --format '{{.Repository}}:{{.Tag}}' | sort || true
+
+
       # Flaky-test telemetry (maestra-io/issues-maestra#1592): TRX of every attempt, pass or fail.
       # github.job is the CALLED job id (test/package), the same for every call of this
       # workflow in one run, and an artifact name cannot repeat: a per-job suffix.
@@ -819,6 +1059,8 @@ jobs:
           fi
       - if: ${{ needs.version.outputs.base-name != '' && (github.event_name != 'pull_request' || inputs.pr-images) }}
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: image=packages.maestra.io/docker-hub/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
       - name: layer cache (base image)
         id: cache-base
         if: ${{ needs.version.outputs.base-name != '' && (github.event_name != 'pull_request' || inputs.pr-images) }}
@@ -876,7 +1118,7 @@ jobs:
           else
             scopes=$(printf '%s\n' "$SCOPES" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . || true)
             from=$(awk '{print "type=gha,scope=" $0}' <<<"$scopes")
-            to="type=gha,mode=max,scope=$(head -n1 <<<"$scopes")"
+            to="type=gha,mode=max,ignore-error=true,scope=$(head -n1 <<<"$scopes")"
           fi
           { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; echo "nocache=$nocache"; echo "nocachefilter=$nocachefilter"; } >> "$GITHUB_OUTPUT"
           # <<< layer-cache
@@ -889,12 +1131,43 @@ jobs:
           context: .
           file: ${{ needs.version.outputs.base-dockerfile }}
           target: ${{ needs.version.outputs.base-target }}
+          build-args: BASE_REFRESH=${{ steps.week.outputs.week }}
           outputs: type=cacheonly
           secret-files: |
             PRIVATE_PACKAGES_TOKEN=${{ runner.temp }}/packages-token/PRIVATE_PACKAGES_TOKEN
             NUGET_CREDENTIALS=${{ runner.temp }}/packages-token/NUGET_CREDENTIALS
           cache-from: ${{ steps.cache-base.outputs.from }}
           cache-to: ${{ steps.cache-base.outputs.to }}
+      # >>> nora-image-cache save (test)
+      # Everything this job holds from packages.maestra.io, by image ID; saved only when the set
+      # differs from the restored one (the key is a hash of the IDs).
+      - name: nora image cache (pack)
+        id: nora-images-pack
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          MATCHED: ${{ steps.nora-images.outputs.cache-matched-key }}
+        shell: bash
+        run: |
+          ids=$(docker image ls --no-trunc --format '{{.Repository}} {{.ID}}' \
+            | awk '$1 ~ /^packages\.maestra\.io\// {print $2}' | sort -u)
+          [ -n "$ids" ] || { echo "nora image cache: no packages.maestra.io images"; exit 0; }
+          key="nora-images-test-$(sha256sum <<<"$ids" | cut -c1-16)"
+          [ "$key" != "$MATCHED" ] || { echo "nora image cache: unchanged ($key)"; exit 0; }
+          mkdir -p "$RUNNER_TEMP/nora-images"
+          # shellcheck disable=SC2086 # one ID per word
+          docker save $ids | zstd -T0 -3 -q -f -o "$RUNNER_TEMP/nora-images/images.tar.zst"
+          echo "nora image cache: $(wc -l <<<"$ids") images, $(du -h "$RUNNER_TEMP/nora-images/images.tar.zst" | cut -f1) -> $key"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+      - name: nora image cache (save)
+        if: ${{ !cancelled() && steps.nora-images-pack.outputs.key != '' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/nora-images
+          key: ${{ steps.nora-images-pack.outputs.key }}
+      # <<< nora-image-cache save
+
 
   images:
     needs: [version, test]
@@ -922,7 +1195,8 @@ jobs:
     # siblings, so "re-run failed jobs" rebuilds only that leg instead of legs that
     # may already have pushed their immutable tag. `images` still ends `failure`
     # when any leg fails: `release` (and the bake after it) stays skipped and
-    # `pr gate` red, exactly as before.
+    # `pr gate` red, exactly as before. With graphql-schemas the re-run works only
+    # within 24 h of the run: the schemas artifact from `test` is kept 1 day.
     strategy:
       fail-fast: false
       matrix:
@@ -942,11 +1216,117 @@ jobs:
       # builder. With it, the RunsOn post step stops the builder itself before the
       # snapshot (cleanup=false), and the agent's default buildkitd config (Docker Hub
       # mirror) still applies: no explicit config is passed.
+      # Testcontainers, docker compose and BuildKit pull packages.maestra.io images (the
+      # nora pull-through, issues-maestra#1649) with ~/.docker/config.json. nora takes the
+      # OIDC token, which lives minutes: a credential helper mints a fresh one per pull.
+      - name: nora docker credentials
+        env:
+          AUDIENCE: ${{ inputs.packages-audience }}
+          PACKAGES_URL: ${{ inputs.packages-url }}
+        run: |
+          # >>> nora-cred-helper (scripts/test-dotnet-service-build.sh runs this block; all copies equal)
+          bin="$RUNNER_TEMP/nora-bin"; mkdir -p "$bin"
+          # The helper runs in the caller's environment, which tox and other test runners
+          # scrub: the job's OIDC request URL and token go to a 0600 file next to it.
+          # nora's origin: PACKAGES_URL may carry a path (python-package-publish: …/simple/)
+          o="${PACKAGES_URL#*://}"; o="${PACKAGES_URL%%://*}://${o%%/*}"
+          ( umask 077; printf 'url=%q\ntoken=%q\naud=%q\nnora=%q\n' "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+            "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$AUDIENCE" "$o" > "$bin/oidc.env" )
+          cat > "$bin/docker-credential-nora" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          [ "${1:-}" = get ] || exit 0
+          server=$(cat) # docker sends it without a newline
+          . "${BASH_SOURCE[0]%/*}/oidc.env"
+          t=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $token" \
+            "$url&audience=$aud" | jq -r '.value // empty')
+          [ -n "$t" ]
+          # Testcontainers keeps the first credential for its whole run, so a ~5 min JWT failed
+          # pulls made later (api-mimic#72): hand out nora's 1 h session token for it instead.
+          # ponytail: a test process over 1 h still outlives it; 403/404 = no exchange, the JWT.
+          # the body to a 0600 file: curl truncates it before a retry, stdout would keep every attempt's
+          f=$(mktemp); trap 'rm -f "$f"' EXIT
+          code=$(curl -sS --retry 3 --connect-timeout 10 --max-time 30 -X POST -H "Authorization: Bearer $t" \
+            -o "$f" -w '%{http_code}' "$nora/api/oidc/session")
+          case "$code" in
+            200) t=$(jq -r '.token // empty' "$f"); [[ "$t" == nrs_* ]] ;;
+            403|404) ;;
+            *) exit 1 ;;
+          esac
+          jq -cn --arg s "$server" --arg t "$t" '{ServerURL: $s, Username: "token", Secret: $t}'
+          EOF
+          chmod 755 "$bin/docker-credential-nora"
+          echo "$bin" >> "$GITHUB_PATH"
+          host="${PACKAGES_URL#*://}"; host="${host%%/*}"
+          cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"; mkdir -p "$(dirname "$cfg")"
+          [ -s "$cfg" ] || echo '{}' > "$cfg"
+          jq --arg h "$host" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+          # <<< nora-cred-helper
+
+      # >>> nora-image-cache restore (images)
+      # A RunsOn runner starts with an empty image store and RunsOn's ECR pull-through
+      # mirror covers docker.io only, so every image named packages.maestra.io/... (moby/buildkit,
+      # Testcontainers via TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX) came from nora in full on every
+      # job and saturated the 1 Gbit link of nora's node (HostNetworkInterfaceSaturated,
+      # us-iota-lw-kube-infra-02, 16.11.2026). The images this job pulled from nora are saved
+      # by ID into the Magic Cache (S3 next to the runner) and loaded here; a later pull by tag
+      # or digest then fetches only the manifest from nora: Docker 28 skips every layer when
+      # the config digest (the image ID) is already local (moby distribution/pull_v2.go
+      # pullSchema2Layers). A miss or a failed load only means the pulls go to nora as before.
+      - name: nora image cache (restore)
+        id: nora-images
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/nora-images
+          key: nora-images-images-${{ github.run_id }}
+          restore-keys: nora-images-images-
+      - name: nora image cache (load)
+        if: ${{ steps.nora-images.outputs.cache-matched-key != '' }}
+        continue-on-error: true
+        run: |
+          f="$RUNNER_TEMP/nora-images/images.tar.zst"
+          [ -s "$f" ] || exit 0
+          zstd -dcq "$f" | docker load -q \
+            || echo "::warning::nora image cache: docker load failed, images come from nora"
+      # <<< nora-image-cache restore
+
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
+          driver-opts: image=packages.maestra.io/docker-hub/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
           name: ${{ steps.runs-on.outputs.buildkit-builder }}
           driver: docker-container
           cleanup: ${{ !inputs.sticky-buildkit }}
+
+      # >>> nora-image-cache save (images)
+      # Everything this job holds from packages.maestra.io, by image ID; saved only when the set
+      # differs from the restored one (the key is a hash of the IDs).
+      - name: nora image cache (pack)
+        id: nora-images-pack
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          MATCHED: ${{ steps.nora-images.outputs.cache-matched-key }}
+        shell: bash
+        run: |
+          ids=$(docker image ls --no-trunc --format '{{.Repository}} {{.ID}}' \
+            | awk '$1 ~ /^packages\.maestra\.io\// {print $2}' | sort -u)
+          [ -n "$ids" ] || { echo "nora image cache: no packages.maestra.io images"; exit 0; }
+          key="nora-images-images-$(sha256sum <<<"$ids" | cut -c1-16)"
+          [ "$key" != "$MATCHED" ] || { echo "nora image cache: unchanged ($key)"; exit 0; }
+          mkdir -p "$RUNNER_TEMP/nora-images"
+          # shellcheck disable=SC2086 # one ID per word
+          docker save $ids | zstd -T0 -3 -q -f -o "$RUNNER_TEMP/nora-images/images.tar.zst"
+          echo "nora image cache: $(wc -l <<<"$ids") images, $(du -h "$RUNNER_TEMP/nora-images/images.tar.zst" | cut -f1) -> $key"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+      - name: nora image cache (save)
+        if: ${{ !cancelled() && steps.nora-images-pack.outputs.key != '' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/nora-images
+          key: ${{ steps.nora-images-pack.outputs.key }}
+      # <<< nora-image-cache save
       - run: mkdir -p .nuget # bind-mount source of the GitLab-era Dockerfiles
 
       - name: aws credentials
@@ -1037,7 +1417,7 @@ jobs:
           else
             scopes=$(printf '%s\n' "$SCOPES" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . || true)
             from=$(awk '{print "type=gha,scope=" $0}' <<<"$scopes")
-            to="type=gha,mode=max,scope=$(head -n1 <<<"$scopes")"
+            to="type=gha,mode=max,ignore-error=true,scope=$(head -n1 <<<"$scopes")"
           fi
           { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; echo "nocache=$nocache"; echo "nocachefilter=$nocachefilter"; } >> "$GITHUB_OUTPUT"
           # <<< layer-cache
@@ -1068,7 +1448,21 @@ jobs:
           # not masked (no workflow commands after the step): never print a secret in a RUN.
           ( while sleep 60; do t=$(mint) && [ -n "$t" ] && write "$t"; done ) </dev/null >/dev/null 2>&1 &
           # <<< token-files
+      # graphql-schemas: the files `test` downloaded, unpacked at the repo root before any build.
+      - if: ${{ inputs.graphql-schemas && needs.test.outputs.graphql-schemas-artifact != '' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.test.outputs.graphql-schemas-artifact }}
+          path: ${{ runner.temp }}
+      - name: graphql schemas
+        if: ${{ inputs.graphql-schemas }}
+        run: tar -xzvf "$RUNNER_TEMP/graphql-schemas.tgz"
 
+      # ISO week for a Dockerfile's `ARG BASE_REFRESH` (README, layer cache): a new value
+      # rebuilds the apt/apk stages the cache would otherwise serve forever. One value per
+      # job: the push build below must hit the cache of the first build.
+      - id: week
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
       # base-image: an OCI layout from the cache `test` filled, handed to the build
       # as the named context the Dockerfile's FROM refers to.
       - name: uses ${{ needs.version.outputs.base-name }}?
@@ -1141,7 +1535,7 @@ jobs:
           else
             scopes=$(printf '%s\n' "$SCOPES" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep . || true)
             from=$(awk '{print "type=gha,scope=" $0}' <<<"$scopes")
-            to="type=gha,mode=max,scope=$(head -n1 <<<"$scopes")"
+            to="type=gha,mode=max,ignore-error=true,scope=$(head -n1 <<<"$scopes")"
           fi
           { echo 'from<<__CACHE__'; echo "$from"; echo '__CACHE__'; echo "to=$to"; echo "nocache=$nocache"; echo "nocachefilter=$nocachefilter"; } >> "$GITHUB_OUTPUT"
           # <<< layer-cache
@@ -1152,6 +1546,7 @@ jobs:
           context: .
           file: ${{ needs.version.outputs.base-dockerfile }}
           target: ${{ needs.version.outputs.base-target }}
+          build-args: BASE_REFRESH=${{ steps.week.outputs.week }}
           outputs: type=oci,dest=${{ runner.temp }}/base-image,tar=false
           builder: ${{ steps.runs-on.outputs.buildkit-builder }}
           no-cache: ${{ steps.cache-base.outputs.nocache == 'true' }}
@@ -1194,6 +1589,7 @@ jobs:
           build-args: |
             revision=${{ needs.version.outputs.release }} (${{ github.sha }})
             release=${{ needs.version.outputs.release }} (${{ github.sha }})
+            BASE_REFRESH=${{ steps.week.outputs.week }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
@@ -1225,7 +1621,10 @@ jobs:
           # >>> ecr-push-check (scripts/test-ecr-push-check.sh runs this block)
           # Idempotent re-run: the immutable tag may already hold this run's image from an
           # earlier attempt. Same digest (SOURCE_DATE_EPOCH makes the rebuild reproducible)
-          # = pushed already: skip. Another digest would end in ECR TAG_INVALID: fail and say what to do.
+          # = pushed already: skip. Another digest built from this commit (its config label
+          # org.opencontainers.image.revision = GITHUB_SHA: a retry after a spot interruption
+          # that rebuilt non-reproducibly) = skip and keep the pushed image. Anything else would
+          # end in ECR TAG_INVALID: fail and say what to do.
           [ -n "$DIGEST" ] || { echo "::error::no image digest from the build step"; exit 1; }
           if ! out=$(aws ecr describe-images --repository-name "$IMAGE" --image-ids imageTag="$RELEASE" --output json 2>&1); then
             if grep -qE 'ImageNotFoundException|RepositoryNotFoundException' <<<"$out"; then echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0; fi
@@ -1234,13 +1633,29 @@ jobs:
           existing=$(jq -r '.imageDetails[0].imageDigest // empty' <<<"$out")
           if [ "$existing" = "$DIGEST" ]; then
             echo "${IMAGE}:${RELEASE} is already in ECR (${DIGEST}): push skipped"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
+            printf 'skip=true\ndigest=%s\n' "$existing" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          revision=""
+          if [ -n "$existing" ] \
+            && manifest=$(aws ecr batch-get-image --repository-name "$IMAGE" --image-ids imageDigest="$existing" \
+                 --accepted-media-types application/vnd.oci.image.manifest.v1+json application/vnd.docker.distribution.manifest.v2+json \
+                 --query 'images[0].imageManifest' --output text) \
+            && config=$(jq -er '.config.digest' <<<"$manifest") \
+            && url=$(aws ecr get-download-url-for-layer --repository-name "$IMAGE" --layer-digest "$config" --query downloadUrl --output text) \
+            && blob=$(curl -sfL --retry 3 "$url"); then
+            revision=$(jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' <<<"$blob" || true)
+          fi
+          if [ -n "$GITHUB_SHA" ] && [ "$revision" = "$GITHUB_SHA" ]; then
+            echo "${IMAGE}:${RELEASE} is already in ECR (${existing}), built from this commit ${GITHUB_SHA} by an earlier attempt (rebuild: ${DIGEST}): push skipped"
+            printf 'skip=true\ndigest=%s\n' "$existing" >> "$GITHUB_OUTPUT"
           else
-            echo "::error::${IMAGE}:${RELEASE} already exists in ECR (${existing:-<none>}) and is not the image built now (${DIGEST}); tags are immutable. Dispatch the release workflow again: it takes the next release number."
+            echo "::error::${IMAGE}:${RELEASE} already exists in ECR (${existing:-<none>}, revision ${revision:-unknown}) and is not the image built now (${DIGEST}, revision ${GITHUB_SHA}); tags are immutable. Dispatch the release workflow again: it takes the next release number."
             exit 1
           fi
           # <<< ecr-push-check
       - name: push ${{ matrix.image }}:${{ needs.version.outputs.release }}
+        id: push
         if: ${{ needs.version.outputs.publish == 'true' && steps.existing.outputs.skip != 'true' }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         env:
@@ -1260,6 +1675,7 @@ jobs:
           build-args: |
             revision=${{ needs.version.outputs.release }} (${{ github.sha }})
             release=${{ needs.version.outputs.release }} (${{ github.sha }})
+            BASE_REFRESH=${{ steps.week.outputs.week }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
@@ -1268,6 +1684,18 @@ jobs:
             PRIVATE_PACKAGES_TOKEN=${{ runner.temp }}/packages-token/PRIVATE_PACKAGES_TOKEN
             NUGET_CREDENTIALS=${{ runner.temp }}/packages-token/NUGET_CREDENTIALS
           cache-from: ${{ steps.cache.outputs.from }}
+      # Keyless cosign signature + CycloneDX SBOM attestation of the pushed digest,
+      # stored as OCI referrers next to the image. Best-effort: never fails the
+      # release (sign-image/action.yml, issues-maestra#1648); capped at 10 min so a
+      # slow Fulcio/Rekor/syft never times out the job that pushed the image.
+      - name: sign ${{ matrix.image }}:${{ needs.version.outputs.release }}
+        if: ${{ needs.version.outputs.publish == 'true' }}
+        continue-on-error: true
+        timeout-minutes: 10
+        uses: maestra-io/github-actions/sign-image@21da9a74395b7d6fb7dfa71ba2805c280d11fe32 # v1.64.2
+        with:
+          image: ${{ steps.ecr.outputs.registry }}/${{ matrix.image }}
+          digest: ${{ steps.push.outputs.digest || steps.existing.outputs.digest || steps.build.outputs.digest }}
 
   # Git tag + GitHub Release BEFORE the bake: bake-oci-manifests checks out the
   # release tag. Bare `1.1.N`, same shape as create-gitlab-release.
@@ -1282,14 +1710,31 @@ jobs:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE: ${{ needs.version.outputs.release }}
+          TAG: ${{ needs.version.outputs.release }}
         run: |
           # Idempotent for a re-run of failed jobs (same run_number, same release).
-          if gh release view "$RELEASE" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "release $RELEASE already exists"; exit 0
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $TAG already exists"; exit 0
           fi
-          gh release create "$RELEASE" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "$RELEASE" --generate-notes
+          # >>> github-release-create (scripts/test-github-release-create.sh runs this block)
+          # A new tag on a commit whose .github/workflows differ from the default branch tip
+          # needs a token that may modify workflows, which GITHUB_TOKEN never is (REST docs,
+          # "Create a release"): GitHub answers 403 "Resource not accessible by integration"
+          # once main moved past this commit with a workflow change while it was built.
+          if ! gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "$TAG" --generate-notes; then
+            head=$(gh api "repos/$GITHUB_REPOSITORY/commits/HEAD" --jq .sha 2>/dev/null || true)
+            wf=""
+            if [ -n "$head" ] && [ "$head" != "$GITHUB_SHA" ]; then
+              wf=$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...$head" \
+                --jq '[.files[].filename | select(startswith(".github/workflows/"))] | join(", ")' 2>/dev/null || true)
+            fi
+            if [ -n "$wf" ]; then
+              echo "::error::release $TAG not created: the default branch moved to ${head:0:7} and changed $wf since ${GITHUB_SHA:0:7}, and GITHUB_TOKEN may not tag a commit whose workflow files differ from the default branch tip. The release of ${head:0:7} (its own run) supersedes this one; to release ${GITHUB_SHA:0:7} itself, create release $TAG by hand with a token that has the workflows permission."
+            fi
+            exit 1
+          fi
+          # <<< github-release-create
 
   bake:
     needs: [version, release]
@@ -1301,7 +1746,7 @@ jobs:
       id-token: write # Teleport join + cosign keyless
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: maestra-io/github-actions/bake-oci-manifests@2450cdaaf4688887cb65579fc45ab5304cb81967 # v1.46.2
+      - uses: maestra-io/github-actions/bake-oci-manifests@07b2e09efe4030d748b9d18d7ea52a165df1d584 # v1.71.4
         with:
           service: ${{ needs.version.outputs.service }}
           images: ${{ needs.version.outputs.images }}
@@ -1325,7 +1770,7 @@ jobs:
         include: ${{ fromJSON(needs.version.outputs.bake-matrix) }}
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: maestra-io/github-actions/bake-oci-manifests@2450cdaaf4688887cb65579fc45ab5304cb81967 # v1.46.2
+      - uses: maestra-io/github-actions/bake-oci-manifests@07b2e09efe4030d748b9d18d7ea52a165df1d584 # v1.71.4
         with:
           service: ${{ matrix.service }}
           images: ${{ matrix.images }}
@@ -1341,12 +1786,22 @@ jobs:
     permissions:
       contents: read
 
+  # Pull requests only: no new base image nora still holds in its 3-day quarantine
+  # (base-images.yml, issues-maestra#1649). Never on a push: a default branch that already
+  # carries a held digest releases as before.
+  base-images:
+    if: ${{ github.event_name == 'pull_request' }}
+    uses: maestra-io/github-actions/.github/workflows/base-images.yml@main
+    permissions:
+      contents: read
+      id-token: write # nora session token
+
   # The single check a branch ruleset requires (`<caller job> / pr gate`): red when
   # any PR job failed or was cancelled. Skipped jobs (images without pr-images) pass.
   pr-gate:
     name: pr gate
     if: ${{ always() && github.event_name == 'pull_request' }}
-    needs: [version, test, images, checks]
+    needs: [version, test, images, checks, base-images]
     runs-on: runs-on=${{ github.run_id }}-pr-gate/pool=small
     timeout-minutes: 5
     steps:

@@ -1,0 +1,100 @@
+name: "setup-buildx through nora"
+description: >-
+  docker/setup-buildx-action with BuildKit from nora: the docker-container driver's default
+  image, moby/buildkit:buildx-stable-1, comes straight from Docker Hub, past nora's 3-day
+  quarantine (issues-maestra#1649). The runner's Docker daemon pulls the pinned image with
+  ~/.docker/config.json, so the nora docker credential helper is installed first; later
+  packages.maestra.io pulls of the job (BuildKit, compose, Testcontainers) use it too.
+  Needs `permissions: id-token: write`. The `docker` driver runs no BuildKit container:
+  keep docker/setup-buildx-action for it.
+
+inputs:
+  name:
+    description: "Builder name (setup-buildx `name`); empty = a random one."
+    required: false
+    default: ""
+  driver-opts:
+    description: "More docker-container driver options, one per line (`network=host`); the image is set here."
+    required: false
+    default: ""
+  buildkitd-config-inline:
+    description: "setup-buildx `buildkitd-config-inline`."
+    required: false
+    default: ""
+  cleanup:
+    description: "setup-buildx `cleanup`: remove the builder in the post step."
+    required: false
+    default: "true"
+  url:
+    description: "nora base URL."
+    required: false
+    default: "https://packages.maestra.io"
+  audience:
+    description: "`aud` of the GitHub OIDC token nora accepts."
+    required: false
+    default: "packages.maestra.io"
+
+outputs:
+  name:
+    description: "The builder's name."
+    value: ${{ steps.buildx.outputs.name }}
+
+runs:
+  using: composite
+  steps:
+    - name: nora docker credentials
+      shell: bash
+      env:
+        AUDIENCE: ${{ inputs.audience }}
+        PACKAGES_URL: ${{ inputs.url }}
+      run: |
+        # >>> nora-cred-helper (scripts/test-dotnet-service-build.sh runs this block; all copies equal)
+        bin="$RUNNER_TEMP/nora-bin"; mkdir -p "$bin"
+        # The helper runs in the caller's environment, which tox and other test runners
+        # scrub: the job's OIDC request URL and token go to a 0600 file next to it.
+        # nora's origin: PACKAGES_URL may carry a path (python-package-publish: …/simple/)
+        o="${PACKAGES_URL#*://}"; o="${PACKAGES_URL%%://*}://${o%%/*}"
+        ( umask 077; printf 'url=%q\ntoken=%q\naud=%q\nnora=%q\n' "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+          "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$AUDIENCE" "$o" > "$bin/oidc.env" )
+        cat > "$bin/docker-credential-nora" <<'EOF'
+        #!/usr/bin/env bash
+        set -euo pipefail
+        [ "${1:-}" = get ] || exit 0
+        server=$(cat) # docker sends it without a newline
+        . "${BASH_SOURCE[0]%/*}/oidc.env"
+        t=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $token" \
+          "$url&audience=$aud" | jq -r '.value // empty')
+        [ -n "$t" ]
+        # Testcontainers keeps the first credential for its whole run, so a ~5 min JWT failed
+        # pulls made later (api-mimic#72): hand out nora's 1 h session token for it instead.
+        # ponytail: a test process over 1 h still outlives it; 403/404 = no exchange, the JWT.
+        # the body to a 0600 file: curl truncates it before a retry, stdout would keep every attempt's
+        f=$(mktemp); trap 'rm -f "$f"' EXIT
+        code=$(curl -sS --retry 3 --connect-timeout 10 --max-time 30 -X POST -H "Authorization: Bearer $t" \
+          -o "$f" -w '%{http_code}' "$nora/api/oidc/session")
+        case "$code" in
+          200) t=$(jq -r '.token // empty' "$f"); [[ "$t" == nrs_* ]] ;;
+          403|404) ;;
+          *) exit 1 ;;
+        esac
+        jq -cn --arg s "$server" --arg t "$t" '{ServerURL: $s, Username: "token", Secret: $t}'
+        EOF
+        chmod 755 "$bin/docker-credential-nora"
+        echo "$bin" >> "$GITHUB_PATH"
+        host="${PACKAGES_URL#*://}"; host="${host%%/*}"
+        cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"; mkdir -p "$(dirname "$cfg")"
+        [ -s "$cfg" ] || echo '{}' > "$cfg"
+        jq --arg h "$host" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+        # <<< nora-cred-helper
+    - id: buildx
+      uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      with:
+        name: ${{ inputs.name }}
+        driver: docker-container
+        # moby/buildkit through nora, not Docker Hub (issues-maestra#1649); every copy equal:
+        # scripts/test-dotnet-service-build.sh
+        driver-opts: |
+          image=packages.maestra.io/docker-hub/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
+          ${{ inputs.driver-opts }}
+        buildkitd-config-inline: ${{ inputs.buildkitd-config-inline }}
+        cleanup: ${{ inputs.cleanup }}

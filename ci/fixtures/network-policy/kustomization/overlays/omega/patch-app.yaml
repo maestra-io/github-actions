@@ -1,0 +1,40 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: universal-channel-http-sender
+  namespace: universal-channel-http-sender
+spec:
+  values:
+    # stamped at OCI bake time; Flux postBuild leaves it alone.
+    packageVersion: ${APP_PACKAGE_VERSION_TO_BE_REPLACED}
+    name: universal-channel-http-sender
+    legacyEnvironmentLabel: omega-us
+    product: mailings
+    feature: universal-channel
+    global:
+      deployEnv: ${ENV}
+    appSecrets:
+      k8sSecretName: universal-channel-http-sender-app-secrets
+    authSecrets:
+      k8sSecretName: universal-channel-http-sender-auth-secrets
+    commonAlerts:
+      disabled:
+        - DeploymentPodsInsufficient
+
+    # Worker-only service — no API/GraphQL tier, no ingress.
+    services:
+      enabled: false
+
+    lrt:
+      # Consumes http.* off the local us bus, sends to provider APIs; reads/writes the local
+      # Dragonfly (df-uc-http-sender-v2-omega) via appsettings.omega.json.
+      imageName: universal_channel_http_sender_worker
+      roles:
+        - replicas: "2"
+          # Leaseweb VAP: memory request == limit.
+          resources:
+            requests:
+              cpu: "300m"
+              memory: "2048Mi"
+            limits:
+              memory: "2048Mi"
