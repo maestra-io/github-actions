@@ -35,6 +35,11 @@
   ansible.builtin.apt:
     autoremove: true
     purge: true
+  environment:
+    # Same as apt.yml: pre-stage and pre-apply purge on a host still in rotation,
+    # and needrestart in mode `a` would restart services from inside dpkg.
+    NEEDRESTART_SUSPEND: "1"
+    NEEDRESTART_MODE: a
   register: os_update_gc
   when:
     # post-reboot: unchanged gate. pre-stage / pre-apply: the reboot has not

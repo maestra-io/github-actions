@@ -54,7 +54,7 @@
         os_update_gc_refusal: >-
           {{ 'it would remove a pinned package'
              if (os_update_gc_sim.stdout_lines
-                 | select('match', '^(Remv|Purg) (' ~ ((os_update_pinned_base + os_update_pinned_extra) | unique | join('|')) ~ ')( |$)')
+                 | select('match', '^(Remv|Purg) (' ~ ((os_update_pinned_base + os_update_pinned_extra) | unique | map('regex_escape') | join('|')) ~ ')( |$)')
                  | list | length > 0)
              else 'it would remove the running kernel'
              if ansible_facts.kernel in os_update_gc_kernels

@@ -86,6 +86,7 @@ scenario() {
   S="$S" PATH="$tmp/bin:$PATH" ANSIBLE_LOCALHOST_WARNING=false \
     ansible-playbook -i "us-test-node01," -c local \
     -e 'ansible_python_interpreter={{ ansible_playbook_python }}' \
+    -e '{"os_update_pinned_extra": ["libstdc++6"]}' \
     -e "os_update_mode=$mode boot_free=$free os_update_newest_kernel=$newest" \
     "$T/playbook.yml" > "$S/log" 2>&1
   rc=$?
@@ -149,6 +150,9 @@ expect "a GC that leaves only the running kernel is refused" fail no "it would l
 size pinned 91 "$OLD"
 EXTRA_SIM="Purg teleport [17.0.0]" scenario pinned apply 141 "$OLD" "$MID" "$RUN" -- "$OLD"
 expect "a GC that would remove a pinned package is refused" fail no "it would remove a pinned package"
+
+EXTRA_SIM="Purg libstdc++6 [14.2.0]" scenario pinned-meta apply 141 "$OLD" "$MID" "$RUN" -- "$OLD"
+expect "a pinned name with regex metacharacters is matched literally" fail no "it would remove a pinned package"
 
 scenario roomy apply 300 "$OLD" "$MID" "$RUN" -- "$OLD"
 expect "enough room already: no simulation, no GC" 0 no "/boot free 300 MB >= 200"
