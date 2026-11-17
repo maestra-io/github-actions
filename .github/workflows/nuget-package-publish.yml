@@ -242,11 +242,11 @@ jobs:
       # major, in a temporary global.json in the working directory (where dotnet
       # looks first). Other global.json keys are kept, and the repo's own file is put
       # back after pack. An explicit sdk.version with a narrower rollForward is
-      # respected, and so is the dotnet-version override (no pin). selftest.yml runs
-      # this program (scripts/test-nuget-sdk-pin.sh).
+      # respected. A dotnet-version override is pinned to its own highest major: with
+      # no pin, `8.0.x` callers built with the image's newest SDK (11 since the
+      # 17.11.2026 image). selftest.yml runs this program (scripts/test-nuget-sdk-pin.sh).
       - name: pin the build SDK
         id: pin
-        if: ${{ inputs.dotnet-version == '' }}
         env:
           VERSIONS: ${{ steps.sdk.outputs.versions }}
           BACKUP: ${{ runner.temp }}/global.json.repo

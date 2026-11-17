@@ -1000,7 +1000,7 @@ jobs:
       # nuget-package-publish.yml (program copied verbatim; scripts/test-nuget-sdk-set.sh
       # and test-nuget-sdk-pin.sh check the copies): newest installed SDK of the highest
       # target framework / global.json major, in a temporary global.json put back after
-      # the tests. Here dotnet-version only feeds the major, it does not skip the pin.
+      # the tests. A dotnet-version override is pinned to its own highest major.
       - name: target framework majors
         id: sdk-set
         if: ${{ inputs.docker-test-target == '' && inputs.test-command == '' }}
