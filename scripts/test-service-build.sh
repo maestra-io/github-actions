@@ -78,3 +78,11 @@ for bad in "get https://pypi.org/simple/ token" "get https://packages.maestra.io
   if kr $bad >/dev/null 2>&1; then echo "FAIL keyring answered: $bad"; exit 1; fi
 done
 echo "service-build uv keyring: ok"
+
+# The test-command image cache is packed after test-command: what it pulled from nora (the
+# Playwright image of popmechanic-client, Testcontainers images) is saved too (issues-maestra#1649).
+run_line=$(grep -nF 'run: bash -eo pipefail -c "$TEST_COMMAND"' "$wf" | cut -d: -f1)
+pack_line=$(grep -nF 'id: nora-images-2-pack' "$wf" | cut -d: -f1)
+[ -n "$run_line" ] && [ -n "$pack_line" ] && [ "$pack_line" -gt "$run_line" ] \
+  || { echo "FAIL nora-images-2-pack (line ${pack_line:-none}) is not after test-command (line ${run_line:-none})"; exit 1; }
+echo "service-build test-command image cache after the tests: ok"
