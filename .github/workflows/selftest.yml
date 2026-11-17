@@ -69,6 +69,9 @@ jobs:
       - name: host_limit selector
         run: bash ansible/tests/test-host-limit-selector.sh
 
+      - name: break-glass re-probe step
+        run: bash ansible/tests/test-breakglass-reprobe.sh
+
       # The release tag is derived from the commit range by a shell script, and
       # a wrong bump is silent: it publishes a version that is merely the wrong
       # number, which consumers then pin. The cases build real throwaway repos.
