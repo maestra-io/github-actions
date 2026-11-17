@@ -3,7 +3,10 @@ description: >-
   actions/setup-dotnet without Microsoft: the SDKs named by dotnet-version (setup-dotnet
   syntax) and by a global.json (its rollForward) come from packages.maestra.io raw,
   sha256-pinned in sdks.txt, and are unpacked next to the runner image's SDKs
-  (issues-maestra#1649). Needs `permissions: id-token: write`; linux-x64 only.
+  (issues-maestra#1649). The archives are cached by version + pin in the job's cache
+  (RunsOn Magic Cache: S3 next to the runners), so a job whose repository/branch already
+  holds them fetches nothing from nora; a cached archive is used only when its sha256 is the
+  pin. Needs `permissions: id-token: write`; linux-x64 only.
 
 inputs:
   dotnet-version:
@@ -31,6 +34,21 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: .NET SDK cache key
+      id: plan
+      shell: bash
+      env:
+        DOTNET_VERSION: ${{ inputs.dotnet-version }}
+        GLOBAL_JSON: ${{ inputs.global-json-file }}
+        DOTNET_NORA_PLAN: "1"
+      run: bash "${GITHUB_ACTION_PATH}/dotnet-nora.sh"
+    - name: .NET SDK archives from the cache
+      id: restore
+      if: ${{ steps.plan.outputs.cache-key != '' }}
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/dotnet-nora-cache
+        key: ${{ steps.plan.outputs.cache-key }}
     - name: .NET SDK through nora
       id: install
       shell: bash
@@ -39,4 +57,11 @@ runs:
         GLOBAL_JSON: ${{ inputs.global-json-file }}
         NORA_URL: ${{ inputs.url }}
         NORA_AUDIENCE: ${{ inputs.audience }}
+        DOTNET_NORA_CACHE_DIR: ${{ steps.plan.outputs.cache-key != '' && format('{0}/dotnet-nora-cache', runner.temp) || '' }}
       run: bash "${GITHUB_ACTION_PATH}/dotnet-nora.sh"
+    - name: .NET SDK archives into the cache
+      if: ${{ steps.install.outputs.save == 'true' && steps.restore.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/dotnet-nora-cache
+        key: ${{ steps.plan.outputs.cache-key }}

@@ -65,6 +65,7 @@ case "${*: -1}" in
   *audience=*) echo '{"value":"eyJ.stub.jwt"}' ;;
   */api/oidc/session) printf '{"token":"nrs_1_stub"}\n200' ;;
   */raw/src/builds.dotnet.microsoft.com/dotnet/Sdk/*)
+    echo "${*: -1}" >> "$BODY.calls"
     cfg=$(cat) # -K -: the credential arrives on stdin
     [ "$cfg" = 'user = "token:nrs_1_stub"' ] || { echo "bad credential config: $cfg" >&2; exit 22; }
     while [ $# -gt 1 ]; do
@@ -115,6 +116,40 @@ grep -qx "DOTNET_ROOT=$root/dotnet" "$root/env" || fail "DOTNET_ROOT not exporte
 : > "$root/body"
 DOTNET_ROOT="$root/dotnet" install "$act/dotnet-nora/dotnet-nora.sh" 9.9.x || fail "rerun: $(cat "$root/log")"
 grep -q "SDK 9.9.901 already in" "$root/log" || fail "rerun downloaded again: $(cat "$root/log")"
+# cache (DOTNET_NORA_PLAN, DOTNET_NORA_CACHE_DIR): the key names the missing SDKs and hashes
+# their pins; a miss fetches and keeps the archive for the save; a hit with the pinned sha256
+# fetches nothing from nora; a cached archive that is not the pin is dropped and fetched again.
+plan() { : > "$root/out"; DOTNET_NORA_PLAN=1 DOTNET_ROOT="$root/dotnet" install "$act/dotnet-nora/dotnet-nora.sh" "$1" || fail "plan: $(cat "$root/log")"; sed -n 's/^cache-key=//p' "$root/out"; }
+rm -f "$root/body.calls"
+[ -z "$(plan 9.9.x)" ] || fail "cache key while SDK 9.9.901 is installed: $(cat "$root/out")"
+rm -rf "$root/dotnet/sdk/9.9.901"
+pin=$(cat "$act/dotnet-nora/sdks.txt")
+key=$(plan 9.9.x)
+[ "$key" = "dotnet-nora-sdk-linux-x64-9.9.901-$(sha256sum <<<"$pin" | cut -c1-16)" ] || fail "cache key '$key'"
+[ ! -e "$root/body.calls" ] || fail "plan fetched something"
+cached() { # cached <want save=true|-> : install 9.9.x with the cache dir, sdk/9.9.901 removed first
+  rm -rf "$root/dotnet/sdk/9.9.901" "$root/body.calls"; : > "$root/out"
+  DOTNET_NORA_CACHE_DIR="$root/cache" DOTNET_ROOT="$root/dotnet" install "$act/dotnet-nora/dotnet-nora.sh" 9.9.x
+}
+tar -czf "$root/body" -C "$root/sdk" .; rm -rf "$root/cache"
+cached || fail "cache miss: $(cat "$root/log")"
+[ -s "$root/body.calls" ] || fail "cache miss fetched nothing"
+cmp -s "$root/body" "$root/cache/dotnet-sdk-9.9.901.tar.gz" || fail "cache miss: archive not kept for the save"
+grep -qx "save=true" "$root/out" || fail "cache miss: no save=true"
+: > "$root/body" # nora would serve a tampered body now: a hit must not ask
+cached || fail "cache hit: $(cat "$root/log")"
+[ ! -e "$root/body.calls" ] || fail "cache hit fetched from nora: $(cat "$root/body.calls")"
+[ "$(cat "$root/dotnet/sdk/9.9.901/dotnet.dll")" = sdk ] || fail "cache hit: sdk/9.9.901 not installed"
+grep -q "from the runner cache" "$root/log" || fail "cache hit not logged: $(cat "$root/log")"
+! grep -q "save=true" "$root/out" || fail "cache hit asked for a save"
+tar -czf "$root/body" -C "$root/sdk" .; echo poisoned > "$root/cache/dotnet-sdk-9.9.901.tar.gz"
+cached || fail "poisoned cache: $(cat "$root/log")"
+[ -s "$root/body.calls" ] || fail "poisoned cache entry was used"
+grep -q "not the sha256 pin" "$root/log" || fail "poisoned cache not reported: $(cat "$root/log")"
+cmp -s "$root/body" "$root/cache/dotnet-sdk-9.9.901.tar.gz" || fail "poisoned cache: fresh archive not kept"
+: > "$root/body"; echo poisoned > "$root/cache/dotnet-sdk-9.9.901.tar.gz"
+if cached; then fail "poisoned cache + tampered download accepted: $(cat "$root/log")"; fi
+[ ! -e "$root/dotnet/sdk/9.9.901" ] || fail "installed after a poisoned cache + tampered download"
 # a copy that fails (a directory the job cannot write) fails the step and leaves no sdk/<v>
 # that would mark the partial install complete; root writes anyway, so only as a user (CI)
 if [ "$(id -u)" != 0 ]; then
