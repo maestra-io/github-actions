@@ -56,6 +56,14 @@ case_dir; run '' >/dev/null
 
 case_dir; run '7.0.x' >/dev/null
 [ ! -e "$d/w/global.json" ] || fail "SDK not installed: nothing to pin"
+
+# a dotnet-version override in any setup-dotnet form pins its major
+for spec in 8 8.x 8.0 8.0.x 8.0.4xx 8.0.425; do
+  case_dir; run "$spec" >/dev/null
+  [ "$(sdk)" = "8.0.425 latestFeature" ] || fail "override '$spec' must pin the newest 8.0 SDK: got $( [ -e "$d/w/global.json" ] && sdk || echo none)"
+done
+case_dir; run $'10.0.401\n8.0.x' >/dev/null
+[ "$(sdk)" = "10.0.401 latestFeature" ] || fail "exact 10.0.401 with 8.0.x must pin 10: got $(sdk)"
 # dotnet-service-build.yml (test job) runs the same program: the copies must not drift.
 copy=$(sed -n '/# sdk-pin: begin/,/# sdk-pin: end/p' "$here/../.github/workflows/dotnet-service-build.yml" | sed 's/^          //')
 [ "$copy" = "$prog" ] || { echo "FAIL sdk-pin: dotnet-service-build.yml copy differs from nuget-package-publish.yml"; exit 1; }
