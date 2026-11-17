@@ -1018,6 +1018,7 @@ jobs:
           LIMIT_INPUT: ${{ inputs.host_limit || format('{0}_{1}_{2}{3}', inputs.region, inputs.environment, inputs.site, inputs.inventory_group_suffix) }}
           SUMMARY_GREP: ${{ inputs.summary_grep }}
           LOG_FILE: ${{ steps.execute.outputs.log_file }}
+          EXECUTE_OUTCOME: ${{ steps.execute.outcome }}
         run: |
           {
             echo "### Ansible ${MODE_LABEL} — ${REGION_INPUT}-${ENVIRONMENT_INPUT}-${SITE_INPUT}${GROUP_SUFFIX_INPUT}"
@@ -1030,11 +1031,17 @@ jobs:
             echo "| check_mode | ${CHECK_MODE_INPUT} |"
             if [ -n "$SUMMARY_GREP" ] && [ -f "$LOG_FILE" ]; then
               echo ""
-              # No match is an outcome too: the host went unreachable mid-run
-              # (ansible then skips rescue/always), or the run died before the line.
-              grep -oE "\"msg\": \".*\"" "$LOG_FILE" | sed -E 's/^"msg": "//; s/"$//' \
-                | grep -E -- "$SUMMARY_GREP" | sed 's/^/- /' \
-                || echo "- \`${LIMIT_INPUT}\`: no result line in the log — final state UNKNOWN, read the job log"
+              # A failed run with no match is an outcome too: the host went
+              # unreachable mid-run (ansible then skips rescue/always), or the run
+              # died before the line. A green run with no match is a consumer
+              # whose role predates the line.
+              lines=$(grep -oE "\"msg\": \".*\"" "$LOG_FILE" | sed -E 's/^"msg": "//; s/"$//' \
+                | grep -E -- "$SUMMARY_GREP" || true)
+              if [ -n "$lines" ]; then
+                printf '%s\n' "$lines" | sed 's/^/- /'
+              elif [ "$EXECUTE_OUTCOME" != success ]; then
+                echo "- \`${LIMIT_INPUT}\`: the run failed and left no result line — final state UNKNOWN, read the job log"
+              fi
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
