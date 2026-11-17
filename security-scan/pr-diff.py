@@ -2,21 +2,36 @@
 """pr-diff.py: the trivy half of pr-scan.sh (pull_request mode of security-scan.yml).
 
   pr-diff.py any <head.json>               exit 0 when the trivy JSON has a finding, else 1
-  pr-diff.py trivy <base.json> <head.json> print the head findings absent from the base; exit 1
+  pr-diff.py trivy <base.json> <head.json> [<base root> <head root>]
+                                           print the head findings absent from the base; exit 1
                                            when there is one, else 0
   pr-diff.py --self-test
   Exit 2 on an unreadable report (a crash never reads as 0 or 1).
 
 Key of a finding, never a line number: vulnerability = (target, package, advisory id), so a
 PR that leaves a vulnerable package alone (or bumps it within the same advisory) adds nothing;
-secret = (target, rule id, the matched line as trivy redacts it, whitespace-normalised), so a
-secret moved within its file stays the old finding. Secret values are never printed: trivy's
-Match is already redacted and only the rule, file and line number are shown.
+secret = (target, rule id, sha256 of the matched lines read from the scanned tree under its root,
+whitespace-normalised), so a secret moved within its file stays the old finding and a token
+replaced by another of the same length is new (trivy's redacted Match cannot tell them apart; it
+is the fallback when the file cannot be read). Secret values are never printed or stored: only
+the hash, the rule, the file and the line number.
 """
-import json, sys
+import hashlib, json, os, sys
 
 
-def findings(path):
+def raw_lines(root, target, start, end):
+    """sha256 of lines start..end of root/target, whitespace-normalised; None if unreadable."""
+    if not root or not start:
+        return None
+    try:
+        with open(os.path.join(root, target), "rb") as f:
+            lines = f.read().split(b"\n")[start - 1:(end or start)]
+    except OSError:
+        return None
+    return hashlib.sha256(b" ".join(b" ".join(l.split()) for l in lines)).hexdigest()
+
+
+def findings(path, root=None):
     with open(path) as f:
         doc = json.load(f)
     for r in doc.get("Results") or []:
@@ -25,7 +40,8 @@ def findings(path):
             key = ("vuln", t, v.get("PkgName", ""), v.get("VulnerabilityID", ""))
             yield key, f"{v.get('Severity')} {v.get('VulnerabilityID')} {v.get('PkgName')} {v.get('InstalledVersion')} in {t}"
         for s in r.get("Secrets") or []:
-            key = ("secret", t, s.get("RuleID", ""), " ".join(str(s.get("Match", "")).split()))
+            ident = raw_lines(root, t, s.get("StartLine"), s.get("EndLine")) or " ".join(str(s.get("Match", "")).split())
+            key = ("secret", t, s.get("RuleID", ""), ident)
             yield key, f"{s.get('Severity')} secret {s.get('RuleID')} in {t}:{s.get('StartLine')}"
 
 
@@ -38,8 +54,9 @@ def main(argv):
     if argv[:1] == ["any"]:
         return 0 if any(True for _ in findings(argv[1])) else 1
     if argv[:1] == ["trivy"]:
-        head = list(findings(argv[2]))
-        new = new_findings(findings(argv[1]), head)
+        roots = argv[3:5] if len(argv) >= 5 else [None, None]
+        head = list(findings(argv[2], roots[1]))
+        new = new_findings(findings(argv[1], roots[0]), head)
         print(f"trivy: {len(head)} HIGH/CRITICAL findings at head, {len(head) - len(new)} already on the base, {len(new)} introduced by this PR")
         for _, text in sorted(set(new)):
             print(f"  NEW {text}")
@@ -80,6 +97,18 @@ def self_test():
         f.write("{truncated")
     for args in (["any", bad], ["any", os.path.join(d, "missing.json")], ["trivy", base, bad]):
         assert subprocess.run([sys.executable, __file__, *args], capture_output=True).returncode == 2, args
+    # raw-line identity: same redacted Match, different token -> new; same token moved -> old
+    for side, tok, ln in (("b", "AAAA", 2), ("h1", "AAAA", 5), ("h2", "BBBB", 2)):
+        os.makedirs(os.path.join(d, side, "app"), exist_ok=True)
+        with open(os.path.join(d, side, "app", "config.py"), "w") as f:
+            f.write("\n" * (ln - 1) + f"key = {tok}\n")
+    sb = put("sb.json", doc([], [("aws-access-key-id", "key = ****", 2)]))
+    sh1 = put("sh1.json", doc([], [("aws-access-key-id", "key = ****", 5)]))
+    sh2 = put("sh2.json", doc([], [("aws-access-key-id", "key = ****", 2)]))
+    for doc_ in (sb, sh1, sh2):  # EndLine as trivy writes it
+        o = json.load(open(doc_)); o["Results"][1]["Secrets"][0]["EndLine"] = o["Results"][1]["Secrets"][0]["StartLine"]; json.dump(o, open(doc_, "w"))
+    assert main(["trivy", sb, sh1, os.path.join(d, "b"), os.path.join(d, "h1")]) == 0
+    assert main(["trivy", sb, sh2, os.path.join(d, "b"), os.path.join(d, "h2")]) == 1
     print("pr-diff self-test ok")
     return 0
 

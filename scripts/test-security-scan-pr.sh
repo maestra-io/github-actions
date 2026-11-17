@@ -53,6 +53,28 @@ pr_commit
 run "old secret untouched" gitleaks 0
 run "old secret untouched" trivy 0
 
+# 2b. the old secret replaced by another token of the same length on the same line: new (trivy
+# redacts both to the same Match; the key hashes the real line)
+repo; printf 'TOKEN = "%s"\n' "$(dummy_token)" > app/settings.py; base_commit
+printf 'TOKEN = "%s"\n' "$(dummy_token)" > app/settings.py
+pr_commit
+run "secret replaced in place" trivy 1
+
+# 2c. a secret that only a conflict resolution in the PR's merge of main adds: fails gitleaks;
+# a clean merge of main into the PR adds nothing
+repo; echo one > app/notes.txt; base_commit
+echo pr > app/notes.txt; git commit -qam pr1
+git checkout -q main; echo main > app/notes.txt; echo m > app/main.txt; git add -A; git commit -qm main2
+git checkout -q pr; git merge -q main > /dev/null 2>&1 || true  # conflicts by design
+printf 'TOKEN = "%s"\n' "$(dummy_token)" > app/notes.txt; git add -A; git commit -qm "merge main, resolved"
+git checkout -q main; git merge -q --no-ff -m merge pr
+run "secret only in a conflict resolution" gitleaks 1
+repo; base_commit
+echo pr > app/pr.txt; git add -A; git commit -qm pr1
+git checkout -q main; printf 'TOKEN = "%s"\n' "$(dummy_token)" > app/old.py; git add -A; git commit -qm "main: an old secret"
+git checkout -q pr; git merge -q --no-edit main; git checkout -q main; git merge -q --no-ff -m merge pr
+run "clean merge of main (main has a secret)" gitleaks 0
+
 # 3. a new SQL injection fails opengrep
 repo; base_commit
 sqli new_one DELETE >> app/db.py

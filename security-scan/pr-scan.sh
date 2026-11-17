@@ -5,16 +5,16 @@
 # Runs in the checkout of the PR's merge commit (what actions/checkout checks out on
 # pull_request): HEAD is the merge, its first parent HEAD^1 the base it merges into.
 #
-#   gitleaks  `gitleaks git` over HEAD^1..HEAD: the PR's commits (their added lines), with the
-#             central config, redacted. Needs the history down to the merge base (fetch-depth 0).
+#   gitleaks  `gitleaks git` over HEAD^1..HEAD: the PR's commits (their added lines; a merge in
+#             the PR by its remerge diff), central config, redacted. Needs full history.
 #   opengrep  `opengrep scan --baseline-commit HEAD^1`: only the files the PR changes are
 #             scanned, and a match whose (rule id, path, matched lines) also matches at HEAD^1 is
 #             dropped, so a finding moved by unrelated edits stays out (opengrep Diff_scan).
 #             Skipped when the PR only deletes files: opengrep would scan no file.
 #   trivy     `trivy fs` of HEAD; when it has findings, `trivy fs` of HEAD^1 too (a git
-#             worktree, DB not re-downloaded), and only the head findings whose key is not in
-#             the base fail: vulnerability = (target, package, advisory id), secret = (target,
-#             rule, redacted matched line). An old CVE never fails a PR; a bump into a new
+#             worktree, vulnerability DB not re-downloaded), and only the head findings whose key
+#             is not in the base fail: vulnerability = (target, package, advisory id), secret =
+#             (target, rule, sha256 of the matched lines). An old CVE never fails a PR; a bump into a new
 #             HIGH/CRITICAL advisory or a newly added lockfile does. Skipping the base scan
 #             when the head has no findings is exact: the difference is empty either way.
 #
@@ -34,7 +34,10 @@ gitleaks)
   n=$(git rev-list --count "$base..HEAD") || { echo "pr-scan: cannot list $base..HEAD (shallow clone?)" >&2; exit 2; }
   echo "scanning the $n commits of $base..HEAD"
   rc=0
-  "${GITLEAKS:?}" git --no-banner --config "${GITLEAKS_CONFIG:?}" --log-opts="$base..HEAD" \
+  # --diff-merges=remerge: a merge inside the PR shows only what its author changed beyond the
+  # automatic merge (a conflict resolution can add a secret neither parent has); a clean merge
+  # of main shows nothing, so main's old findings stay out.
+  "${GITLEAKS:?}" git --no-banner --config "${GITLEAKS_CONFIG:?}" --log-opts="--diff-merges=remerge $base..HEAD" \
     --redact=100 --verbose --exit-code 1 . || rc=$?
   [ "$rc" -le 1 ] || exit 2
   exit "$rc" ;;
@@ -62,10 +65,12 @@ trivy)
   esac
   wt=$(mktemp -d)/base
   git worktree add -q --detach "$wt" "$base"
-  ( cd "$wt" && "$TRIVY" fs --severity HIGH,CRITICAL --exit-code 0 --skip-db-update --skip-java-db-update \
+  # The vulnerability DB is the head scan's; the Java DB is left to trivy (the head may have no JAR).
+  ( cd "$wt" && "$TRIVY" fs --severity HIGH,CRITICAL --exit-code 0 --skip-db-update \
       --format json --output "$OUT/trivy-base.json" . )
+  rc=0; python3 "$here/pr-diff.py" trivy "$OUT/trivy-base.json" "$OUT/trivy-head.json" "$wt" . || rc=$?
   git worktree remove --force "$wt"
-  python3 "$here/pr-diff.py" trivy "$OUT/trivy-base.json" "$OUT/trivy-head.json" ;;
+  exit "$rc" ;;
 
 *) echo "pr-scan: unknown tool $tool" >&2; exit 2 ;;
 esac
