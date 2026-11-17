@@ -16,6 +16,7 @@ on:
       - "nora-session/**"
       - "gitleaks/**"
       - "scripts/test-security-scan-pr.sh"
+      - "scripts/test-security-scan-fetch-pinned.sh"
 
 permissions:
   contents: read
@@ -87,3 +88,14 @@ jobs:
         run: |
           GITLEAKS="$RUNNER_TEMP/gitleaks" GITLEAKS_CONFIG="$PWD/gitleaks/gitleaks.toml" TRIVY="$RUNNER_TEMP/trivy" \
           OPENGREP="$RUNNER_TEMP/opengrep" OPENGREP_RULES="$RUNNER_TEMP/semgrep-rules" bash scripts/test-security-scan-pr.sh
+
+  # The reusable workflow itself on this repo, as a caller runs it (PR mode on a PR), from this
+  # branch's scripts: the scanner and DB caches miss and save on the first run of a branch and
+  # restore on a re-run (the job logs say which).
+  reusable:
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/security-scan.yml
+    with:
+      ref: ${{ github.head_ref || github.ref_name }}

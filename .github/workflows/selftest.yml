@@ -127,6 +127,8 @@ jobs:
 
       - name: security-scan trivy DBs through nora (stub curl)
         run: bash scripts/test-security-scan-trivy-nora-env.sh
+      - name: security-scan pinned scanner fetch, runner cache hit / poisoned copy refetched (stub curl)
+        run: bash scripts/test-security-scan-fetch-pinned.sh
       - name: security-scan reports (field allowlist, hashes, raw-secret check)
         run: python3 security-scan/report.py --self-test
 
