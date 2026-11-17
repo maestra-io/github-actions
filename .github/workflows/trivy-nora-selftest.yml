@@ -48,7 +48,9 @@ jobs:
           [ "$n" -gt 0 ]
           test -s "$RUNNER_TEMP/trivy-nora/cache/db/trivy.db"
           jq -r '.Results[].Vulnerabilities[0].VulnerabilityID' "$RUNNER_TEMP/alpine.json" | head -1 > "$RUNNER_TEMP/ignore-one"
-          ! grep -qs packages.maestra.io "${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+          if grep -qs packages.maestra.io "${DOCKER_CONFIG:-$HOME/.docker}/config.json"; then echo "nora credential left in the runner docker config"; exit 1; fi
+          # on PATH for later steps, as after trivy-action
+          trivy convert --format table "$RUNNER_TEMP/alpine.json" > /dev/null
 
       - name: same scan with exit-code 1 fails
         id: strict
