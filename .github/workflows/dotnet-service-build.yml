@@ -998,6 +998,8 @@ jobs:
       # and test-nuget-sdk-pin.sh check the copies): newest installed SDK of the highest
       # target framework / global.json major, in a temporary global.json put back after
       # the tests. A dotnet-version override is pinned to its own highest major.
+      # setup-dotnet installs into a job-private DOTNET_INSTALL_DIR: the image's SDKs
+      # stay out of `dotnet --list-sdks`, so no global.json can roll forward to them.
       - name: target framework majors
         id: sdk-set
         if: ${{ inputs.docker-test-target == '' && inputs.test-command == '' }}
@@ -1049,6 +1051,8 @@ jobs:
           # sdk-set: end
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command == '' }}
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
           dotnet-version: |
             ${{ steps.sdk.outputs.version }}
@@ -1092,6 +1096,7 @@ jobs:
           echo "build SDK pinned to $sdk (target framework / global.json major $major)"
           # sdk-pin: end
           )
+          dotnet --list-sdks
           echo "build SDK: $(dotnet --version)"
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command == '' }}
         env:
@@ -1948,6 +1953,8 @@ jobs:
       # No dotnet-version and no global.json: the runner image's SDK.
       - if: ${{ steps.cpm.outputs.props != '[]' && (steps.sdk.outputs.version != '' || hashFiles('global.json') != '') }}
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
           dotnet-version: ${{ steps.sdk.outputs.version }}
           global-json-file: ${{ steps.sdk.outputs.file }}

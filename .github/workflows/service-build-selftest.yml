@@ -60,3 +60,17 @@ jobs:
       base-image: local/selftest-base:latest=ci/fixtures/service-build/Dockerfile.base:base
       test-command: test -f ci/fixtures/service-build/Dockerfile.base
       pr-images: true
+
+  # The .NET test path on the runner image, whose newest SDK (11 since 17.11.2026) is
+  # above the requested one: the fixture's global.json (latestMajor) must still build with 10.
+  dotnet-sdk:
+    needs: base-image
+    uses: ./.github/workflows/dotnet-service-build.yml
+    permissions:
+      contents: write
+      id-token: write
+      packages: read
+    with:
+      image-targets: "selftest_default=ci/fixtures/service-build/Dockerfile:"
+      dotnet-version: 10.0.x
+      solution-file: ci/fixtures/service-build/dotnet-sdk/SdkSelect.Tests.csproj

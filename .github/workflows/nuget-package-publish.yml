@@ -228,7 +228,10 @@ jobs:
           echo "global-json=${global_json:-true}" >> "$GITHUB_OUTPUT"
           echo "SDKs: ${versions//$'\n'/ }"
           # sdk-set: end
+      # Job-private DOTNET_INSTALL_DIR: the image's SDKs stay out of `dotnet --list-sdks`.
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
           dotnet-version: ${{ steps.sdk.outputs.versions }}
           global-json-file: ${{ inputs.dotnet-version == '' && steps.sdk.outputs.global-json == 'true' && hashFiles('global.json') != '' && 'global.json' || '' }}
@@ -346,6 +349,7 @@ jobs:
           # SECOPS-948 parity: credential-free repository metadata in the package.
           repo=("-p:RepositoryUrl=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" "-p:RepositoryCommit=${GITHUB_SHA}" "-p:RepositoryType=git")
 
+          dotnet --list-sdks
           echo "::notice::built with .NET SDK $(dotnet --version)"
           dotnet restore "${sln[@]}" --locked-mode
           dotnet build "${sln[@]}" --configuration Release --no-restore "${ver[@]}" "${wae[@]}"
