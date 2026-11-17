@@ -60,4 +60,7 @@ echo '{"sdk":{"version":"10.0.0"}}' > "$g/global.json"
 check "no rollForward" '8.0.x' "$(run "$g" "")"; check "no rollForward passed" true "$(gj)"
 echo '{"sdk":{"version":"10.0.100-rc.1.25451.107","rollForward":"latestMajor"}}' > "$g/global.json"
 check "prerelease" '8.0.x' "$(run "$g" "")"; check "prerelease passed" true "$(gj)"
+# dotnet-service-build.yml (test job) runs the same program: the copies must not drift.
+copy=$(sed -n '/# sdk-set: begin/,/# sdk-set: end/p' "$here/../.github/workflows/dotnet-service-build.yml" | sed 's/^          //')
+[ "$copy" = "$prog" ] || { echo "FAIL sdk-set: dotnet-service-build.yml copy differs from nuget-package-publish.yml"; exit 1; }
 echo "nuget-sdk-set: OK"

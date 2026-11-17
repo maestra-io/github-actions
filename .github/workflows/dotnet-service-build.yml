@@ -993,6 +993,102 @@ jobs:
         with:
           dotnet-version: ${{ steps.sdk.outputs.version }}
           global-json-file: ${{ steps.sdk.outputs.file }}
+      # The runner image ships the newest SDK (RunsOn ubuntu24-full: 8, 9, 10 and, since
+      # the 17.11.2026 image, 11) and setup-dotnet only adds SDKs: a global.json with
+      # rollForward latestMajor/major, or none, built with SDK 11 and its new analyzers
+      # failed warn-as-error (event-logs CA1860, 17.11.2026). Same pin as
+      # nuget-package-publish.yml (program copied verbatim; scripts/test-nuget-sdk-set.sh
+      # and test-nuget-sdk-pin.sh check the copies): newest installed SDK of the highest
+      # target framework / global.json major, in a temporary global.json put back after
+      # the tests. Here dotnet-version only feeds the major, it does not skip the pin.
+      - name: target framework majors
+        id: sdk-set
+        if: ${{ inputs.docker-test-target == '' && inputs.test-command == '' }}
+        env:
+          OVERRIDE: ${{ inputs.dotnet-version }}
+          SOLUTION: ${{ inputs.solution-file }}
+        run: |
+          # sdk-set: begin
+          if [ -n "$OVERRIDE" ]; then
+            versions="$OVERRIDE"
+          else
+            dir=$(dirname "${SOLUTION:-./x}")
+            files=()
+            while IFS= read -r -d '' f; do files+=("$f"); done < <(
+              find "$dir" \( -name bin -o -name obj -o -name .git \) -prune -o -type f \
+                \( -name '*.csproj' -o -name '*.fsproj' -o -name '*.vbproj' -o -name '*.props' -o -name '*.targets' \) -print0)
+            up="$dir"
+            while [ "$up" != . ] && [ "$up" != / ]; do
+              up=$(dirname "$up")
+              for f in "$up"/Directory.Build.props "$up"/Directory.Build.targets; do
+                [ -f "$f" ] && files+=("$f")
+              done
+            done
+            # ponytail: a directory scan, not the solution's project graph: a stray
+            # project next to the solution only costs one extra SDK install.
+            versions=$( { [ "${#files[@]}" -eq 0 ] || cat "${files[@]}"; } | tr '\r\n' '  ' \
+              | grep -oE '<TargetFrameworks?( [^>]*)?>[^<]*</TargetFrameworks?>' \
+              | sed -E 's/<[^>]*>//g' | tr ';' '\n' \
+              | sed -nE 's/^[[:space:]]*net([0-9]+)\.[0-9]+.*/\1/p' \
+              | awk '$1 >= 5 { print $1 ".0.x" }' | sort -t. -k1,1n -u || true)
+            # setup-dotnet refuses a global.json whose sdk.version is not a full SDK
+            # version when rollForward is set ("10.0.0"): install its major instead and
+            # keep the file away from setup-dotnet; dotnet itself accepts it, and the
+            # pin step below handles a cross-major rollForward.
+            if [ -f global.json ] && g=$(jq -c . global.json 2>/dev/null); then
+              v=$(jq -r '.sdk.version // "" | tostring' <<<"$g")
+              rf=$(jq -r '.sdk.rollForward // ""' <<<"$g")
+              if [ -n "$v" ] && [ -n "$rf" ] && [[ "$v" != *-* ]] \
+                && ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[1-9][0-9]{2,}$ ]]; then
+                echo "::notice::global.json sdk.version '$v' is not a full SDK version: installing ${v%%.*}.0.x instead of passing global.json to setup-dotnet"
+                global_json=false
+                versions=$(printf '%s\n%s\n' "$versions" "${v%%.*}.0.x" | sed '/^$/d' | sort -t. -k1,1n -u)
+              fi
+            fi
+          fi
+          { echo 'versions<<SDK_SET_EOF'; echo "$versions"; echo 'SDK_SET_EOF'; } >> "$GITHUB_OUTPUT"
+          echo "global-json=${global_json:-true}" >> "$GITHUB_OUTPUT"
+          echo "SDKs: ${versions//$'\n'/ }"
+          # sdk-set: end
+      - name: pin the build SDK
+        id: pin
+        if: ${{ inputs.docker-test-target == '' && inputs.test-command == '' }}
+        env:
+          VERSIONS: ${{ steps.sdk-set.outputs.versions }}
+          BACKUP: ${{ runner.temp }}/global.json.repo
+        run: |
+          # a subshell: the program's `exit 0` must not skip the SDK line below
+          (
+          # sdk-pin: begin
+          major=$(printf '%s\n' "$VERSIONS" | sed -nE 's/^([0-9]+)\.0\.x$/\1/p' | sort -n | tail -1)
+          if [ -z "$major" ]; then
+            echo "no netN.M target framework: build SDK left to global.json / the newest installed"; exit 0
+          fi
+          base='{}'
+          if [ -f global.json ]; then
+            if ! base=$(jq -c . global.json 2>/dev/null); then
+              echo "::warning::global.json is not plain JSON (comments?); build SDK not pinned"; exit 0
+            fi
+            roll=$(jq -r '.sdk.rollForward // "latestPatch"' <<<"$base")
+            if jq -e '.sdk.version' <<<"$base" >/dev/null && [ "$roll" != latestMajor ] && [ "$roll" != major ]; then
+              echo "global.json pins the SDK (rollForward $roll): left as is"; exit 0
+            fi
+            # Its sdk.version stays the floor: a repo asking for >= 10 keeps 10.
+            want=$(jq -r '.sdk.version // "0" | split(".")[0]' <<<"$base")
+            [ "$want" -gt "$major" ] 2>/dev/null && major=$want
+          fi
+          sdk=$(dotnet --list-sdks | awk -v m="$major" '{ split($1, v, "."); if (v[1] == m) print $1 }' \
+            | sort -t. -k2,2n -k3,3n | tail -1)
+          if [ -z "$sdk" ]; then
+            echo "::warning::no .NET SDK $major installed; build SDK not pinned"; exit 0
+          fi
+          [ ! -f global.json ] || cp global.json "$BACKUP"
+          jq --arg v "$sdk" '.sdk = ((.sdk // {}) + {version: $v, rollForward: "latestFeature"})' <<<"$base" > global.json
+          echo "pinned=true" >> "$GITHUB_OUTPUT"
+          echo "build SDK pinned to $sdk (target framework / global.json major $major)"
+          # sdk-pin: end
+          )
+          echo "build SDK: $(dotnet --version)"
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command == '' }}
         env:
           TOKEN: ${{ steps.token.outputs.token }}
@@ -1018,6 +1114,12 @@ jobs:
           VSTestLogger=trx VSTestResultsDirectory="$RUNNER_TEMP/test-results" \
             dotnet test --no-restore "${sln[@]}" --configuration Release "${filter[@]}" "${wae[@]}"
           # <<< dotnet-test
+      - name: put the repo's global.json back
+        if: ${{ always() && steps.pin.outputs.pinned == 'true' }}
+        env:
+          BACKUP: ${{ runner.temp }}/global.json.repo
+        run: |
+          if [ -f "$BACKUP" ]; then mv "$BACKUP" global.json; else rm -f global.json; fi
 
       # Where the test containers came from (issues-maestra#1649): Testcontainers' Docker Hub
       # images show as packages.maestra.io/docker-hub/…

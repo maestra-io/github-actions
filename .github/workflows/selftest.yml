@@ -122,6 +122,9 @@ jobs:
       - name: nuget build SDK pin (highest TFM, global.json kept/restored, workflow copy)
         run: bash scripts/test-nuget-sdk-pin.sh
 
+      - name: dotnet-service-build SDK pin on the image's real SDKs (build SDK major = pinned)
+        run: bash scripts/test-dotnet-sdk-pin-real.sh
+
       - name: pypi upload (skip existing, 409, pinned twine, workflow copy)
         run: bash scripts/test-pypi-upload.sh
 
