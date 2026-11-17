@@ -119,20 +119,6 @@
          or ((os_update_newest_kernel_cmd.stdout | trim) not in ['', ansible_facts.kernel])
          or ((os_update_pending | select('search', '^Inst linux-image')) | list | length > 0) }}
 
-- name: Guard — /boot must have room to unpack a kernel (a full /boot fails AFTER the drain)
-  # Deferred in `stage`: that mode may reclaim /boot itself (pre-stage kernel GC)
-  # and then re-assert this exact condition. Failing here would refuse the run
-  # before the thing that fixes it had a chance to run. Nothing is skipped — the
-  # assertion still has to pass before stage unpacks a single package.
-  when: os_update_mode != 'stage'
-  ansible.builtin.assert:
-    that: (os_update_boot_free_mb | int) >= (os_update_boot_free_needed_mb | int)
-    fail_msg: >-
-      /boot has only {{ os_update_boot_free_mb }} MB free; this host's largest
-      kernel occupies {{ os_update_kernel_cost_cmd.stdout | trim }} MB, so the
-      guard wants {{ os_update_boot_free_needed_mb }}
-      (x{{ os_update_boot_free_factor }}, floor {{ os_update_boot_free_floor_mb }}).
-      Reclaim it first — do not drain a host we then cannot upgrade.
-    success_msg: >-
-      /boot free {{ os_update_boot_free_mb }} MB >= {{ os_update_boot_free_needed_mb }}
-      needed (largest kernel here is {{ os_update_kernel_cost_cmd.stdout | trim }} MB).
+# The /boot guard that used to end this file lives in boot_guard.yml (main.yml
+# includes it right after the plan): it may need a kernel GC to pass, and in
+# `apply` that GC is a mutation, which this file never makes.
