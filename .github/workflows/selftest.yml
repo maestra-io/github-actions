@@ -47,6 +47,8 @@ on:
       - "pr-checks/**"
       - ".github/workflows/gitleaks.yml"
       - "gitleaks/**"
+      - ".github/workflows/security-scan.yml"
+      - "security-scan/**"
 
 permissions:
   contents: read
@@ -113,6 +115,9 @@ jobs:
 
       - name: nora-image-prewarm image mapping, flate diff, OIDC round trip (stub)
         run: python3 nora-image-prewarm/prewarm.py --self-test
+
+      - name: security-scan reports (field allowlist, hashes, raw-secret check)
+        run: python3 security-scan/report.py --self-test
 
       - name: nuget build SDK pin (highest TFM, global.json kept/restored, workflow copy)
         run: bash scripts/test-nuget-sdk-pin.sh
