@@ -1039,7 +1039,8 @@ jobs:
           dotnet-version: |
             ${{ steps.sdk.outputs.version }}
             ${{ steps.sdk-set.outputs.versions }}
-          global-json-file: ${{ steps.sdk.outputs.file }}
+          # Only a global.json that exists: a test-command repo may have none.
+          global-json-file: ${{ steps.sdk.outputs.file != '' && hashFiles('global.json') != '' && 'global.json' || '' }}
       - name: pin the build SDK
         id: pin
         if: ${{ inputs.docker-test-target == '' && (inputs.test-command == '' || (inputs.test-image == '' && hashFiles('**/*.csproj') != '')) }}
