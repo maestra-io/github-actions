@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# trivy through nora (action.yml says why). Env: TRIVY_VERSION, TRIVY_SHA256, NORA_URL,
+# trivy through nora (action.yml says why; the POMs of a pom.xml scan come from nora's maven2). Env: TRIVY_VERSION, TRIVY_SHA256, NORA_URL,
 # NORA_AUDIENCE, the action's INPUT_*; RUNNER_TEMP and the runner's
 # ACTIONS_ID_TOKEN_REQUEST_{URL,TOKEN}. Exits with trivy's exit code.
 set -euo pipefail
@@ -35,6 +35,16 @@ src="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
 ( umask 077; printf 'token:%s' "$token" | base64 | tr -d '\n' \
   | jq -Rn --arg h "$host" --slurpfile c "$src" \
       '($c[0] // {}) | .auths[$h] = {auth: input} | .credHelpers[$h] = ""' > "$cfg/config.json" )
+# A pom.xml (fs scan) resolves its POMs through nora's maven2 too, never Maven Central (which
+# answers the shared runner IPs with 429): a global settings.xml mirroring every repository.
+mkdir -p "$cfg/maven/conf"
+( umask 077; cat > "$cfg/maven/conf/settings.xml" <<XML
+<settings>
+  <servers><server><id>nora</id><username>token</username><password>${token}</password></server></servers>
+  <mirrors><mirror><id>nora</id><url>${nora}/maven2/</url><mirrorOf>*</mirrorOf></mirror></mirrors>
+</settings>
+XML
+)
 
 export DOCKER_CONFIG="$cfg"
 export TRIVY_CACHE_DIR="${TRIVY_CACHE_DIR:-$dir/cache}"
@@ -42,6 +52,8 @@ export TRIVY_DB_REPOSITORY="${host}/ghcr/aquasecurity/trivy-db:2"
 export TRIVY_JAVA_DB_REPOSITORY="${host}/ghcr/aquasecurity/trivy-java-db:1"
 export TRIVY_CHECKS_BUNDLE_REPOSITORY="${host}/ghcr/aquasecurity/trivy-checks:2"
 export TRIVY_DISABLE_VEX_NOTICE=true
+export MAVEN_HOME="$cfg/maven"
+export TRIVY_SKIP_VERSION_CHECK=true
 
 # trivy-action's mapping: an empty input (or its default) leaves trivy's own default.
 set_if() { if [ -n "$2" ] && [ "$2" != "${3:-}" ]; then export "$1=$2"; fi; }
