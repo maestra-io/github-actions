@@ -1,0 +1,42 @@
+name: ".NET SDK through nora"
+description: >-
+  actions/setup-dotnet without Microsoft: the SDKs named by dotnet-version (setup-dotnet
+  syntax) and by a global.json (its rollForward) come from packages.maestra.io raw,
+  sha256-pinned in sdks.txt, and are unpacked next to the runner image's SDKs
+  (issues-maestra#1649). Needs `permissions: id-token: write`; linux-x64 only.
+
+inputs:
+  dotnet-version:
+    description: "SDK versions, one per line: N, N.x, N.M, N.M.x, N.M.Fxx or exact."
+    required: false
+    default: ""
+  global-json-file:
+    description: "A global.json whose sdk.version + rollForward add one SDK."
+    required: false
+    default: ""
+  url:
+    description: "nora base URL."
+    required: false
+    default: "https://packages.maestra.io"
+  audience:
+    description: "`aud` of the GitHub OIDC token nora accepts."
+    required: false
+    default: "packages.maestra.io"
+
+outputs:
+  versions:
+    description: "The SDK versions installed (newest first, one per line)."
+    value: ${{ steps.install.outputs.versions }}
+
+runs:
+  using: composite
+  steps:
+    - name: .NET SDK through nora
+      id: install
+      shell: bash
+      env:
+        DOTNET_VERSION: ${{ inputs.dotnet-version }}
+        GLOBAL_JSON: ${{ inputs.global-json-file }}
+        NORA_URL: ${{ inputs.url }}
+        NORA_AUDIENCE: ${{ inputs.audience }}
+      run: bash "${GITHUB_ACTION_PATH}/dotnet-nora.sh"
