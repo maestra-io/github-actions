@@ -1030,8 +1030,11 @@ jobs:
             echo "| check_mode | ${CHECK_MODE_INPUT} |"
             if [ -n "$SUMMARY_GREP" ] && [ -f "$LOG_FILE" ]; then
               echo ""
+              # No match is an outcome too: the host went unreachable mid-run
+              # (ansible then skips rescue/always), or the run died before the line.
               grep -oE "\"msg\": \".*\"" "$LOG_FILE" | sed -E 's/^"msg": "//; s/"$//' \
-                | grep -E -- "$SUMMARY_GREP" | sed 's/^/- /' || true
+                | grep -E -- "$SUMMARY_GREP" | sed 's/^/- /' \
+                || echo "- \`${LIMIT_INPUT}\`: no result line in the log — final state UNKNOWN, read the job log"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
