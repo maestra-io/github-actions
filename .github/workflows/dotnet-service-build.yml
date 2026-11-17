@@ -4,6 +4,7 @@
 # create-gitlab-release), issues-maestra#1442 wave W0c.
 #
 #   version ─► test ─► images (matrix) ─► release ─► bake
+#   default branch, in parallel: dependency-graph (resolved NuGet graph for Dependabot, CPM repos)
 #   pull_request: version ─► test, checks (pr-checks.yml), base-images ─► pr-gate (the required check)
 #
 # Warehouse refresh: no job here. The GitHub org webhook (workflow_run completed)
@@ -1777,6 +1778,147 @@ jobs:
           tag: ${{ needs.version.outputs.release }}
           bake-path: ${{ matrix.bake-path }}
           teleport-token: ${{ needs.version.outputs.teleport-token }}
+
+  # Resolved NuGet graph -> GitHub dependency graph (issues-maestra#1649). With Central Package
+  # Management the static graph records every package as `>= 0` (the version lives in
+  # Directory.Packages.props), so Dependabot raised no alert for them. This job restores the
+  # solution and submits obj/project.assets.json of every CPM project as a dependency snapshot:
+  # one manifest per Directory.Packages.props (one alert per package and advisory, where the fix
+  # goes), direct/indirect from the assets file, scope development for test projects and
+  # PrivateAssets=all references. Non-CPM projects keep the static graph (no duplicate manifests).
+  # Default branch only (Dependabot alerts on it), dry runs (push: false) included: the snapshot
+  # describes the commit, not a release. Never fails the run: a failure is a warning.
+  dependency-graph:
+    if: ${{ github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch }}
+    runs-on: runs-on=${{ github.run_id }}-dependency-graph/pool=small
+    timeout-minutes: 20
+    continue-on-error: true
+    permissions:
+      contents: write # POST /repos/{owner}/{repo}/dependency-graph/snapshots
+      id-token: write # nora OIDC token for the restore
+      packages: read  # only for a private-packages-token: GITHUB_TOKEN override (GitHub Packages)
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: cpm
+        run: |
+          props=$(git ls-files -- 'Directory.Packages.props' '*/Directory.Packages.props' | jq -Rnc '[inputs]')
+          echo "props=$props" >> "$GITHUB_OUTPUT"
+          echo "Directory.Packages.props: $props"
+      - name: packages token override
+        id: override
+        if: ${{ steps.cpm.outputs.props != '[]' }}
+        env:
+          OVERRIDE: ${{ secrets.private-packages-token }}
+        run: echo "set=${OVERRIDE:+true}" >> "$GITHUB_OUTPUT"
+      - name: nora session token
+        id: session
+        if: ${{ steps.cpm.outputs.props != '[]' && steps.override.outputs.set != 'true' }}
+        uses: maestra-io/github-actions/nora-session@1b6e07a656e9eb1045ba563d4b9394631ecaa640 # v1.74.0
+        with:
+          url: ${{ inputs.packages-url }}
+          audience: ${{ inputs.packages-audience }}
+      - if: ${{ steps.cpm.outputs.props != '[]' }}
+        id: sdk
+        env:
+          DOTNET_VERSION: ${{ inputs.dotnet-version }}
+        run: |
+          # >>> sdk-version (scripts/test-dotnet-service-build.sh runs this block)
+          version="$DOTNET_VERSION"; file=""
+          if [ -z "$version" ]; then
+            file=global.json
+            # Same test as setup-dotnet; a global.json jq cannot read (comments) is passed as is.
+            v=$(jq -r '.sdk.version // empty' global.json 2>/dev/null) || v=""
+            rf=$(jq -r '.sdk.rollForward // empty' global.json 2>/dev/null) || rf=""
+            if [ -n "$rf" ] && ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[1-9][0-9]{2,}$ ]] && [[ "$v" =~ ^([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
+              version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.x"; file=""
+              echo "global.json sdk.version $v with rollForward $rf: setup-dotnet gets $version"
+            fi
+          fi
+          { echo "version=$version"; echo "file=$file"; } >> "$GITHUB_OUTPUT"
+          # <<< sdk-version
+      # No dotnet-version and no global.json: the runner image's SDK.
+      - if: ${{ steps.cpm.outputs.props != '[]' && (steps.sdk.outputs.version != '' || hashFiles('global.json') != '') }}
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: ${{ steps.sdk.outputs.version }}
+          global-json-file: ${{ steps.sdk.outputs.file }}
+      # Same key as `test`: either job's save serves the other.
+      - if: ${{ steps.cpm.outputs.props != '[]' }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/*.props', '**/packages.lock.json', '**/nuget.config', 'global.json') }}
+          restore-keys: nuget-${{ runner.os }}-
+      - name: restore
+        if: ${{ steps.cpm.outputs.props != '[]' }}
+        env:
+          OVERRIDE: ${{ secrets.private-packages-token }}
+          SESSION: ${{ steps.session.outputs.token }}
+          SOURCE: ${{ inputs.nuget-source-name }}
+          SOLUTION: ${{ inputs.solution-file }}
+        run: |
+          # NuGet reads the source credential from this variable (no token in a file).
+          export "NuGetPackageSourceCredentials_${SOURCE}=Username=ci;Password=${OVERRIDE:-$SESSION}"
+          # The solution of `test`, else every solution in the repo (docker-test-target repos
+          # never restore on the runner and may keep theirs in a subdirectory).
+          targets=()
+          if [ -n "$SOLUTION" ]; then targets=("$SOLUTION")
+          else while IFS= read -r s; do targets+=("$s"); done < <(git ls-files -- '*.sln' '*.slnx')
+          fi
+          [ "${#targets[@]}" -gt 0 ] || targets=("")
+          for t in "${targets[@]}"; do
+            dotnet restore ${t:+"$t"} || echo "::warning::dependency graph: restore of '${t:-.}' failed, its projects are not submitted"
+          done
+      - name: submit snapshot
+        if: ${{ steps.cpm.outputs.props != '[]' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROPS: ${{ steps.cpm.outputs.props }}
+          CORRELATOR: dotnet-service-build ${{ github.workflow }} ${{ inputs.solution-file }}
+        run: |
+          files=()
+          while IFS= read -r f; do files+=("$f"); done < <(find . -name project.assets.json -not -path './.git/*')
+          [ "${#files[@]}" -gt 0 ] || { echo "::warning::dependency graph: no project.assets.json after restore"; exit 0; }
+          # >>> dependency-snapshot (scripts/test-dotnet-service-build.sh runs this block)
+          # project.assets.json files -> manifests keyed by the Directory.Packages.props that
+          # governs each CPM project (deepest one above it). A package is direct and runtime
+          # when it is so in any project of that manifest.
+          manifests=$(jq -n --arg ws "$GITHUB_WORKSPACE/" --argjson props "$PROPS" '
+            reduce (inputs | select(.project.restore.centralPackageVersionsManagementEnabled == true)) as $a ({};
+              ($a.project.restore.projectPath | ltrimstr($ws)) as $p
+              | ([$props[] | select(rtrimstr("Directory.Packages.props") as $d | $p | startswith($d))]
+                 | max_by(length)) as $m
+              | if $m == null then . else
+                ([$a.project.frameworks[]?.dependencies // {} | to_entries[]
+                  | {key: (.key | ascii_downcase), value: ((.value.suppressParent // "") == "All")}]
+                 | from_entries) as $direct
+                | ($direct | has("microsoft.net.test.sdk")) as $test
+                | reduce ($a.libraries // {} | to_entries[] | select(.value.type == "package") | .key) as $k (.;
+                    ($k | split("/")) as [$n, $v]
+                    | ($n | ascii_downcase) as $l
+                    | "pkg:nuget/\($n)@\($v)" as $u
+                    | (.[$m].resolved[$u] // {package_url: $u, relationship: "indirect", scope: "development"}) as $o
+                    | .[$m] |= {name: $m, file: {source_location: $m}, resolved: ((.resolved // {}) + {($u): {
+                        package_url: $u,
+                        relationship: (if $o.relationship == "direct" or ($direct | has($l)) then "direct" else "indirect" end),
+                        scope: (if $o.scope == "runtime" or (($test | not) and ($direct[$l] // false | not)) then "runtime" else "development" end)}})})
+              end)' "${files[@]}")
+          # <<< dependency-snapshot
+          n=$(jq '[.[].resolved | length] | add // 0' <<<"$manifests")
+          echo "manifests: $(jq -c 'keys' <<<"$manifests"), $n packages"
+          [ "$n" -gt 0 ] || { echo "::warning::dependency graph: no CPM package resolved, nothing submitted"; exit 0; }
+          jq -n --argjson m "$manifests" --arg sha "$GITHUB_SHA" --arg ref "$GITHUB_REF" \
+            --arg corr "$CORRELATOR" --arg id "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --arg url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            '{version: 0, sha: $sha, ref: $ref, job: {correlator: $corr, id: $id, html_url: $url},
+              detector: {name: "maestra-io dotnet-service-build", version: "1", url: "https://github.com/maestra-io/github-actions"},
+              scanned: (now | todate), manifests: $m}' > "$RUNNER_TEMP/snapshot.json"
+          gh api "repos/$GITHUB_REPOSITORY/dependency-graph/snapshots" --input "$RUNNER_TEMP/snapshot.json" \
+            --jq '"snapshot \(.id): \(.result) \(.message)"' \
+            || echo "::warning::dependency graph: snapshot submission failed (Dependabot keeps the previous snapshot)"
 
   # Pull requests only: the shared PR checks (check-encoding, kustomize build of a
   # changed overlays tree), then one verdict.

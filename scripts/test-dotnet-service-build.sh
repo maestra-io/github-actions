@@ -62,8 +62,10 @@ fails "a=t" "" "base three fields" "base=D:t:c"
 echo "dotnet-service-build targets/bakes/base-image: OK"
 
 # ── sdk-version: a global.json setup-dotnet rejects gets <major>.<minor>.x ──────
-sdk=$(sed -n '/# >>> sdk-version/,/# <<< sdk-version/p' "$wf" | sed 's/^          //')
+sdk=$(awk 'index($0,"# >>> sdk-version"){n++} n==1{print} n==1&&index($0,"# <<< sdk-version"){exit}' "$wf" | sed 's/^          //')
 [ -n "$sdk" ] || { echo "sdk-version block not found in $wf"; exit 1; }
+[ "$(sed -n '/# >>> sdk-version/,/# <<< sdk-version/p' "$wf" | sed 's/^          //')" = "$(printf '%s\n%s' "$sdk" "$sdk")" ] \
+  || { echo "FAIL sdk-version: the test and dependency-graph copies differ"; exit 1; }
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 # sdk_for <DOTNET_VERSION> <global.json content or "-" for none> -> "version|file"
 sdk_for() {
@@ -179,3 +181,36 @@ bad=$(grep -vE " cred=1 $img" <<<"$bk" || true)
 [ -z "$bad" ] || { printf 'FAIL setup-buildx without the nora BuildKit image or nora login before it:\n%s\n' "$bad"; exit 1; }
 [ "$(awk '{print $NF}' <<<"$bk" | sort -u | wc -l | tr -d ' ')" = 1 ] || { printf 'FAIL setup-buildx: BuildKit copies differ:\n%s\n' "$bk"; exit 1; }
 echo "setup-buildx BuildKit via nora: OK ($(wc -l <<<"$bk" | tr -d ' ') uses)"
+
+# ── dependency-snapshot: project.assets.json -> one manifest per Directory.Packages.props ──
+snap=$(sed -n '/# >>> dependency-snapshot/,/# <<< dependency-snapshot/p' "$wf" | sed 's/^          //')
+[ -n "$snap" ] || { echo "dependency-snapshot block not found in $wf"; exit 1; }
+ws="$work/ws"; mkdir -p "$ws"
+assets() { # <file> <projectPath> <cpm true|false> <direct deps json> <libraries json>
+  jq -n --arg p "$ws/$2" --argjson c "$3" --argjson d "$4" --argjson l "$5" \
+    '{project: {restore: {projectPath: $p, centralPackageVersionsManagementEnabled: $c},
+      frameworks: {"net8.0": {dependencies: $d}}}, libraries: $l}' > "$work/$1"
+}
+pkg='{"type":"package"}'
+assets svc.json src/Svc/Svc.csproj true '{"SSH.NET":{"version":"[2024.0.0, )"},"StyleCop.Analyzers":{"suppressParent":"All"}}' \
+  "{\"SSH.NET/2024.0.0\":$pkg,\"StyleCop.Analyzers/1.1.118\":$pkg,\"BouncyCastle.Cryptography/2.4.0\":$pkg,\"Model/1.0.0\":{\"type\":\"project\"}}"
+assets tests.json src/Tests/Tests.csproj true '{"Microsoft.NET.Test.Sdk":{},"xunit":{}}' \
+  "{\"Microsoft.NET.Test.Sdk/17.11.1\":$pkg,\"xunit/2.9.0\":$pkg,\"BouncyCastle.Cryptography/2.4.0\":$pkg,\"Newtonsoft.Json/13.0.1\":$pkg}"
+assets fe.json backend/Fe/Fe.csproj true '{"Newtonsoft.Json":{}}' "{\"Newtonsoft.Json/13.0.3\":$pkg}"
+assets legacy.json legacy/L/L.csproj false '{"Dapper":{}}' "{\"Dapper/2.0.0\":$pkg}"
+got=$(cd "$work" && GITHUB_WORKSPACE="$ws" PROPS='["Directory.Packages.props","backend/Directory.Packages.props"]' \
+  bash -c "set -eo pipefail; files=(svc.json tests.json fe.json legacy.json); $snap"$'\n''echo "$manifests"' | jq -cS .)
+want=$(jq -cS . <<'J'
+{"Directory.Packages.props":{"name":"Directory.Packages.props","file":{"source_location":"Directory.Packages.props"},"resolved":{
+  "pkg:nuget/SSH.NET@2024.0.0":{"package_url":"pkg:nuget/SSH.NET@2024.0.0","relationship":"direct","scope":"runtime"},
+  "pkg:nuget/StyleCop.Analyzers@1.1.118":{"package_url":"pkg:nuget/StyleCop.Analyzers@1.1.118","relationship":"direct","scope":"development"},
+  "pkg:nuget/BouncyCastle.Cryptography@2.4.0":{"package_url":"pkg:nuget/BouncyCastle.Cryptography@2.4.0","relationship":"indirect","scope":"runtime"},
+  "pkg:nuget/Microsoft.NET.Test.Sdk@17.11.1":{"package_url":"pkg:nuget/Microsoft.NET.Test.Sdk@17.11.1","relationship":"direct","scope":"development"},
+  "pkg:nuget/xunit@2.9.0":{"package_url":"pkg:nuget/xunit@2.9.0","relationship":"direct","scope":"development"},
+  "pkg:nuget/Newtonsoft.Json@13.0.1":{"package_url":"pkg:nuget/Newtonsoft.Json@13.0.1","relationship":"indirect","scope":"development"}}},
+ "backend/Directory.Packages.props":{"name":"backend/Directory.Packages.props","file":{"source_location":"backend/Directory.Packages.props"},"resolved":{
+  "pkg:nuget/Newtonsoft.Json@13.0.3":{"package_url":"pkg:nuget/Newtonsoft.Json@13.0.3","relationship":"direct","scope":"runtime"}}}}
+J
+)
+eq "$got" "$want" "dependency snapshot manifests"
+echo "dotnet-service-build dependency-snapshot: OK"
