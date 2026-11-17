@@ -39,11 +39,30 @@ runs:
       with:
         token: ${{ github.token }}
 
+    # mindbox-cloud/github-actions/generate-release-changelog@658e582 inlined: it was a Docker
+    # action the runner built from alpine:3 + `apk add git` at job setup, around nora
+    # (issues-maestra#1649). Same git commands, same escaping, same output; errors ignored
+    # as its `sh` did. Its `git clone` of the repo into the workspace never fed the output.
     - name: Changelog
-      uses: mindbox-cloud/github-actions/generate-release-changelog@658e5820721d2df8a446dc3e923411f83abb4746 # master
       id: changelog
+      shell: bash
       env:
         REPO: ${{ github.repository }}
+      run: |
+        set +e +o pipefail
+        tag=$(git tag --sort version:refname | tail -n 2 | head -n 1)
+        if [ -n "$tag" ]; then
+          changelog=$(git log --oneline --no-decorate "$tag..HEAD")
+          lastcommit=$(git log "$tag..HEAD" --pretty=format:"%H" --max-count=1)
+        else
+          changelog=$(git log --oneline --no-decorate)
+          lastcommit=$(git log --pretty=format:"%H" --max-count=1)
+        fi
+        echo "last commit: $lastcommit"
+        changelog="${changelog//'%'/'%25'}"
+        changelog="${changelog//$'\n'/'%0A' - }"
+        changelog=" - ${changelog//$'\r'/'%0D'}"
+        echo "changelog=[View latest commits in Github](https://github.com/$REPO/commits/$lastcommit)<br/>$changelog" >> "$GITHUB_OUTPUT"
 
     - name: clean changelog from quotes
       id: clean-changelog
