@@ -84,6 +84,16 @@
       "allowedVersions": "<12"
     },
     {
+      "description": "python-version of actions/setup-python in collection-lint.yml and ansible-os-update.yml stays on 3.14: ansible/pyproject.toml pins requires-python ==3.14.*, and ansible-core 2.21 supports Python up to 3.14 (on 3.15 ansible-lint dies with `module 'dataclasses' has no attribute '_is_type'`, PR #79). Lift together with requires-python once an ansible-core release supports 3.15.",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchDepNames": [
+        "python"
+      ],
+      "allowedVersions": "<3.15"
+    },
+    {
       "description": "Every external action in this repo is referenced by its version tag (`@vX.Y.Z`), never by a commit sha: no digests are pinned, Renovate bumps the tag. Weekly (the rule at the end of this list) and in the daily preset's branches because these workflows are a shared library — one PR a week is one review and one release tag, instead of a dozen tags nobody reads. `separateMajorMinor: false` is what makes it literally one PR -- config:recommended would otherwise split majors into a second branch. Flip it back to true if a stuck major (setup-python v7, configure-aws-credentials v6 are waiting) starts holding the routine bumps hostage.",
       "matchManagers": [
         "github-actions"
