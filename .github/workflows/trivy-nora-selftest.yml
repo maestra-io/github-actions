@@ -1,0 +1,99 @@
+---
+# trivy-nora for real: an image scan (EOL alpine, known HIGH findings) and a misconfig fs
+# scan, the trivy binary and all three databases through nora with the job's OIDC token;
+# the exit code, the ignore file, the reused binary, and the runner's docker config left
+# without the nora credential.
+name: trivy-nora-selftest
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/trivy-nora-selftest.yml"
+      - "trivy-nora/**"
+      - "nora-session/**"
+
+permissions:
+  contents: read
+
+jobs:
+  trivy-nora:
+    runs-on: runs-on=${{ github.run_id }}-trivy-nora/runner=t3a-small
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write # nora session token: binary, DBs, scanned image
+    env:
+      IMAGE: packages.maestra.io/docker-hub/library/alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: image scan, json report
+        uses: ./trivy-nora
+        with:
+          image-ref: ${{ env.IMAGE }}
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          format: json
+          output: ${{ runner.temp }}/alpine.json
+          exit-code: "0"
+      - name: findings reported, DBs from nora
+        run: |
+          set -euo pipefail
+          n=$(jq '[.Results[]?.Vulnerabilities // [] | .[]] | length' "$RUNNER_TEMP/alpine.json")
+          echo "alpine 3.20 HIGH/CRITICAL: $n"
+          [ "$n" -gt 0 ]
+          test -s "$RUNNER_TEMP/trivy-nora/cache/db/trivy.db"
+          jq -r '.Results[].Vulnerabilities[0].VulnerabilityID' "$RUNNER_TEMP/alpine.json" | head -1 > "$RUNNER_TEMP/ignore-one"
+          ! grep -qs packages.maestra.io "${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+
+      - name: same scan with exit-code 1 fails
+        id: strict
+        continue-on-error: true
+        uses: ./trivy-nora
+        with:
+          image-ref: ${{ env.IMAGE }}
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: "true"
+          exit-code: "1"
+      - name: exit code passed through
+        env:
+          OUTCOME: ${{ steps.strict.outcome }}
+        run: '[ "$OUTCOME" = failure ]'
+
+      - name: ignore file drops a finding
+        uses: ./trivy-nora
+        with:
+          image-ref: ${{ env.IMAGE }}
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          format: json
+          output: ${{ runner.temp }}/alpine-ignored.json
+          trivyignores: ${{ runner.temp }}/ignore-one
+      - name: the ignored id is gone
+        run: |
+          set -euo pipefail
+          id=$(cat "$RUNNER_TEMP/ignore-one")
+          ! jq -e --arg id "$id" '[.Results[]?.Vulnerabilities // [] | .[] | select(.VulnerabilityID == $id)] | length > 0' \
+            "$RUNNER_TEMP/alpine-ignored.json"
+
+      - name: misconfig fixture
+        run: |
+          mkdir -p "$RUNNER_TEMP/fixture"
+          printf 'FROM alpine:3.20\nRUN echo hi\n' > "$RUNNER_TEMP/fixture/Dockerfile"
+      - name: fs scan, checks bundle from nora
+        uses: ./trivy-nora
+        with:
+          scan-type: fs
+          scan-ref: ${{ runner.temp }}/fixture
+          scanners: misconfig
+          format: json
+          output: ${{ runner.temp }}/fixture.json
+      - name: a Dockerfile without USER is reported
+        run: |
+          jq -e '[.Results[]?.Misconfigurations // [] | .[] | select(.ID == "DS-0002" or .ID == "DS002")] | length > 0' \
+            "$RUNNER_TEMP/fixture.json"
