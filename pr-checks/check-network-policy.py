@@ -5,10 +5,11 @@ Kargo pushes a release straight to fluxcd main, and a HelmRelease whose values t
 schema or templates reject blocks every later promotion of that service. This runs on the
 pull request what Flux runs after the merge, for every kustomize entry point given:
 
-  kustomize build <overlay>  ->  HelmRelease on chart commons-app | postgres with a
+  kustomize build <overlay>  ->  HelmRelease on chart commons-app | commons-app-init | postgres with a
   `networkPolicy` key in spec.values  ->  postBuild variables substituted as Flux does
   (${ENV}, ${CLUSTER_NAME}, ${CONTAINER_REGISTRY}, ${APP_PACKAGE_VERSION_TO_BE_REPLACED})  ->
   helm pull of the pinned chart version from the HelmRepository's OCI url  ->  helm template
+  (hooks included: commons-app-init renders its Jobs' policies as hooks)
   ->  kubeconform -strict of the Cilium policies against the vendored CRD schema  ->
   netpol-broad-gate.py (the fluxcd gate against over-broad selectors).
 
@@ -25,8 +26,8 @@ registry login done by the caller. Charts are cached in --charts-dir as <chart>-
 a file already there is used without a pull (a test can pre-seed it).
 
 Skipped with one line each: an entry point not under overlays/, one whose kustomize build fails
-(the kustomize step's verdict), a HelmRelease without spec.chart (chartRef), a chart other
-than commons-app/postgres, a release whose values have no networkPolicy key.
+(the kustomize step's verdict), a HelmRelease without spec.chart (chartRef), a chart
+not in CHARTS, a release whose values have no networkPolicy key.
 """
 import argparse
 import os
@@ -37,7 +38,7 @@ import tempfile
 
 import yaml
 
-CHARTS = {"commons-app", "postgres"}
+CHARTS = {"commons-app", "commons-app-init", "postgres"}
 CILIUM_KINDS = {"CiliumNetworkPolicy", "CiliumClusterwideNetworkPolicy"}
 SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -63,6 +64,17 @@ def substitute(text, env, ecr):
     return text
 
 
+def names_release(text, release):
+    """By metadata.name: a commons-app-init release carries the app's name in its values."""
+    try:
+        hrs = [d for d in yaml.safe_load_all(text) if isinstance(d, dict) and d.get("kind") == "HelmRelease"]
+    except yaml.YAMLError:
+        hrs = []
+    if hrs:
+        return any((d.get("metadata") or {}).get("name") == release for d in hrs)
+    return bool(re.search(rf"^\s*name: {re.escape(release)}\s*$", text, re.M))
+
+
 def files_with_key(kpath, env, others, release):
     """Files under <kpath> that name <release> and hold a networkPolicy key, other overlays left out."""
     skip = {os.path.join(kpath, "overlays", o) + os.sep for o in others if o != env}
@@ -74,7 +86,7 @@ def files_with_key(kpath, env, others, release):
                 continue
             with open(p, errors="replace") as f:
                 text = f.read()
-            if re.search(r"^\s*networkPolicy:", text, re.M) and re.search(rf"^\s*name: {re.escape(release)}\s*$", text, re.M):
+            if re.search(r"^\s*networkPolicy:", text, re.M) and names_release(text, release):
                 out.append(p)
     return out
 

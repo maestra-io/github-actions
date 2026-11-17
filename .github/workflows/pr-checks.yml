@@ -38,7 +38,7 @@
 #                   and downloads Kyverno only when such an image exists. A rejected image
 #                   is a warning until image-signatures-enforce is on.
 #   networkPolicy   when a change under kustomize-path touched a tree holding a
-#                   `networkPolicy:` key: every overlay's commons-app / postgres HelmRelease
+#                   `networkPolicy:` key: every overlay's commons-app / commons-app-init / postgres HelmRelease
 #                   with that key is rendered as Flux will (kustomize build, postBuild vars,
 #                   `helm template` of the pinned chart pulled from ECR with the runner's
 #                   instance role), the Cilium policies pass kubeconform -strict against the
@@ -242,7 +242,7 @@ jobs:
           if [ ! -x "$RUNNER_TEMP/kustomize" ]; then echo "nothing changed under $KPATH"; exit 0; fi
           # A tree without the key (most repos today) downloads nothing. A key of another
           # chart (dragonfly's `networkPolicy: enabled`) gets past this grep; the script then
-          # finds no commons-app/postgres block and says so.
+          # finds no commons-app/commons-app-init/postgres block and says so.
           if ! grep -rqE '^\s*networkPolicy:' "$KPATH"; then echo "no networkPolicy key under $KPATH"; exit 0; fi
           curl -fsSL -o "$RUNNER_TEMP/helm.tar.gz" "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
           echo "${HELM_SHA256}  $RUNNER_TEMP/helm.tar.gz" | sha256sum -c -
