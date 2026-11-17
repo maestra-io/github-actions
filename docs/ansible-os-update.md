@@ -273,8 +273,11 @@ hosts of the run, with one Vault-minted token (`actions: write` on `soc` only):
   of an early host lives until the run ends. Only `us` / `omicron` and `omega` are
   covered by the verifier. Any other contour (`iota`) is skipped with a log line.
 
-Neither dispatch can fail the run. A missing token or a failed dispatch is a
-warning plus the manual command in the job summary:
+A failed token mint never fails the run: both steps warn and print their manual
+command in the job summary. The two dispatches differ after that. A failed
+`vuln-scan.yaml` dispatch fails its step and the job. A failed
+`breakglass-verify.yaml` dispatch is a warning plus the manual command in the job
+summary, and the step stays green. The re-probe step runs in both cases:
 
 ```bash
 gh workflow run breakglass-verify.yaml --repo maestra-io/soc \
