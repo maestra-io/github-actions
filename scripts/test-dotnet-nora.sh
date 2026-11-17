@@ -115,4 +115,15 @@ grep -qx "DOTNET_ROOT=$root/dotnet" "$root/env" || fail "DOTNET_ROOT not exporte
 : > "$root/body"
 DOTNET_ROOT="$root/dotnet" install "$act/dotnet-nora/dotnet-nora.sh" 9.9.x || fail "rerun: $(cat "$root/log")"
 grep -q "SDK 9.9.901 already in" "$root/log" || fail "rerun downloaded again: $(cat "$root/log")"
+# a copy that fails (a directory the job cannot write) fails the step and leaves no sdk/<v>
+# that would mark the partial install complete; root writes anyway, so only as a user (CI)
+if [ "$(id -u)" != 0 ]; then
+  tar -czf "$root/body" -C "$root/sdk" .
+  rm -rf "$root/dotnet"; mkdir -p "$root/dotnet/shared"; chmod 555 "$root/dotnet/shared"
+  if DOTNET_ROOT="$root/dotnet" install "$act/dotnet-nora/dotnet-nora.sh" 9.9.x; then
+    chmod 755 "$root/dotnet/shared"; fail "a failed copy was accepted: $(cat "$root/log")"
+  fi
+  chmod 755 "$root/dotnet/shared"
+  [ ! -e "$root/dotnet/sdk/9.9.901" ] || fail "sdk/9.9.901 present after a failed copy"
+fi
 echo "dotnet-nora: ok"

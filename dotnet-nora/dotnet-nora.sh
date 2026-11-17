@@ -118,8 +118,11 @@ for v in "${versions[@]}"; do
   tar -xzf "$f" -C "$stage" || { rm -rf "$stage"; fail "SDK $v: unpacking failed"; }
   rm -f "$f"
   mv "$stage/sdk/$v" "$stage.sdk"
-  find "$stage" -mindepth 1 -maxdepth 1 -type f -exec cp -an {} "$dir"/ \;
-  find "$stage" -mindepth 1 -maxdepth 1 -type d -exec cp -a {} "$dir"/ \;
+  # cp -R, not -a: the image's directories belong to root, and preserving their times fails
+  # (EPERM) for the runner user. `-exec … +` so a failed copy fails the step instead of
+  # being dropped by find, and sdk/<v> never marks a partial install as complete.
+  find "$stage" -mindepth 1 -maxdepth 1 -type f -exec cp --update=none -t "$dir" {} +
+  find "$stage" -mindepth 1 -maxdepth 1 -type d -exec cp -R -t "$dir" {} +
   mkdir -p "$dir/sdk"
   mv "$stage.sdk" "$dir/sdk/$v"
   rm -rf "$stage"
