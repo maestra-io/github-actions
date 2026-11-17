@@ -1036,7 +1036,7 @@ jobs:
       # setup-dotnet's inputs, the SDKs from nora raw instead of builds.dotnet.microsoft.com
       # (dotnet-nora, README; issues-maestra#1649).
       - if: ${{ inputs.docker-test-target == '' && (inputs.test-command == '' || (inputs.test-image == '' && hashFiles('**/*.csproj') != '')) }}
-        uses: maestra-io/github-actions/dotnet-nora@b7c17975563c5d169c99c3dcd1f79cf42df5056b # v1.97.0
+        uses: maestra-io/github-actions/dotnet-nora@8b2f81257acdc1ed62f91c51139b527f2966aa7f # v1.99.1
         with:
           dotnet-version: |
             ${{ steps.sdk.outputs.version }}
@@ -1953,7 +1953,7 @@ jobs:
           # <<< sdk-version
       # No dotnet-version and no global.json: the runner image's SDK.
       - if: ${{ steps.cpm.outputs.props != '[]' && (steps.sdk.outputs.version != '' || hashFiles('global.json') != '') }}
-        uses: maestra-io/github-actions/dotnet-nora@b7c17975563c5d169c99c3dcd1f79cf42df5056b # v1.97.0
+        uses: maestra-io/github-actions/dotnet-nora@8b2f81257acdc1ed62f91c51139b527f2966aa7f # v1.99.1
         with:
           dotnet-version: ${{ steps.sdk.outputs.version }}
           global-json-file: ${{ steps.sdk.outputs.file }}
