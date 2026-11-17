@@ -56,7 +56,8 @@ opengrep)
   exit "$rc" ;;
 
 trivy)
-  "${TRIVY:?}" fs --severity HIGH,CRITICAL --exit-code 0 --format json --output "$OUT/trivy-head.json" .
+  "${TRIVY:?}" fs --severity HIGH,CRITICAL --exit-code 0 --format json --output "$OUT/trivy-head.json" . \
+    || { echo "pr-scan: trivy fs of the head failed" >&2; exit 2; }
   rc=0; python3 "$here/pr-diff.py" any "$OUT/trivy-head.json" || rc=$?
   case $rc in
     0) ;;
@@ -64,12 +65,12 @@ trivy)
     *) echo "pr-scan: cannot read the trivy report" >&2; exit 2 ;;
   esac
   wt=$(mktemp -d)/base
-  git worktree add -q --detach "$wt" "$base"
+  git worktree add -q --detach "$wt" "$base" || { echo "pr-scan: cannot check out the base" >&2; exit 2; }
+  trap 'git worktree remove --force "$wt"' EXIT
   # The vulnerability DB is the head scan's; the Java DB is left to trivy (the head may have no JAR).
   ( cd "$wt" && "$TRIVY" fs --severity HIGH,CRITICAL --exit-code 0 --skip-db-update \
-      --format json --output "$OUT/trivy-base.json" . )
+      --format json --output "$OUT/trivy-base.json" . ) || { echo "pr-scan: trivy fs of the base failed" >&2; exit 2; }
   rc=0; python3 "$here/pr-diff.py" trivy "$OUT/trivy-base.json" "$OUT/trivy-head.json" "$wt" . || rc=$?
-  git worktree remove --force "$wt"
   exit "$rc" ;;
 
 *) echo "pr-scan: unknown tool $tool" >&2; exit 2 ;;
