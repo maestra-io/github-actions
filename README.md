@@ -823,7 +823,12 @@ changes in the MCF repo: the jobs switch on by files.
   MCR's Playwright image through nora) with the tag `v<X>-noble`, `<X>` the `@playwright/test`
   of `tests/`, resolved to its index digest per run (logged as `Playwright browsers: <tag> =
   <image>@sha256:…`) and run by that digest, so the browsers are the ones of the tests'
-  Playwright. The job's Node (`node-version`) is mounted in, `--network host` reaches
+  Playwright. The image is cached in the RunsOn Magic Cache under that digest
+  (`playwright-image-<os>-<arch>-<digest>`, shared by `functional` and `e2e` of one repo,
+  visible to its own branch and the default branch) and `docker load`ed before the pull; the
+  pull by digest always runs and checks the loaded layers against nora's manifest, so a hit
+  fetches only the manifest and a miss or a bad cache pulls the layers from nora as before.
+  The job's Node (`node-version`) is mounted in, `--network host` reaches
   http-server on `:8080`, `--user` is the runner's; nora docker credentials come from the
   `nora-cred-helper` block. A Playwright release nora still quarantines (3 days) fails the
   job with `nora does not serve …`. frontend-playwright prefers `/usr/bin/google-chrome`,
