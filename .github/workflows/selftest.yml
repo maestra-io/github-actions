@@ -119,6 +119,9 @@ jobs:
       - name: security-scan reports (field allowlist, hashes, raw-secret check)
         run: python3 security-scan/report.py --self-test
 
+      - name: security-scan PR mode, trivy base/head difference (keys, not line numbers)
+        run: python3 security-scan/pr-diff.py --self-test
+
       - name: nuget build SDK pin (highest TFM, global.json kept/restored, workflow copy)
         run: bash scripts/test-nuget-sdk-pin.sh
 

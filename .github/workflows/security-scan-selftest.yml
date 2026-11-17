@@ -1,0 +1,70 @@
+---
+# security-scan PR mode for real: scripts/test-security-scan-pr.sh runs security-scan/pr-scan.sh
+# with gitleaks, trivy and opengrep on fixture repos (a new secret, sqli and vulnerable bump
+# fail; an old finding untouched or moved, and an unrelated PR, pass). The scanners are the
+# versions and sha256 pinned in security-scan.yml, through nora with the job's OIDC token, the
+# rules are the same semgrep-rules security selection.
+name: security-scan-selftest
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/security-scan-selftest.yml"
+      - ".github/workflows/security-scan.yml"
+      - "security-scan/**"
+      - "gitleaks/**"
+      - "scripts/test-security-scan-pr.sh"
+
+permissions:
+  contents: read
+
+jobs:
+  pr-mode:
+    runs-on: runs-on=${{ github.run_id }}-security-scan-pr/pool=small
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write # nora OIDC token for the scanner downloads
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: semgrep/semgrep-rules
+          ref: release
+          path: .semgrep-rules
+          persist-credentials: false
+      - name: Install the scanners pinned in security-scan.yml
+        run: |
+          set -euo pipefail
+          wf=.github/workflows/security-scan.yml
+          v() { yq -r ".jobs.$1.env.$2" "$wf"; }
+          oidc="$(curl -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=packages.maestra.io" | jq -r .value)"
+          echo "::add-mask::${oidc}"
+          get() { # <url path under packages.maestra.io/github/> <sha256> <file>
+            printf 'user = "oidc:%s"\n' "$oidc" | curl -sfL --retry 5 --retry-delay 5 --retry-all-errors -K - -o "$3" \
+              "https://packages.maestra.io/github/$1"
+            echo "$2  $3" | sha256sum -c -
+          }
+          t=$RUNNER_TEMP
+          g=$(v gitleaks GITLEAKS_VERSION); get "gitleaks/gitleaks/releases/download/v$g/gitleaks_${g}_linux_x64.tar.gz" "$(v gitleaks GITLEAKS_SHA256)" "$t/gitleaks.tgz"
+          r=$(v trivy TRIVY_VERSION); get "aquasecurity/trivy/releases/download/v$r/trivy_${r}_Linux-64bit.tar.gz" "$(v trivy TRIVY_SHA256)" "$t/trivy.tgz"
+          o=$(v opengrep OPENGREP_VERSION); get "opengrep/opengrep/releases/download/v$o/opengrep_manylinux_x86" "$(v opengrep OPENGREP_SHA256)" "$t/opengrep"
+          tar -xzf "$t/gitleaks.tgz" -C "$t" gitleaks; tar -xzf "$t/trivy.tgz" -C "$t" trivy; chmod +x "$t/opengrep"
+          # the security rule selection of security-scan.yml
+          mv .semgrep-rules "$t/semgrep-rules"; cd "$t/semgrep-rules"
+          rm -rf .git .github scripts stats libsonnet trusted_python
+          find . -type f ! -name '*.yaml' -delete
+          find . -name '*.yaml' ! -exec grep -qE '^[[:space:]]+category:[[:space:]]*security[[:space:]]*$' {} \; -delete
+          find . -path '*/secrets/*' -delete
+          find . -type d -empty -delete
+      - name: PR mode cases
+        env:
+          TRIVY_DISABLE_VEX_NOTICE: "true"
+        run: |
+          GITLEAKS="$RUNNER_TEMP/gitleaks" GITLEAKS_CONFIG="$PWD/gitleaks/gitleaks.toml" TRIVY="$RUNNER_TEMP/trivy" \
+          OPENGREP="$RUNNER_TEMP/opengrep" OPENGREP_RULES="$RUNNER_TEMP/semgrep-rules" bash scripts/test-security-scan-pr.sh

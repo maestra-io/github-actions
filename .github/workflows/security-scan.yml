@@ -1,4 +1,16 @@
-# Reusable scheduled security scan of a repository's default branch: the GitHub port of
+# Reusable security scan, two modes chosen by the caller's event:
+#
+#   pull_request   PR mode (what every repo runs, Igor 17.11.2026): fails only on findings the
+#                  PR INTRODUCES, old findings on the base never block. security-scan/pr-scan.sh
+#                  per tool: gitleaks over the PR's commits (HEAD^1..HEAD of the merge
+#                  checkout), opengrep --baseline-commit HEAD^1 (only the changed files, a match
+#                  also found at the base dropped by rule + path + matched lines), trivy fs of
+#                  head minus trivy fs of base by (target, package, advisory) / (target, rule,
+#                  redacted line); the base scan runs only when head has a finding. No report
+#                  artifact. Selftest: scripts/test-security-scan-pr.sh.
+#   anything else  full mode (workflow_dispatch by hand), below.
+#
+# Full mode: a scan of the whole default branch, the GitHub port of
 # the GitLab "Daily security scan (gitleaks, trivy, opengrep)" pipeline schedule that the
 # IDP terraform set up on every project (branch special/schedule-security-pipelines,
 # components system/components/{gitleaks,trivy,opengrep}, maestra-io/issues-maestra#1649).
@@ -32,11 +44,10 @@
 # age and first-seen quarantine), authenticated by the job's OIDC token and pinned by
 # sha256: bump the version and its sha256 together (the release's asset digest).
 #
-# Usage, .github/workflows/security-scan.yml in the repo:
+# Usage, .github/workflows/security-scan.yml in the repo (PR mode on every PR, full by hand):
 #   name: security-scan
 #   on:
-#     schedule:
-#       - cron: "16 23 * * *"
+#     pull_request:
 #     workflow_dispatch:
 #   permissions: { contents: read, id-token: write }
 #   jobs:
@@ -99,12 +110,16 @@ jobs:
           tar -xzf "$tgz" -C "$RUNNER_TEMP" gitleaks
           # The config and the report script leave the tree, or `gitleaks dir` would scan them too.
           mv .github-actions/gitleaks/gitleaks.toml "$RUNNER_TEMP/gitleaks.toml"
-          mv .github-actions/security-scan/report.py "$RUNNER_TEMP/report.py"
+          mv .github-actions/security-scan/{report.py,pr-scan.sh,pr-diff.py} "$RUNNER_TEMP/"
           echo "config=$(git -C .github-actions rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "version=$GITLEAKS_VERSION" >> "$GITHUB_OUTPUT"
           rm -rf .github-actions
           echo "started=$(date -u +%FT%TZ)" >> "$GITHUB_OUTPUT"
+      - name: gitleaks git over the PR's commits (PR mode)
+        if: ${{ github.event_name == 'pull_request' }}
+        run: GITLEAKS="$RUNNER_TEMP/gitleaks" GITLEAKS_CONFIG="$RUNNER_TEMP/gitleaks.toml" bash "$RUNNER_TEMP/pr-scan.sh" gitleaks
       - name: gitleaks git (last 50 commits) and dir (whole tree)
+        if: ${{ github.event_name != 'pull_request' }}
         run: |
           rc=0
           mkdir -p "$RUNNER_TEMP/report"
@@ -117,7 +132,7 @@ jobs:
           exit "$rc"
       - name: Report (redacted, checked against the raw values)
         id: report
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && github.event_name != 'pull_request' }}
         run: |
           set -euo pipefail
           echo "finished=$(date -u +%FT%TZ)" >> "$GITHUB_OUTPUT"
@@ -137,7 +152,7 @@ jobs:
           shred -u "$RUNNER_TEMP"/unredacted-*.json "$RUNNER_TEMP"/gitleaks-*.raw.json
           exit "$rc"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: ${{ !cancelled() && steps.report.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.report.outcome == 'success' && github.event_name != 'pull_request' }}
         with:
           name: security-scan-part-gitleaks
           path: ${{ runner.temp }}/report/
@@ -162,6 +177,8 @@ jobs:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # PR mode compares with the base, the merge commit's first parent
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -182,12 +199,16 @@ jobs:
             "https://packages.maestra.io/github/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
           echo "${TRIVY_SHA256}  ${tgz}" | sha256sum -c -
           tar -xzf "$tgz" -C "$RUNNER_TEMP" trivy
-          mv .github-actions/security-scan/report.py "$RUNNER_TEMP/report.py"
+          mv .github-actions/security-scan/{report.py,pr-scan.sh,pr-diff.py} "$RUNNER_TEMP/"
           rm -rf .github-actions
           echo "version=$TRIVY_VERSION" >> "$GITHUB_OUTPUT"
           echo "started=$(date -u +%FT%TZ)" >> "$GITHUB_OUTPUT"
       # One scan: the JSON goes to a file, the table to the log (trivy convert), exit code as before.
+      - name: trivy fs, findings not on the base (PR mode)
+        if: ${{ github.event_name == 'pull_request' }}
+        run: TRIVY="$RUNNER_TEMP/trivy" bash "$RUNNER_TEMP/pr-scan.sh" trivy
       - name: trivy fs (HIGH, CRITICAL)
+        if: ${{ github.event_name != 'pull_request' }}
         run: |
           rc=0
           "$RUNNER_TEMP/trivy" fs --severity HIGH,CRITICAL --exit-code 1 \
@@ -200,7 +221,7 @@ jobs:
       # missing report as "scan not reporting".
       - name: Report
         id: report
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && github.event_name != 'pull_request' }}
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -210,7 +231,7 @@ jobs:
           python3 "$RUNNER_TEMP/report.py" trivy "$RUNNER_TEMP/trivy.raw.json" "$RUNNER_TEMP/report/trivy.json"
           python3 "$RUNNER_TEMP/report.py" check "$RUNNER_TEMP/report"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: ${{ !cancelled() && steps.report.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.report.outcome == 'success' && github.event_name != 'pull_request' }}
         with:
           name: security-scan-part-trivy
           path: ${{ runner.temp }}/report/
@@ -234,6 +255,8 @@ jobs:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # PR mode compares with the base, the merge commit's first parent
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -260,8 +283,8 @@ jobs:
             "https://packages.maestra.io/github/opengrep/opengrep/releases/download/v${OPENGREP_VERSION}/opengrep_manylinux_x86"
           echo "${OPENGREP_SHA256}  ${bin}" | sha256sum -c -
           chmod +x "$bin"
-          # The rules and the report script leave the tree, or the scan would read them as code.
-          mv .github-actions/security-scan/report.py "$RUNNER_TEMP/report.py"
+          # The rules and the scripts leave the tree, or the scan would read them as code.
+          mv .github-actions/security-scan/{report.py,pr-scan.sh,pr-diff.py} "$RUNNER_TEMP/"
           rm -rf .github-actions
           mv .semgrep-rules "$RUNNER_TEMP/semgrep-rules"
           cd "$RUNNER_TEMP/semgrep-rules"
@@ -273,13 +296,17 @@ jobs:
           find . -path '*/secrets/*' -delete
           find . -type d -empty -delete
           echo "$(find . -name '*.yaml' | wc -l) rule files"
+      - name: opengrep scan (ERROR) of the PR's changes, base matches dropped (PR mode)
+        if: ${{ github.event_name == 'pull_request' }}
+        run: OPENGREP="$RUNNER_TEMP/opengrep" OPENGREP_RULES="$RUNNER_TEMP/semgrep-rules" bash "$RUNNER_TEMP/pr-scan.sh" opengrep
       - name: opengrep scan (ERROR)
+        if: ${{ github.event_name != 'pull_request' }}
         run: |
           "$RUNNER_TEMP/opengrep" scan --config "$RUNNER_TEMP/semgrep-rules" --severity=ERROR \
             --taint-intrafile --no-rewrite-rule-ids --error --json-output="$RUNNER_TEMP/opengrep.raw.json" .
       - name: Report
         id: report
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && github.event_name != 'pull_request' }}
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -288,7 +315,7 @@ jobs:
           python3 "$RUNNER_TEMP/report.py" opengrep "$RUNNER_TEMP/opengrep.raw.json" "$RUNNER_TEMP/report/opengrep.json"
           python3 "$RUNNER_TEMP/report.py" check "$RUNNER_TEMP/report"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: ${{ !cancelled() && steps.report.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.report.outcome == 'success' && github.event_name != 'pull_request' }}
         with:
           name: security-scan-part-opengrep
           path: ${{ runner.temp }}/report/
@@ -297,10 +324,11 @@ jobs:
 
   # One artifact per run: the three parts + manifest.json, merged (the parts are deleted).
   # SOC (GET /api/cron/code-scan) lists the run's artifacts and downloads this one by name.
+  # Full mode only: nothing reads a PR run's report.
   report:
     name: report
     needs: [gitleaks, trivy, opengrep]
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     runs-on: runs-on=${{ github.run_id }}-report/pool=small
     timeout-minutes: 10
     steps:
