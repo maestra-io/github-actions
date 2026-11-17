@@ -1979,10 +1979,70 @@ jobs:
           tag="$PLAYWRIGHT_IMAGE:v$PLAYWRIGHT-noble"
           d=$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest}}' | jq -r .digest) || d=
           [[ "$d" == sha256:* ]] || { echo "::error::nora does not serve $tag (nora quarantines a new release for 3 days)"; exit 1; }
-          echo "image=$PLAYWRIGHT_IMAGE@$d" >> "$GITHUB_OUTPUT"
+          { echo "image=$PLAYWRIGHT_IMAGE@$d"; echo "digest=${d#sha256:}"; } >> "$GITHUB_OUTPUT"
           echo "Playwright browsers: $tag = $PLAYWRIGHT_IMAGE@$d"
-          docker pull -q "$PLAYWRIGHT_IMAGE@$d"
           # <<< playwright-image
+      # >>> playwright-cache restore
+      # The Playwright image is ~0.8 GB per runner from nora (352 GB/day on 17.11.2026, the
+      # largest artifact, issues-maestra#1649): it is kept in the Magic Cache under its digest,
+      # shared by functional and e2e, and loaded before the pull. The pull by digest always runs
+      # and checks the loaded layers against nora's manifest (content addressed), so a stale or
+      # broken cache means the layers come from nora, never another browser.
+      - name: playwright image cache (restore)
+        id: playwright-cache
+        if: ${{ steps.image.outputs.digest != '' }}
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/playwright-image
+          key: playwright-image-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.digest }}
+      # <<< playwright-cache restore
+      - name: playwright image (pull)
+        id: pull
+        if: ${{ steps.image.outputs.digest != '' }}
+        shell: bash
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          HIT: ${{ steps.playwright-cache.outputs.cache-hit }}
+        run: |
+          # >>> playwright-pull (scripts/test-e2e.sh runs this block; all copies equal)
+          f="$RUNNER_TEMP/playwright-image/image.tar.zst"
+          loaded=
+          if [ "$HIT" = true ] && [ -s "$f" ]; then
+            loaded=$(zstd -dcq "$f" | docker load -q | sed -n 's/^Loaded image ID: //p') \
+              || { loaded=; echo "::warning::playwright image cache: docker load failed, the image comes from nora"; }
+          fi
+          docker pull -q "$IMAGE"
+          id=$(docker image inspect -f '{{.Id}}' "$IMAGE")
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          if [ -z "$loaded" ]; then
+            echo "playwright image cache: miss, $IMAGE ($id) pulled from nora"
+          elif [ "$loaded" = "$id" ]; then
+            echo "playwright image cache: hit, $IMAGE ($id) verified against nora's manifest"
+          else
+            echo "::warning::playwright image cache: loaded $loaded, but $IMAGE is $id: pulled from nora"
+          fi
+          # <<< playwright-pull
+      # >>> playwright-cache save
+      - name: playwright image cache (pack)
+        id: playwright-pack
+        if: ${{ steps.image.outputs.digest != '' && steps.playwright-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          ID: ${{ steps.pull.outputs.id }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/playwright-image"
+          docker save "$ID" | zstd -T0 -3 -q -f -o "$RUNNER_TEMP/playwright-image/image.tar.zst"
+          echo "playwright image cache: $(du -h "$RUNNER_TEMP/playwright-image/image.tar.zst" | cut -f1) saved for $ID"
+      - name: playwright image cache (save)
+        if: ${{ steps.playwright-pack.outcome == 'success' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/playwright-image
+          key: playwright-image-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.digest }}
+      # <<< playwright-cache save
       # A nora install costs ~25 s per job: 48 packages, none of them used by the build or the tests.
       - id: server-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -2229,10 +2289,70 @@ jobs:
           tag="$PLAYWRIGHT_IMAGE:v$PLAYWRIGHT-noble"
           d=$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest}}' | jq -r .digest) || d=
           [[ "$d" == sha256:* ]] || { echo "::error::nora does not serve $tag (nora quarantines a new release for 3 days)"; exit 1; }
-          echo "image=$PLAYWRIGHT_IMAGE@$d" >> "$GITHUB_OUTPUT"
+          { echo "image=$PLAYWRIGHT_IMAGE@$d"; echo "digest=${d#sha256:}"; } >> "$GITHUB_OUTPUT"
           echo "Playwright browsers: $tag = $PLAYWRIGHT_IMAGE@$d"
-          docker pull -q "$PLAYWRIGHT_IMAGE@$d"
           # <<< playwright-image
+      # >>> playwright-cache restore
+      # The Playwright image is ~0.8 GB per runner from nora (352 GB/day on 17.11.2026, the
+      # largest artifact, issues-maestra#1649): it is kept in the Magic Cache under its digest,
+      # shared by functional and e2e, and loaded before the pull. The pull by digest always runs
+      # and checks the loaded layers against nora's manifest (content addressed), so a stale or
+      # broken cache means the layers come from nora, never another browser.
+      - name: playwright image cache (restore)
+        id: playwright-cache
+        if: ${{ steps.image.outputs.digest != '' }}
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/playwright-image
+          key: playwright-image-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.digest }}
+      # <<< playwright-cache restore
+      - name: playwright image (pull)
+        id: pull
+        if: ${{ steps.image.outputs.digest != '' }}
+        shell: bash
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          HIT: ${{ steps.playwright-cache.outputs.cache-hit }}
+        run: |
+          # >>> playwright-pull (scripts/test-e2e.sh runs this block; all copies equal)
+          f="$RUNNER_TEMP/playwright-image/image.tar.zst"
+          loaded=
+          if [ "$HIT" = true ] && [ -s "$f" ]; then
+            loaded=$(zstd -dcq "$f" | docker load -q | sed -n 's/^Loaded image ID: //p') \
+              || { loaded=; echo "::warning::playwright image cache: docker load failed, the image comes from nora"; }
+          fi
+          docker pull -q "$IMAGE"
+          id=$(docker image inspect -f '{{.Id}}' "$IMAGE")
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          if [ -z "$loaded" ]; then
+            echo "playwright image cache: miss, $IMAGE ($id) pulled from nora"
+          elif [ "$loaded" = "$id" ]; then
+            echo "playwright image cache: hit, $IMAGE ($id) verified against nora's manifest"
+          else
+            echo "::warning::playwright image cache: loaded $loaded, but $IMAGE is $id: pulled from nora"
+          fi
+          # <<< playwright-pull
+      # >>> playwright-cache save
+      - name: playwright image cache (pack)
+        id: playwright-pack
+        if: ${{ steps.image.outputs.digest != '' && steps.playwright-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          ID: ${{ steps.pull.outputs.id }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/playwright-image"
+          docker save "$ID" | zstd -T0 -3 -q -f -o "$RUNNER_TEMP/playwright-image/image.tar.zst"
+          echo "playwright image cache: $(du -h "$RUNNER_TEMP/playwright-image/image.tar.zst" | cut -f1) saved for $ID"
+      - name: playwright image cache (save)
+        if: ${{ steps.playwright-pack.outcome == 'success' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/playwright-image
+          key: playwright-image-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.digest }}
+      # <<< playwright-cache save
       # Outputs only: exported env would reach every later step (uploads, ingest).
       - id: vault
         uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
