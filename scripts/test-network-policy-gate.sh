@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Tests for pr-checks/check-network-policy.py on ci/fixtures/network-policy (the
 # universal-channel-http-sender pilot): the omicron block renders, passes kubeconform and the
-# broad gate; a block without ports fails with the chart's schema text; a block in overlays/omega
-# is rejected naming the file; no block = one line; an unpinned chart version is refused; a
+# broad gate; a block without ports fails with the chart's schema text; a block enabled in
+# overlays/omega is rejected naming the file, a disabled one and a base block pass; no block = one line; an unpinned chart version is refused; a
 # stub helm that renders a broad / invalid policy is caught by the broad gate / kubeconform.
 #
 # Real kustomize, helm and kubeconform (downloaded at the workflow's pins when not on PATH) and
@@ -75,9 +75,19 @@ check "raw cidr: schema rejects it" 1 "additional properties 'cidr' not allowed"
 
 tree k
 printf '    networkPolicy:\n      enabled: true\n      egress:\n        - to: {preset: dragonfly}\n' >>"$work/k/overlays/omega/patch-app.yaml"
-check "omega block rejected, file named" 1 "^::error file=k/overlays/omega/patch-app.yaml::networkPolicy in overlay omega: .* only in overlays/\{omicron\}" gate k
+check "omega block enabled: rejected, file named" 1 "^::error file=k/overlays/omega/patch-app.yaml::networkPolicy enabled in overlay omega: .* only in overlays/\{omicron\}" gate k
 grep -q "dragonfly-v2.yaml" "$work/out" && { echo "FAIL dragonfly's own key listed as a culprit"; fail=1; } || echo "ok   dragonfly key not blamed"
 grep -q "^ok   k/overlays/omicron" "$work/out" && echo "ok   omicron still rendered" || { echo "FAIL omicron skipped"; fail=1; }
+
+tree k
+printf '    networkPolicy:\n      enabled: false\n      egress:\n        - to: {preset: dragonfly}\n' >>"$work/k/overlays/omega/patch-app.yaml"
+check "omega block disabled: renders nothing, passes" 0 "ok   k/overlays/omega: .* 0 Cilium policies" gate k
+
+# The shared peers in base: omicron turns them on, omega (no key of its own) renders nothing.
+tree k
+printf '  values:\n    networkPolicy:\n      egress:\n        - to: {preset: dragonfly}\n' >>"$work/k/base/helm-release-app.yaml"
+check "base block: omega renders nothing" 0 "ok   k/overlays/omega: .* 0 Cilium policies" gate k
+grep -q "^ok   k/overlays/omicron: .* 1 Cilium policies" "$work/out" && echo "ok   base block: omicron still renders" || { echo "FAIL base block omicron"; cat "$work/out"; fail=1; }
 
 tree k
 sed -i.bak '/networkPolicy:/,$d' "$work/k/overlays/omicron/patch-app.yaml"
