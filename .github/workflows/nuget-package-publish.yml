@@ -231,7 +231,7 @@ jobs:
           echo "SDKs: ${versions//$'\n'/ }"
           # sdk-set: end
       # setup-dotnet syntax, from nora raw instead of builds.dotnet.microsoft.com (README).
-      - uses: maestra-io/github-actions/dotnet-nora@8b2f81257acdc1ed62f91c51139b527f2966aa7f # v1.99.1
+      - uses: maestra-io/github-actions/dotnet-nora@8ebf680b9d3977cae5fab267f84d90a13b99c4c5 # v1.100.0
         with:
           dotnet-version: ${{ steps.sdk.outputs.versions }}
           global-json-file: ${{ inputs.dotnet-version == '' && steps.sdk.outputs.global-json == 'true' && hashFiles('global.json') != '' && 'global.json' || '' }}
