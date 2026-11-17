@@ -12,9 +12,10 @@ pull request what Flux runs after the merge, for every kustomize entry point giv
   ->  kubeconform -strict of the Cilium policies against the vendored CRD schema  ->
   netpol-broad-gate.py (the fluxcd gate against over-broad selectors).
 
-An overlay whose environment is not in --allowed-envs may not carry the key at all: omega has
-no netpol/ in fluxcd yet, so a block there would be a policy without a deny list. The error
-names the files that hold the key.
+Any overlay may carry and enable the block: the peers shared by the environments live in
+base, an overlay turns them on. What keeps that safe is that a service policy is allow-only,
+so every rendered policy must set enableDefaultDeny ingress and egress to false; the deny
+lives only in the cluster's own policy in fluxcd.
 
 Every failure is a `::error` annotation plus a block in $GITHUB_STEP_SUMMARY with the tool's
 own output (the chart's `fail` text, the schema violation). Exit 1 on any failure.
@@ -125,16 +126,10 @@ class Gate:
             if "networkPolicy" not in values:
                 continue
             files = files_with_key(self.o.kustomize_path, env, self.o.known_envs, name) or [ep]
-            if env not in self.o.allowed_envs:
-                self.error(
-                    files[0],
-                    f"networkPolicy in overlay {env}: {ns}/{name} ({chart}) — {env} has no netpol/ in fluxcd yet; "
-                    f"the block may live only in overlays/{{{','.join(self.o.allowed_envs)}}}. Files: {', '.join(files)}",
-                )
-                continue
-            self.release(ep, files[0], env, ns, name, chart, chart_spec, values, repos)
+            self.release(ep, files, env, ns, name, chart, chart_spec, values, repos)
 
-    def release(self, ep, file, env, ns, name, chart, chart_spec, values, repos):
+    def release(self, ep, files, env, ns, name, chart, chart_spec, values, repos):
+        file = files[0]
         version = str(chart_spec.get("version") or "")
         if not SEMVER.match(version):
             self.error(file, f"{ns}/{name}: chart {chart} version '{version}' is not an exact pin; the gate renders exactly what Flux will")
@@ -164,6 +159,21 @@ class Gate:
             with open(rendered, "w") as f:
                 yaml.safe_dump_all(policies, f, sort_keys=False)
             verdict = f"{len(policies)} Cilium policies"
+            denying = [
+                (p.get("metadata") or {}).get("name", "?")
+                for p in policies
+                for s in ([p["spec"]] if isinstance(p.get("spec"), dict) else p.get("specs") or [{}])
+                if (s.get("enableDefaultDeny") or {}).get("ingress") is not False
+                or (s.get("enableDefaultDeny") or {}).get("egress") is not False
+            ]
+            if denying:
+                self.error(
+                    file,
+                    f"{ns}/{name}: rendered policies are not allow-only ({', '.join(sorted(set(denying)))}): "
+                    f"enableDefaultDeny ingress and egress must both be false, the deny lives only in fluxcd. "
+                    f"Files: {', '.join(files)}",
+                )
+                return
             if policies:
                 kc = run([self.kubeconform, "-strict", "-summary", "-schema-location",
                           os.path.join(self.o.schemas, "{{.ResourceKind}}-{{.Group}}-{{.ResourceAPIVersion}}.json"), rendered])
@@ -196,14 +206,12 @@ class Gate:
 def main(argv=None):
     a = argparse.ArgumentParser()
     a.add_argument("--kustomize-path", default="kustomization")
-    a.add_argument("--allowed-envs", default="omicron", help="comma-separated overlays that may carry the key")
-    a.add_argument("--known-envs", default="omicron,omega", help="comma-separated overlay names, for naming the files of a rejected key")
+    a.add_argument("--known-envs", default="omicron,omega", help="comma-separated overlay names, for naming the files that hold the key")
     a.add_argument("--ecr-registry", default="515260921971.dkr.ecr.us-west-2.amazonaws.com")
     a.add_argument("--charts-dir", default=os.path.join(tempfile.gettempdir(), "netpol-gate-charts"))
     a.add_argument("--schemas", default=os.path.join(HERE, "schemas"))
     a.add_argument("entry_points", nargs="*")
     o = a.parse_args(argv)
-    o.allowed_envs = [e for e in o.allowed_envs.split(",") if e]
     o.known_envs = [e for e in o.known_envs.split(",") if e]
     g = Gate(o)
     for ep in o.entry_points:
