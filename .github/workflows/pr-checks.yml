@@ -42,9 +42,9 @@
 #                   with that key is rendered as Flux will (kustomize build, postBuild vars,
 #                   `helm template` of the pinned chart pulled from ECR with the runner's
 #                   instance role), the Cilium policies pass kubeconform -strict against the
-#                   vendored CRD schema and fluxcd's netpol-broad-gate.py; an overlay other
-#                   than omicron may hold the key but must render no policy (omega has no
-#                   netpol/ in fluxcd yet; pr-checks/check-network-policy.py, issues-maestra#1714). A chart
+#                   vendored CRD schema and fluxcd's netpol-broad-gate.py; every rendered
+#                   policy must be allow-only (enableDefaultDeny false both ways: the deny
+#                   lives only in fluxcd; pr-checks/check-network-policy.py, issues-maestra#1714). A chart
 #                   error (schema, template `fail`) fails the job with the chart's text in
 #                   the log and the job summary: Kargo pushes a release straight to fluxcd
 #                   main, where it would block every later promotion of the service.

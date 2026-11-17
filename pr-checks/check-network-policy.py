@@ -12,10 +12,10 @@ pull request what Flux runs after the merge, for every kustomize entry point giv
   ->  kubeconform -strict of the Cilium policies against the vendored CRD schema  ->
   netpol-broad-gate.py (the fluxcd gate against over-broad selectors).
 
-An overlay whose environment is not in --allowed-envs may carry the key (the peers shared by
-the environments live in base) but must render no Cilium policy: omega has no netpol/ in
-fluxcd yet, so `networkPolicy.enabled` stays false there. The error names the files that hold
-the key.
+Any overlay may carry and enable the block: the peers shared by the environments live in
+base, an overlay turns them on. What keeps that safe is that a service policy is allow-only,
+so every rendered policy must set enableDefaultDeny ingress and egress to false; the deny
+lives only in the cluster's own policy in fluxcd.
 
 Every failure is a `::error` annotation plus a block in $GITHUB_STEP_SUMMARY with the tool's
 own output (the chart's `fail` text, the schema violation). Exit 1 on any failure.
@@ -159,11 +159,18 @@ class Gate:
             with open(rendered, "w") as f:
                 yaml.safe_dump_all(policies, f, sort_keys=False)
             verdict = f"{len(policies)} Cilium policies"
-            if policies and env not in self.o.allowed_envs:
+            denying = [
+                (p.get("metadata") or {}).get("name", "?")
+                for p in policies
+                for s in ([p["spec"]] if isinstance(p.get("spec"), dict) else p.get("specs") or [{}])
+                if (s.get("enableDefaultDeny") or {}).get("ingress") is not False
+                or (s.get("enableDefaultDeny") or {}).get("egress") is not False
+            ]
+            if denying:
                 self.error(
                     file,
-                    f"networkPolicy enabled in overlay {env}: {ns}/{name} ({chart}) renders {len(policies)} Cilium policies — "
-                    f"{env} has no netpol/ in fluxcd yet; it may be enabled only in overlays/{{{','.join(self.o.allowed_envs)}}}. "
+                    f"{ns}/{name}: rendered policies are not allow-only ({', '.join(sorted(set(denying)))}): "
+                    f"enableDefaultDeny ingress and egress must both be false, the deny lives only in fluxcd. "
                     f"Files: {', '.join(files)}",
                 )
                 return
@@ -199,14 +206,12 @@ class Gate:
 def main(argv=None):
     a = argparse.ArgumentParser()
     a.add_argument("--kustomize-path", default="kustomization")
-    a.add_argument("--allowed-envs", default="omicron", help="comma-separated overlays where the block may be enabled")
-    a.add_argument("--known-envs", default="omicron,omega", help="comma-separated overlay names, for naming the files of a rejected key")
+    a.add_argument("--known-envs", default="omicron,omega", help="comma-separated overlay names, for naming the files that hold the key")
     a.add_argument("--ecr-registry", default="515260921971.dkr.ecr.us-west-2.amazonaws.com")
     a.add_argument("--charts-dir", default=os.path.join(tempfile.gettempdir(), "netpol-gate-charts"))
     a.add_argument("--schemas", default=os.path.join(HERE, "schemas"))
     a.add_argument("entry_points", nargs="*")
     o = a.parse_args(argv)
-    o.allowed_envs = [e for e in o.allowed_envs.split(",") if e]
     o.known_envs = [e for e in o.known_envs.split(",") if e]
     g = Gate(o)
     for ep in o.entry_points:
