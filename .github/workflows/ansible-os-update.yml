@@ -577,3 +577,60 @@ jobs:
             echo ""
             echo "<https://github.com/maestra-io/soc/actions/workflows/vuln-scan.yaml>"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # A reboot that overlaps the 4-hourly break-glass probe (soc
+      # breakglass-verify.yaml) leaves breakglass_ssh_probe_success=0 for that
+      # host until the next scheduled run, and BreakglassSshProbeFailing pages on
+      # a host whose emergency access is fine (issues-maestra#1774). Probe the
+      # hosts of this run again now. Same token as the re-scan: actions:write on
+      # soc. !cancelled() so a failed re-scan dispatch does not skip it. A failed
+      # dispatch warns and stays green: the alert then clears at the next
+      # scheduled probe, as before.
+      - name: Re-probe break-glass access on the patched hosts
+        if: ${{ !cancelled() }}
+        env:
+          HOSTS: ${{ needs.enumerate.outputs.hosts }}
+          SOC_TOKEN: ${{ steps.soc-token.outputs.SOC_TOKEN }}
+          REGION: ${{ inputs.region }}
+          CONTOUR: ${{ inputs.environment }}
+        run: |
+          set -uo pipefail
+          LIST="$(printf '%s' "${HOSTS}" | jq -r 'join(",")')"
+
+          # The verifier probes from the in-cluster runner pools of omicron and
+          # omega, and only US hosts are enrolled. Any other contour has no probe
+          # metric and no alert to clear.
+          case "${REGION}/${CONTOUR}" in
+            us/omicron|us/omega) ;;
+            *)
+              echo "Break-glass re-probe skipped: the verifier covers us/omicron and us/omega, not ${REGION}/${CONTOUR}."
+              exit 0 ;;
+          esac
+
+          MANUAL="gh workflow run breakglass-verify.yaml --repo maestra-io/soc -f contour=${CONTOUR} -f hosts=${LIST}"
+
+          # --ref main for the same reason as the re-scan dispatch above.
+          if [ -n "${SOC_TOKEN}" ] && GH_TOKEN="${SOC_TOKEN}" gh workflow run breakglass-verify.yaml \
+               --repo maestra-io/soc \
+               --ref main \
+               -f contour="${CONTOUR}" \
+               -f hosts="${LIST}"; then
+            {
+              echo "### Break-glass re-probe dispatched"
+              echo ""
+              echo "Contour: \`${CONTOUR}\`. Hosts: \`${LIST}\`"
+              echo ""
+              echo "<https://github.com/maestra-io/soc/actions/workflows/breakglass-verify.yaml>"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "::warning::Break-glass re-probe NOT dispatched (no soc token, or the dispatch failed; see this step's log). If a host rebooted during a scheduled probe, BreakglassSshProbeFailing stays up until the next 4-hourly run unless someone runs: ${MANUAL}"
+          {
+            echo "### Break-glass re-probe NOT dispatched"
+            echo ""
+            echo "If a host rebooted during a scheduled probe, \`BreakglassSshProbeFailing\`"
+            echo "stays up until the next 4-hourly run. Run it by hand:"
+            echo ""
+            echo "    ${MANUAL}"
+          } >> "$GITHUB_STEP_SUMMARY"

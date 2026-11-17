@@ -258,6 +258,32 @@ Opting in is having the file; opting out is not having it. The pet-VM consumers
 so their behaviour is byte-identical to before — and reverting a handoff is
 deleting one file.
 
+## After an apply: SOC re-scan and break-glass re-probe
+
+The `soc-rescan` job runs after `mode: apply`, on success and on a failed apply
+(not on a cancelled run). It dispatches two workflows in `maestra-io/soc` for the
+hosts of the run, with one Vault-minted token (`actions: write` on `soc` only):
+
+* `vuln-scan.yaml`, so the host CVE board shows the patched state.
+* `breakglass-verify.yaml` with `contour=<environment>` and `hosts=<the run's hosts>`.
+  A reboot that overlaps the 4-hourly break-glass probe pushes one false
+  `breakglass_ssh_probe_success 0`, and `BreakglassSshProbeFailing` would stay up
+  until the next scheduled probe. The re-probe replaces that sample. It is
+  dispatched once, at the end of the run, so in a multi-host run the false sample
+  of an early host lives until the run ends. Only `us` / `omicron` and `omega` are
+  covered by the verifier. Any other contour (`iota`) is skipped with a log line.
+
+A failed token mint never fails the run: both steps warn and print their manual
+command in the job summary. The two dispatches differ after that. A failed
+`vuln-scan.yaml` dispatch fails its step and the job. A failed
+`breakglass-verify.yaml` dispatch is a warning plus the manual command in the job
+summary, and the step stays green. The re-probe step runs in both cases:
+
+```bash
+gh workflow run breakglass-verify.yaml --repo maestra-io/soc \
+  -f contour=omega -f hosts=us-omega-lw-kube-common-worker10
+```
+
 ## Silences: maintenance, tail, none
 
 A host in a run is in exactly one of three silence states. Each state posts **every**
