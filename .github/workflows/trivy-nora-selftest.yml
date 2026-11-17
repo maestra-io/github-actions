@@ -1,6 +1,6 @@
 ---
-# trivy-nora for real: an image scan (EOL alpine, known HIGH findings) and a misconfig fs
-# scan, the trivy binary and all three databases through nora with the job's OIDC token;
+# trivy-nora for real: an image scan (EOL alpine, known HIGH findings), a misconfig fs scan and a pom.xml fs scan (POMs from nora's maven2),
+# the trivy binary and all three databases through nora with the job's OIDC token;
 # the exit code, the ignore file, the reused binary, and the runner's docker config left
 # without the nora credential.
 name: trivy-nora-selftest
@@ -99,3 +99,23 @@ jobs:
         run: |
           jq -e '[.Results[]?.Misconfigurations // [] | .[] | select(.ID == "DS-0002" or .ID == "DS002")] | length > 0' \
             "$RUNNER_TEMP/fixture.json"
+
+      - name: pom fixture (commons-text 1.9, CVE-2022-42889)
+        run: |
+          mkdir -p "$RUNNER_TEMP/pom"
+          printf '%s\n' '<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion>' \
+            '<groupId>x</groupId><artifactId>y</artifactId><version>1</version><dependencies><dependency>' \
+            '<groupId>org.apache.commons</groupId><artifactId>commons-text</artifactId><version>1.9</version>' \
+            '</dependency></dependencies></project>' > "$RUNNER_TEMP/pom/pom.xml"
+      - name: fs scan, POMs from nora's maven2
+        uses: ./trivy-nora
+        with:
+          scan-type: fs
+          scan-ref: ${{ runner.temp }}/pom
+          scanners: vuln
+          format: json
+          output: ${{ runner.temp }}/pom.json
+      - name: the pom's vulnerable dependency is reported
+        run: |
+          jq -e '[.Results[]?.Vulnerabilities // [] | .[] | select(.VulnerabilityID == "CVE-2022-42889")] | length > 0' \
+            "$RUNNER_TEMP/pom.json"
