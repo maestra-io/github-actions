@@ -189,24 +189,54 @@ jobs:
             nora-session
             security-scan
           persist-credentials: false
+      # The pinned tarball and the vulnerability DB are cached next to the runners (RunsOn Magic
+      # Cache, S3 in eu-central-1) instead of crossing to nora on us-iota for every scan
+      # (issues-maestra#1649): a cached tarball is used only with the pinned sha256.
+      - id: bin-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/scan-bin
+          key: scan-bin-trivy-${{ env.TRIVY_VERSION }}-${{ env.TRIVY_SHA256 }}
       - name: Install trivy
         id: install
         run: |
           set -euo pipefail
-          oidc="$(curl -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=packages.maestra.io" | jq -r .value)"
-          echo "::add-mask::${oidc}"
-          tgz="$RUNNER_TEMP/trivy.tar.gz"
-          printf 'user = "oidc:%s"\n' "$oidc" | curl -sfL --retry 5 --retry-delay 5 --retry-all-errors -K - -o "$tgz" \
-            "https://packages.maestra.io/github/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
-          echo "${TRIVY_SHA256}  ${tgz}" | sha256sum -c -
+          tgz="$RUNNER_TEMP/scan-bin/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          bash .github-actions/security-scan/fetch-pinned.sh \
+            "https://packages.maestra.io/github/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+            "$TRIVY_SHA256" "$tgz"
           tar -xzf "$tgz" -C "$RUNNER_TEMP" trivy
           # The DBs come through nora too (not ghcr / mirror.gcr directly).
           bash .github-actions/security-scan/trivy-nora-env.sh "$RUNNER_TEMP/trivy-docker"
+          echo "TRIVY_CACHE_DIR=$RUNNER_TEMP/trivy-cache" >> "$GITHUB_ENV"
           mv .github-actions/security-scan/{report.py,pr-scan.sh,pr-diff.py} "$RUNNER_TEMP/"
           rm -rf .github-actions
           echo "version=$TRIVY_VERSION" >> "$GITHUB_OUTPUT"
           echo "started=$(date -u +%FT%TZ)" >> "$GITHUB_OUTPUT"
+      - if: ${{ steps.install.outputs.fetched == 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/scan-bin
+          key: ${{ steps.bin-cache.outputs.cache-primary-key }}
+      # The DB is keyed by the digest nora serves for the tag right now, so a restored DB is the
+      # one this scan would download (trivy then skips the download until the DB's NextUpdate);
+      # a new upstream build is a new key. No digest: no cache, trivy downloads as before.
+      - name: trivy DB digest
+        id: db
+        run: |
+          d=$(docker buildx imagetools inspect "$TRIVY_DB_REPOSITORY" --format '{{json .Manifest}}' | jq -r .digest) || d=
+          if [[ "$d" == sha256:* ]]; then
+            echo "key=trivy-db-2-${d#sha256:}" >> "$GITHUB_OUTPUT"
+            echo "trivy DB $TRIVY_DB_REPOSITORY = $d"
+          else
+            echo "::warning::no digest for $TRIVY_DB_REPOSITORY: the DB is not cached in this job"
+          fi
+      - id: db-cache
+        if: ${{ steps.db.outputs.key != '' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/trivy-cache/db
+          key: ${{ steps.db.outputs.key }}
       # One scan: the JSON goes to a file, the table to the log (trivy convert), exit code as before.
       - name: trivy fs, findings not on the base (PR mode)
         if: ${{ github.event_name == 'pull_request' }}
@@ -221,6 +251,15 @@ jobs:
             "$RUNNER_TEMP/trivy" convert --format table "$RUNNER_TEMP/trivy.raw.json" || echo "::warning::trivy convert failed"
           fi
           exit "$rc"
+      - name: trivy DB downloaded
+        id: db-new
+        if: ${{ !cancelled() && steps.db.outputs.key != '' && steps.db-cache.outputs.cache-hit != 'true' }}
+        run: if [ -s "$TRIVY_CACHE_DIR/db/trivy.db" ]; then echo "save=true" >> "$GITHUB_OUTPUT"; fi
+      - if: ${{ !cancelled() && steps.db-new.outputs.save == 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/trivy-cache/db
+          key: ${{ steps.db.outputs.key }}
       # A report that cannot be written leaves the job's result to the scan; SOC shows the
       # missing report as "scan not reporting".
       - name: Report
@@ -275,18 +314,20 @@ jobs:
           path: .github-actions
           sparse-checkout: security-scan
           persist-credentials: false
+      - id: bin-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/scan-bin
+          key: scan-bin-opengrep-${{ env.OPENGREP_VERSION }}-${{ env.OPENGREP_SHA256 }}
       - name: Install opengrep, select the security rules
         id: install
         run: |
           set -euo pipefail
-          oidc="$(curl -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=packages.maestra.io" | jq -r .value)"
-          echo "::add-mask::${oidc}"
-          bin="$RUNNER_TEMP/opengrep"
-          printf 'user = "oidc:%s"\n' "$oidc" | curl -sfL --retry 5 --retry-delay 5 --retry-all-errors -K - -o "$bin" \
-            "https://packages.maestra.io/github/opengrep/opengrep/releases/download/v${OPENGREP_VERSION}/opengrep_manylinux_x86"
-          echo "${OPENGREP_SHA256}  ${bin}" | sha256sum -c -
-          chmod +x "$bin"
+          cached="$RUNNER_TEMP/scan-bin/opengrep_manylinux_x86"
+          bash .github-actions/security-scan/fetch-pinned.sh \
+            "https://packages.maestra.io/github/opengrep/opengrep/releases/download/v${OPENGREP_VERSION}/opengrep_manylinux_x86" \
+            "$OPENGREP_SHA256" "$cached"
+          install -m 755 "$cached" "$RUNNER_TEMP/opengrep"
           # The rules and the scripts leave the tree, or the scan would read them as code.
           mv .github-actions/security-scan/{report.py,pr-scan.sh,pr-diff.py} "$RUNNER_TEMP/"
           rm -rf .github-actions
@@ -300,6 +341,11 @@ jobs:
           find . -path '*/secrets/*' -delete
           find . -type d -empty -delete
           echo "$(find . -name '*.yaml' | wc -l) rule files"
+      - if: ${{ steps.install.outputs.fetched == 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/scan-bin
+          key: ${{ steps.bin-cache.outputs.cache-primary-key }}
       - name: opengrep scan (ERROR) of the PR's changes, base matches dropped (PR mode)
         if: ${{ github.event_name == 'pull_request' }}
         run: OPENGREP="$RUNNER_TEMP/opengrep" OPENGREP_RULES="$RUNNER_TEMP/semgrep-rules" bash "$RUNNER_TEMP/pr-scan.sh" opengrep
