@@ -5,6 +5,7 @@
   pr-diff.py trivy <base.json> <head.json> print the head findings absent from the base; exit 1
                                            when there is one, else 0
   pr-diff.py --self-test
+  Exit 2 on an unreadable report (a crash never reads as 0 or 1).
 
 Key of a finding, never a line number: vulnerability = (target, package, advisory id), so a
 PR that leaves a vulnerable package alone (or bumps it within the same advisory) adds nothing;
@@ -73,9 +74,19 @@ def self_test():
     assert main(["trivy", base, newsecret]) == 1
     assert main(["trivy", empty, newcve]) == 1
     assert main(["any", empty]) == 1 and main(["any", base]) == 0
+    import subprocess
+    bad = put("bad.json", None)
+    with open(bad, "w") as f:
+        f.write("{truncated")
+    for args in (["any", bad], ["any", os.path.join(d, "missing.json")], ["trivy", base, bad]):
+        assert subprocess.run([sys.executable, __file__, *args], capture_output=True).returncode == 2, args
     print("pr-diff self-test ok")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Exception as e:  # a crash is exit 2 (broken), never 1 (= no findings / new findings)
+        print(f"pr-diff: {type(e).__name__}: {e}", file=sys.stderr)
+        sys.exit(2)

@@ -54,9 +54,12 @@ opengrep)
 
 trivy)
   "${TRIVY:?}" fs --severity HIGH,CRITICAL --exit-code 0 --format json --output "$OUT/trivy-head.json" .
-  if ! python3 "$here/pr-diff.py" any "$OUT/trivy-head.json"; then
-    echo "no HIGH/CRITICAL findings at head: nothing the PR could introduce"; exit 0
-  fi
+  rc=0; python3 "$here/pr-diff.py" any "$OUT/trivy-head.json" || rc=$?
+  case $rc in
+    0) ;;
+    1) echo "no HIGH/CRITICAL findings at head: nothing the PR could introduce"; exit 0 ;;
+    *) echo "pr-scan: cannot read the trivy report" >&2; exit 2 ;;
+  esac
   wt=$(mktemp -d)/base
   git worktree add -q --detach "$wt" "$base"
   ( cd "$wt" && "$TRIVY" fs --severity HIGH,CRITICAL --exit-code 0 --skip-db-update --skip-java-db-update \
