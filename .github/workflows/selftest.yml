@@ -37,6 +37,7 @@ on:
       - "uv-nora/**"
       - "go-nora/**"
       - "cargo-nora/**"
+      - "dotnet-nora/**"
       - "nora-session/**"
       - "nora-service/**"
       - "check-encoding/**"
@@ -56,6 +57,9 @@ permissions:
 jobs:
   shell:
     runs-on: runs-on=${{ github.run_id }}-shell/runner=t3a-small
+    permissions:
+      contents: read
+      id-token: write # dotnet-nora: the SDK from nora raw
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -109,6 +113,8 @@ jobs:
 
       - name: cargo-nora source replacement, token-from-stdout helper, token output (stub curl)
         run: bash scripts/test-cargo-nora.sh
+      - name: dotnet-nora version specs, global.json rollForward, tampered download refused (stub curl)
+        run: bash scripts/test-dotnet-nora.sh
 
       - name: uv-nora keyring helper, UV_* env, token output (stub curl, local 401 index)
         run: bash scripts/test-uv-nora.sh
@@ -186,12 +192,13 @@ jobs:
 
       # warn-as-error must keep tests running on the Microsoft.Testing.Platform
       # runner too (a bare /warnaserror ran zero tests there, exit 5).
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      # The real SDK download from nora (sha256-checked), as the workflows install it.
+      - uses: ./dotnet-nora
         with:
           dotnet-version: 10.0.x
       - name: dotnet-service-build warn-as-error on MTP and VSTest runners (workflow copy)
         run: bash scripts/test-dotnet-service-build-mtp.sh
-      # After the setup-dotnet 10.0.x above: the image itself ships only its newest SDK.
+      # After the dotnet-nora 10.0.x above: the image itself ships only its newest SDK.
       - name: dotnet-service-build SDK pin on real SDKs (build SDK = pinned SDK 10, image's newest beside it)
         run: bash scripts/test-dotnet-sdk-pin-real.sh
 

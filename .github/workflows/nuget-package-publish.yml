@@ -252,7 +252,8 @@ jobs:
           BACKUP: ${{ runner.temp }}/global.json.repo
         run: |
           # sdk-pin: begin
-          major=$(printf '%s\n' "$VERSIONS" | sed -nE 's/^([0-9]+)\.0\.x$/\1/p' | sort -n | tail -1)
+          # Any setup-dotnet form (10, 10.x, 10.0, 10.0.x, 10.0.4xx, 10.0.404) names its major.
+          major=$(printf '%s\n' "$VERSIONS" | sed -nE 's/^[[:space:]]*([0-9]+)([.][0-9x]+)*[[:space:]]*$/\1/p' | sort -n | tail -1)
           if [ -z "$major" ]; then
             echo "no netN.M target framework: build SDK left to global.json / the newest installed"; exit 0
           fi

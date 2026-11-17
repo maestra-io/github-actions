@@ -56,7 +56,35 @@ case_dir; run '' >/dev/null
 
 case_dir; run '7.0.x' >/dev/null
 [ ! -e "$d/w/global.json" ] || fail "SDK not installed: nothing to pin"
+
+# a dotnet-version override in any setup-dotnet form pins its major
+for spec in 8 8.x 8.0 8.0.x 8.0.4xx 8.0.425; do
+  case_dir; run "$spec" >/dev/null
+  [ "$(sdk)" = "8.0.425 latestFeature" ] || fail "override '$spec' must pin the newest 8.0 SDK: got $( [ -e "$d/w/global.json" ] && sdk || echo none)"
+done
+case_dir; run $'10.0.401\n8.0.x' >/dev/null
+[ "$(sdk)" = "10.0.401 latestFeature" ] || fail "exact 10.0.401 with 8.0.x must pin 10: got $(sdk)"
 # dotnet-service-build.yml (test job) runs the same program: the copies must not drift.
 copy=$(sed -n '/# sdk-pin: begin/,/# sdk-pin: end/p' "$here/../.github/workflows/dotnet-service-build.yml" | sed 's/^          //')
 [ "$copy" = "$prog" ] || { echo "FAIL sdk-pin: dotnet-service-build.yml copy differs from nuget-package-publish.yml"; exit 1; }
+# There the SDK steps also serve a test-command run on the runner in a .NET repo, and that
+# step runs after the pin (processing-orders built on the image's SDK 11, issues-maestra#1649).
+python3 -I - "$here/../.github/workflows/dotnet-service-build.yml" <<'PY' || exit 1
+import re, sys
+text = open(sys.argv[1]).read()
+job = re.search(r"^  test:\n(.*?)^  \S", text, re.S | re.M).group(1)
+steps = re.split(r"^      - ", job, flags=re.M)[1:]
+def find(pat):
+    hits = [i for i, s in enumerate(steps) if re.search(pat, s, re.M)]
+    assert len(hits) == 1, f"{pat}: {len(hits)} steps"
+    return hits[0]
+want = "inputs.docker-test-target == '' && (inputs.test-command == '' || (inputs.test-image == '' && hashFiles('**/*.csproj') != ''))"
+sdk = [find(r"^        id: sdk$"), find(r"^        id: sdk-set$"),
+       find(r"uses: (actions/setup-dotnet|maestra-io/github-actions/dotnet-nora)@"), find(r"^        id: pin$")]
+for i in sdk:
+    assert want in steps[i], "SDK step without the test-command condition:\n" + steps[i][:300]
+tc = find(r"^          TEST_COMMAND: ")
+assert tc > max(sdk), "the test-command step runs before the SDK pin"
+assert tc < find(r"name: put the repo's global.json back"), "the test-command step runs after global.json is put back"
+PY
 echo "nuget-sdk-pin: OK"

@@ -1,0 +1,12 @@
+# .NET SDKs dotnet-nora installs: <version> <sha256 of dotnet-sdk-<version>-linux-x64.tar.gz>.
+# Served by nora raw at src/builds.dotnet.microsoft.com/dotnet/Sdk/<version>/, uploaded by
+# maestra-io/dockerfiles .github/raw-uploads/dotnet.txt with the same sha256 (that file says how
+# it was derived from Microsoft's published sha512). A new SDK goes into both files, the
+# dockerfiles PR first (merged = uploaded).
+5.0.408 7196d49ba503770089612fb764d755f71e901ba82bfb39e80347e9fb8bb86e5e
+6.0.428 9b2f9b91e28677b58e47d34a1d9e2a88f597af1f6acd44764a3abc2f1bacdc8a
+7.0.410 acc4047f48cc0d401ed51f8d1c02c801f9e1c58b80c137cb13fd4bee316308a9
+8.0.428 6f8b64ef9644b11bcab6748ebfec088d2ae4868df26204bb2354c3ada0f09cbe
+9.0.321 67f2b75c347b0fda115fa6c0d72f6ba4e05b9e96824ccc5ce835879a3f053875
+10.0.404 c0610757a818fde4b960d27a0ac421f273068a05dc5ec7abafc01dbf84e9cb4d
+11.0.100 6fdb8822f47ccdba28f507dcd5d92e632d5b99cd27908d6838f0cc575be33baf

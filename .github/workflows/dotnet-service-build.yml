@@ -950,26 +950,12 @@ jobs:
           key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/*.props', '**/packages.lock.json', '**/nuget.config', 'global.json') }}
           restore-keys: nuget-${{ runner.os }}-
 
-      # ── test-command (non-.NET repos) ───────────────────────────────────
-      - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
-        env:
-          TEST_COMMAND: ${{ inputs.test-command }}
-          TEST_IMAGE: ${{ inputs.test-image }}
-          PACKAGES_TOKEN: ${{ steps.token.outputs.token }}
-          PACKAGES_URL: ${{ inputs.packages-url }}
-        run: |
-          if [ -n "$TEST_IMAGE" ]; then
-            docker run --rm --env-file "$RUNNER_TEMP/test.env" -e PACKAGES_TOKEN -e PACKAGES_URL \
-              -v "$PWD:/src" -w /src "$TEST_IMAGE" sh -ec "$TEST_COMMAND"
-          else
-            bash -eo pipefail -c "$TEST_COMMAND"
-          fi
-
-      # ── dotnet test (GitLab .update-source-and-test) ─────────────────────
+      # ── SDK: dotnet test (GitLab .update-source-and-test), and a test-command
+      # on the runner in a .NET repo ───────────────────────────────────────
       # setup-dotnet rejects a global.json `rollForward` with a version that is not a
       # full SDK version (10.0.0, 8.0.0); dotnet itself rolls forward from it. Such a
       # file gets <major>.<minor>.x; an explicit dotnet-version always wins.
-      - if: ${{ inputs.docker-test-target == '' && inputs.test-command == '' }}
+      - if: ${{ inputs.docker-test-target == '' && (inputs.test-command == '' || (inputs.test-image == '' && hashFiles('**/*.csproj') != '')) }}
         id: sdk
         env:
           DOTNET_VERSION: ${{ inputs.dotnet-version }}
@@ -1000,7 +986,7 @@ jobs:
       # the tests. A dotnet-version override is pinned to its own highest major.
       - name: target framework majors
         id: sdk-set
-        if: ${{ inputs.docker-test-target == '' && inputs.test-command == '' }}
+        if: ${{ inputs.docker-test-target == '' && (inputs.test-command == '' || (inputs.test-image == '' && hashFiles('**/*.csproj') != '')) }}
         env:
           OVERRIDE: ${{ inputs.dotnet-version }}
           SOLUTION: ${{ inputs.solution-file }}
@@ -1047,16 +1033,17 @@ jobs:
           echo "global-json=${global_json:-true}" >> "$GITHUB_OUTPUT"
           echo "SDKs: ${versions//$'\n'/ }"
           # sdk-set: end
-      - if: ${{ inputs.docker-test-target == '' && inputs.test-command == '' }}
+      - if: ${{ inputs.docker-test-target == '' && (inputs.test-command == '' || (inputs.test-image == '' && hashFiles('**/*.csproj') != '')) }}
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: |
             ${{ steps.sdk.outputs.version }}
             ${{ steps.sdk-set.outputs.versions }}
-          global-json-file: ${{ steps.sdk.outputs.file }}
+          # Only a global.json that exists: a test-command repo may have none.
+          global-json-file: ${{ steps.sdk.outputs.file != '' && hashFiles('global.json') != '' && 'global.json' || '' }}
       - name: pin the build SDK
         id: pin
-        if: ${{ inputs.docker-test-target == '' && inputs.test-command == '' }}
+        if: ${{ inputs.docker-test-target == '' && (inputs.test-command == '' || (inputs.test-image == '' && hashFiles('**/*.csproj') != '')) }}
         env:
           VERSIONS: ${{ steps.sdk-set.outputs.versions }}
           BACKUP: ${{ runner.temp }}/global.json.repo
@@ -1064,7 +1051,8 @@ jobs:
           # a subshell: the program's `exit 0` must not skip the SDK line below
           (
           # sdk-pin: begin
-          major=$(printf '%s\n' "$VERSIONS" | sed -nE 's/^([0-9]+)\.0\.x$/\1/p' | sort -n | tail -1)
+          # Any setup-dotnet form (10, 10.x, 10.0, 10.0.x, 10.0.4xx, 10.0.404) names its major.
+          major=$(printf '%s\n' "$VERSIONS" | sed -nE 's/^[[:space:]]*([0-9]+)([.][0-9x]+)*[[:space:]]*$/\1/p' | sort -n | tail -1)
           if [ -z "$major" ]; then
             echo "no netN.M target framework: build SDK left to global.json / the newest installed"; exit 0
           fi
@@ -1093,6 +1081,22 @@ jobs:
           # sdk-pin: end
           )
           echo "build SDK: $(dotnet --version)"
+      # ── test-command ───────────────────────────────────────────────────
+      # After the SDK steps: on the runner in a .NET repo it builds with the pinned SDK
+      # (processing-orders' run-tests.sh built on the image's SDK 11, issues-maestra#1649).
+      - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+          TEST_IMAGE: ${{ inputs.test-image }}
+          PACKAGES_TOKEN: ${{ steps.token.outputs.token }}
+          PACKAGES_URL: ${{ inputs.packages-url }}
+        run: |
+          if [ -n "$TEST_IMAGE" ]; then
+            docker run --rm --env-file "$RUNNER_TEMP/test.env" -e PACKAGES_TOKEN -e PACKAGES_URL \
+              -v "$PWD:/src" -w /src "$TEST_IMAGE" sh -ec "$TEST_COMMAND"
+          else
+            bash -eo pipefail -c "$TEST_COMMAND"
+          fi
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command == '' }}
         env:
           TOKEN: ${{ steps.token.outputs.token }}

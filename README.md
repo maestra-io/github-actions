@@ -557,6 +557,27 @@ RUN cargo build --release --offline
 Go redacts the userinfo (`token:xxxxx`) in its errors. Tests: `scripts/test-go-nora.sh`,
 `scripts/test-cargo-nora.sh` (selftest).
 
+## .NET SDK through nora (`dotnet-nora`)
+
+In place of `actions/setup-dotnet`, which downloads the SDK and its release metadata from
+builds.dotnet.microsoft.com (issues-maestra#1649). Same `dotnet-version` (N, N.x, N.M, N.M.x,
+N.M.Fxx, exact; one per line) and `global-json-file` (its `rollForward`) inputs, resolved to
+the newest SDK in `dotnet-nora/sdks.txt`; each tarball comes from nora raw
+(`/raw/src/builds.dotnet.microsoft.com/dotnet/Sdk/<v>/…`, uploaded by maestra-io/dockerfiles
+`.github/raw-uploads/dotnet.txt`), is checked against the sha256 pinned in `sdks.txt` and
+unpacked next to the image's SDKs. linux-x64 only; the job needs `id-token: write`.
+
+```yaml
+  - uses: maestra-io/github-actions/dotnet-nora@<40-hex sha> # vX.Y.Z
+    with:
+      dotnet-version: 8.0.x
+      global-json-file: global.json
+```
+
+A version `sdks.txt` does not hold fails the step (nothing falls back to Microsoft). A new
+SDK: the dockerfiles PR first (its merge uploads), then the line in `sdks.txt`. Test:
+`scripts/test-dotnet-nora.sh` (selftest; the selftest also installs 10.0.x through it).
+
 ## Python packages through nora (`uv-nora`)
 
 Every Python repo uses uv with a committed `uv.lock` and nora as its only index
