@@ -257,6 +257,12 @@
   block:
     # Silences go up BEFORE the drain, not before the reboot: HaproxySystemdUnitFailed
     # (for: 1m) and the BGP/VRRP alerts fire on the drain itself.
+    # The reboot re-gathers facts, so the starting kernel has to be kept for the
+    # result line.
+    - name: Remember the kernel this run started on
+      ansible.builtin.set_fact:
+        os_update_kernel_before: "{{ ansible_facts.kernel }}"
+
     - name: Silence this host's alerts (dead-man window)
       ansible.builtin.include_tasks: silence.yml
 
@@ -417,6 +423,19 @@
         - name: Could not expire the silences — the dead-man endsAt still covers us
           ansible.builtin.debug:
             msg: "WARNING: could not expire the maintenance silences; they expire on their own in <= {{ os_update_silence_minutes }} min."
+
+    # One line per host for whoever drives the run: the workflow copies it into
+    # the job summary (ansible-os-update.yml `summary_grep`). Every variable has a
+    # default — a raise here would skip `Fail the job` below.
+    - name: Result
+      ansible.builtin.debug:
+        msg: >-
+          os-update result: {{ inventory_hostname }}
+          kernel {{ os_update_kernel_before | default(ansible_facts.kernel) }} -> {{ ansible_facts.kernel }},
+          packages {{ (os_update_pending | default([]) | length) if (os_update_needed | default(false)) else 0 }},
+          rebooted {{ 'yes' if (os_update_rebooted | default(false)) else 'no' }},
+          reboot pending {{ (os_update_reboot_needed | default(false)) and not (os_update_rebooted | default(false)) }},
+          {{ 'FAILED' if ((os_update_failed | default(false)) or (os_update_undrain_failed | default(false))) else 'checks ok' }}
 
     - name: Fail the job
       ansible.builtin.fail:

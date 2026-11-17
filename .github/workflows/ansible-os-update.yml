@@ -476,6 +476,8 @@ jobs:
       # name — without the attempt suffix, "Re-run failed jobs" red-loops on the
       # artifact step after the playbook has already succeeded.
       artifact_name: os-update-${{ matrix.host }}-${{ github.run_number }}-${{ github.run_attempt }}
+      # The role's per-host result line, or its «nothing to do» line.
+      summary_grep: "^os-update result: |: already up to date, no reboot pending"
       # The family rule (ansible-manual.yml): omega is gated by a GitHub Environment,
       # omicron is not. Never invent an environment name for omicron — GitHub would
       # silently create it WITHOUT protection rules, which reads like a gate and isn't one.

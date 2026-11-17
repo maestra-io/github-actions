@@ -228,6 +228,11 @@ on:
         required: false
         type: string
         default: ""
+      summary_grep:
+        description: "Extended regex; every debug `msg` in the run log that matches it is copied into the job summary. Empty = none."
+        required: false
+        type: string
+        default: ""
       teleport_join_token:
         required: false
         type: string
@@ -1011,6 +1016,8 @@ jobs:
           TAGS_INPUT: ${{ inputs.tags }}
           CHECK_MODE_INPUT: ${{ inputs.check_mode }}
           LIMIT_INPUT: ${{ inputs.host_limit || format('{0}_{1}_{2}{3}', inputs.region, inputs.environment, inputs.site, inputs.inventory_group_suffix) }}
+          SUMMARY_GREP: ${{ inputs.summary_grep }}
+          LOG_FILE: ${{ steps.execute.outputs.log_file }}
         run: |
           {
             echo "### Ansible ${MODE_LABEL} — ${REGION_INPUT}-${ENVIRONMENT_INPUT}-${SITE_INPUT}${GROUP_SUFFIX_INPUT}"
@@ -1021,6 +1028,11 @@ jobs:
             echo "| limit | \`${LIMIT_INPUT}\` |"
             echo "| tags | \`${TAGS_INPUT}\` |"
             echo "| check_mode | ${CHECK_MODE_INPUT} |"
+            if [ -n "$SUMMARY_GREP" ] && [ -f "$LOG_FILE" ]; then
+              echo ""
+              grep -oE "\"msg\": \".*\"" "$LOG_FILE" | sed -E 's/^"msg": "//; s/"$//' \
+                | grep -E -- "$SUMMARY_GREP" | sed 's/^/- /' || true
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload log artifact
