@@ -22,6 +22,8 @@ if [ "$("$dir/trivy" --version 2>/dev/null | head -1)" != "Version: ${TRIVY_VERS
   tar -xzf "$tgz" -C "$dir" trivy
   rm -f "$tgz"
 fi
+# Later steps call `trivy` (convert, a second report) as they did after trivy-action's setup-trivy.
+[ -z "${GITHUB_PATH:-}" ] || echo "$dir" >> "$GITHUB_PATH"
 
 # The DB pulls authenticate to nora from a 0600 copy of the job's docker config with the
 # nora credential added (never ~/.docker, argv or env): the job's other registry logins
