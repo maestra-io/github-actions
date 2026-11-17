@@ -12,7 +12,7 @@ prog=$(sed -n '/# >>> targets-and-bakes/,/# <<< targets-and-bakes/p' "$wf" | sed
 # run <IMAGE_TARGETS> <BAKES> [BASE_IMAGE] -> prints "matrix|images|bakes|multi|base_name|base_dockerfile|base_target", or exits 1
 run() {
   IMAGE_TARGETS="$1" BAKES="$2" BASE_IMAGE="${3:-}" DOCKERFILE=Dockerfile SERVICE="" BAKE_PATH=./kustomization \
-  KARGO_PROJECT="" KARGO_WAREHOUSE="" REPO_NAME=my-repo \
+  REPO_NAME=my-repo \
     bash -c "set -eo pipefail; $prog"$'\n''echo "$matrix|$images|$bakes|$multi|$base_name|$base_dockerfile|$base_target"'
 }
 eq() { [ "$1" = "$2" ] || { printf 'FAIL %s\n  got:  %s\n  want: %s\n' "$3" "$1" "$2"; exit 1; }; }
@@ -22,7 +22,7 @@ fails() { if run "$1" "$2" "${4:-}" >/dev/null 2>&1; then echo "FAIL $3: accepte
 IFS='|' read -r m i b multi _ < <(run "a_services=services,a_lrt=lrt" "")
 eq "$m" '[{"image":"a_services","dockerfile":"Dockerfile","target":"services","context":"."},{"image":"a_lrt","dockerfile":"Dockerfile","target":"lrt","context":"."}]' "pairs"
 eq "$i" "a_services,a_lrt" "images"
-eq "$b" '[{"service":"my-repo","bake-path":"./kustomization","images":"a_services,a_lrt","kargo-project":"kargo-my-repo","kargo-warehouse":"my-repo"}]' "single bake"
+eq "$b" '[{"service":"my-repo","bake-path":"./kustomization","images":"a_services,a_lrt"}]' "single bake"
 eq "$multi" false "single multi"
 
 # Other Dockerfiles and last-stage builds.
@@ -36,7 +36,7 @@ eq "$i" "postfix,init,smpp,x" "context images"
 
 # Several warehouses; images default to all; comments and blank lines ignored.
 IFS='|' read -r _ _ b multi _ < <(run "m_services=services,c_services=c-services,c_lrt=c-lrt" $'# mta\nmindbox-mta ./kustomization/mta m_services\n\ncampaigns ./kustomization/campaigns c_services,c_lrt\nall ./k')
-eq "$b" '[{"service":"mindbox-mta","bake-path":"./kustomization/mta","images":"m_services","kargo-project":"kargo-mindbox-mta","kargo-warehouse":"mindbox-mta"},{"service":"campaigns","bake-path":"./kustomization/campaigns","images":"c_services,c_lrt","kargo-project":"kargo-campaigns","kargo-warehouse":"campaigns"},{"service":"all","bake-path":"./k","images":"m_services,c_services,c_lrt","kargo-project":"kargo-all","kargo-warehouse":"all"}]' "bakes"
+eq "$b" '[{"service":"mindbox-mta","bake-path":"./kustomization/mta","images":"m_services"},{"service":"campaigns","bake-path":"./kustomization/campaigns","images":"c_services,c_lrt"},{"service":"all","bake-path":"./k","images":"m_services,c_services,c_lrt"}]' "bakes"
 eq "$multi" true "multi"
 
 # base-image: none by default; name may carry a tag; optional target.
@@ -62,8 +62,10 @@ fails "a=t" "" "base three fields" "base=D:t:c"
 echo "dotnet-service-build targets/bakes/base-image: OK"
 
 # ── sdk-version: a global.json setup-dotnet rejects gets <major>.<minor>.x ──────
-sdk=$(sed -n '/# >>> sdk-version/,/# <<< sdk-version/p' "$wf" | sed 's/^          //')
+sdk=$(awk 'index($0,"# >>> sdk-version"){n++} n==1{print} n==1&&index($0,"# <<< sdk-version"){exit}' "$wf" | sed 's/^          //')
 [ -n "$sdk" ] || { echo "sdk-version block not found in $wf"; exit 1; }
+[ "$(sed -n '/# >>> sdk-version/,/# <<< sdk-version/p' "$wf" | sed 's/^          //')" = "$(printf '%s\n%s' "$sdk" "$sdk")" ] \
+  || { echo "FAIL sdk-version: the test and dependency-graph copies differ"; exit 1; }
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 # sdk_for <DOTNET_VERSION> <global.json content or "-" for none> -> "version|file"
 sdk_for() {
@@ -108,3 +110,107 @@ eq "$(aws_run 3)" "4 3 0" "NoCredentials 3x, then credentials"
 eq "$(aws_run 9)" "5 4 0" "never: 5 tries, then the AWS steps report it"
 grep -q '::warning::no AWS credentials' "$work/out" || { cat "$work/out"; echo "FAIL aws-credentials: no warning"; exit 1; }
 echo "dotnet-service-build aws-credentials: OK"
+
+# ── nora-cred-helper: a fresh OIDC token per docker pull, exchanged for a nora session ──
+cred=$(awk 'index($0,"# >>> nora-cred-helper"){n++} n==1{print} n==1&&index($0,"# <<< nora-cred-helper"){exit}' "$wf" | sed 's/^          //')
+[ -n "$cred" ] || { echo "nora-cred-helper block not found in $wf"; exit 1; }
+# Every job that pulls through nora carries the same copy (reusable workflows cannot share a file).
+for f in dotnet-service-build:2 service-build:2 mcf-build:5 nuget-package-publish:1 python-package-publish:1 mirror-test-images:1; do
+  w="$here/../.github/workflows/${f%%:*}.yml"
+  got=$(sed -n '/# >>> nora-cred-helper/,/# <<< nora-cred-helper/p' "$w" | sed 's/^          //')
+  want=$(for _ in $(seq "${f##*:}"); do printf '%s\n' "$cred"; done)
+  [ "$got" = "${want%$'\n'}" ] || { echo "FAIL nora-cred-helper: ${f%%:*}.yml copies differ or are missing"; exit 1; }
+done
+# the setup-buildx composite (its run: block sits two columns left of a workflow's)
+got=$(sed -n '/# >>> nora-cred-helper/,/# <<< nora-cred-helper/p' "$here/../setup-buildx/action.yml" | sed 's/^        //')
+[ "$got" = "$cred" ] || { echo "FAIL nora-cred-helper: setup-buildx/action.yml copy differs or is missing"; exit 1; }
+n="$work/nora"; mkdir -p "$n/bin" "$n/home/.docker" "$n/tmp"
+# NORA_SESSION=<http code> the exchange answers (200 = an nrs_ token)
+cat > "$n/bin/curl" <<'C'
+#!/usr/bin/env bash
+if [[ "$*" == *"https://packages.maestra.io/api/oidc/session"* ]]; then
+  [[ "$*" == *"Bearer tok-"* ]] || exit 22
+  out=; while [ $# -gt 0 ]; do [ "$1" = -o ] && out=$2; shift; done
+  code=${NORA_SESSION:-200}; { [ "$code" = 200 ] && echo '{"token":"nrs_'"$RANDOM"'"}' || echo '{}'; } > "$out"
+  printf %s "$code"; exit 0
+fi
+[[ "$*" == *"audience=packages.maestra.io"* ]] && echo '{"value":"tok-'"$RANDOM"'"}'
+C
+chmod 755 "$n/bin/curl"
+echo '{"auths":{"515260921971.dkr.ecr.us-west-2.amazonaws.com":{"auth":"x"}}}' > "$n/home/.docker/config.json"
+install() { # <dir> <audience>: run the block with a job's OIDC env, as the workflow step does
+  mkdir -p "$1/tmp"; : > "$1/path"
+  HOME="$n/home" RUNNER_TEMP="$1/tmp" GITHUB_PATH="$1/path" AUDIENCE="$2" PACKAGES_URL="${3:-https://packages.maestra.io}" \
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN=x ACTIONS_ID_TOKEN_REQUEST_URL="https://t/?v=1" bash -c "set -eo pipefail; $cred"
+}
+# get <dir>: the helper as tox runs it, with an environment that has PATH only
+get() { printf %s packages.maestra.io | env -i PATH="$n/bin:$PATH" NORA_SESSION="${NORA_SESSION:-200}" "$(cat "$1/path")/docker-credential-nora" get; }
+install "$n/ok" packages.maestra.io
+eq "$(jq -c '{a: (.auths|keys), h: .credHelpers}' "$n/home/.docker/config.json")" \
+  '{"a":["515260921971.dkr.ecr.us-west-2.amazonaws.com"],"h":{"packages.maestra.io":"nora"}}' "nora config keeps auths"
+# the 1 h session token, not the JWT: Testcontainers keeps the first credential for its whole run
+eq "$(jq -r '.ServerURL + " " + .Username + " " + (.Secret|test("^nrs_")|tostring)' <<<"$(get "$n/ok")")" \
+  "packages.maestra.io token true" "nora helper get, scrubbed env"
+eq "$(NORA_SESSION=404 get "$n/ok" | jq -r '.Secret|test("^tok-")')" true "no exchange at nora: the JWT"
+if NORA_SESSION=500 get "$n/ok" >/dev/null 2>&1; then echo "FAIL nora helper: a failed exchange accepted"; exit 1; fi
+# python-package-publish hands its index URL: the exchange still goes to nora's origin
+install "$n/py" packages.maestra.io https://packages.maestra.io/simple/
+eq "$(get "$n/py" | jq -r '.Secret|test("^nrs_")')" true "index URL with a path: session at the origin"
+eq "$(stat -c %a "$n/ok/tmp/nora-bin/oidc.env" 2>/dev/null || stat -f %Lp "$n/ok/tmp/nora-bin/oidc.env")" 600 "oidc.env mode"
+install "$n/bad" wrong
+if get "$n/bad" >/dev/null 2>&1; then echo "FAIL nora helper: empty token accepted"; exit 1; fi
+echo "dotnet-service-build nora-cred-helper: OK"
+
+# ── setup-buildx: moby/buildkit through nora, pinned by digest (issues-maestra#1649) ──
+# Without driver-opts the docker-container driver pulls moby/buildkit:buildx-stable-1 from
+# Docker Hub, past nora's quarantine. The daemon pulls it with ~/.docker/config.json, so the
+# job's nora-cred-helper must run first. Bump: every copy, a version nora has served >3 days.
+bk=$(awk '
+  FNR==1 { job=""; cred=0 }
+  /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { job=$1; cred=0 }
+  index($0, "# <<< nora-cred-helper") { cred=1 }
+  /uses: docker\/setup-buildx-action@/ { pend=FILENAME ":" FNR " " job; c=cred; next }
+  pend != "" && /^[[:space:]]*#/ { next }
+  pend != "" && blk { sub(/^[[:space:]]*/, ""); print pend " cred=" c " " $0; pend=""; blk=0; next }
+  pend != "" && /driver-opts:/ { sub(/.*driver-opts:[[:space:]]*/, ""); if ($0 == "|") { blk=1; next } print pend " cred=" c " " $0; pend=""; next }
+  pend != "" && !/^[[:space:]]+(with:|[a-z-]+:)/ { print pend " cred=" c " none"; pend="" }
+' "$here"/../.github/workflows/*.yml "$here/../setup-buildx/action.yml")
+[ -n "$bk" ] || { echo "FAIL setup-buildx: no use found"; exit 1; }
+img='image=packages\.maestra\.io/docker-hub/moby/buildkit:v[0-9.]+@sha256:[0-9a-f]{64}$'
+bad=$(grep -vE " cred=1 $img" <<<"$bk" || true)
+[ -z "$bad" ] || { printf 'FAIL setup-buildx without the nora BuildKit image or nora login before it:\n%s\n' "$bad"; exit 1; }
+[ "$(awk '{print $NF}' <<<"$bk" | sort -u | wc -l | tr -d ' ')" = 1 ] || { printf 'FAIL setup-buildx: BuildKit copies differ:\n%s\n' "$bk"; exit 1; }
+echo "setup-buildx BuildKit via nora: OK ($(wc -l <<<"$bk" | tr -d ' ') uses)"
+
+# ── dependency-snapshot: project.assets.json -> one manifest per Directory.Packages.props ──
+snap=$(sed -n '/# >>> dependency-snapshot/,/# <<< dependency-snapshot/p' "$wf" | sed 's/^          //')
+[ -n "$snap" ] || { echo "dependency-snapshot block not found in $wf"; exit 1; }
+ws="$work/ws"; mkdir -p "$ws"
+assets() { # <file> <projectPath> <cpm true|false> <direct deps json> <libraries json>
+  jq -n --arg p "$ws/$2" --argjson c "$3" --argjson d "$4" --argjson l "$5" \
+    '{project: {restore: {projectPath: $p, centralPackageVersionsManagementEnabled: $c},
+      frameworks: {"net8.0": {dependencies: $d}}}, libraries: $l}' > "$work/$1"
+}
+pkg='{"type":"package"}'
+assets svc.json src/Svc/Svc.csproj true '{"SSH.NET":{"version":"[2024.0.0, )"},"StyleCop.Analyzers":{"suppressParent":"All"}}' \
+  "{\"SSH.NET/2024.0.0\":$pkg,\"StyleCop.Analyzers/1.1.118\":$pkg,\"BouncyCastle.Cryptography/2.4.0\":$pkg,\"Model/1.0.0\":{\"type\":\"project\"}}"
+assets tests.json src/Tests/Tests.csproj true '{"Microsoft.NET.Test.Sdk":{},"xunit":{}}' \
+  "{\"Microsoft.NET.Test.Sdk/17.11.1\":$pkg,\"xunit/2.9.0\":$pkg,\"BouncyCastle.Cryptography/2.4.0\":$pkg,\"Newtonsoft.Json/13.0.1\":$pkg}"
+assets fe.json backend/Fe/Fe.csproj true '{"Newtonsoft.Json":{}}' "{\"Newtonsoft.Json/13.0.3\":$pkg}"
+assets legacy.json legacy/L/L.csproj false '{"Dapper":{}}' "{\"Dapper/2.0.0\":$pkg}"
+got=$(cd "$work" && GITHUB_WORKSPACE="$ws" PROPS='["Directory.Packages.props","backend/Directory.Packages.props"]' \
+  bash -c "set -eo pipefail; files=(svc.json tests.json fe.json legacy.json); $snap"$'\n''echo "$manifests"' | jq -cS .)
+want=$(jq -cS . <<'J'
+{"Directory.Packages.props":{"name":"Directory.Packages.props","file":{"source_location":"Directory.Packages.props"},"resolved":{
+  "pkg:nuget/SSH.NET@2024.0.0":{"package_url":"pkg:nuget/SSH.NET@2024.0.0","relationship":"direct","scope":"runtime"},
+  "pkg:nuget/StyleCop.Analyzers@1.1.118":{"package_url":"pkg:nuget/StyleCop.Analyzers@1.1.118","relationship":"direct","scope":"development"},
+  "pkg:nuget/BouncyCastle.Cryptography@2.4.0":{"package_url":"pkg:nuget/BouncyCastle.Cryptography@2.4.0","relationship":"indirect","scope":"runtime"},
+  "pkg:nuget/Microsoft.NET.Test.Sdk@17.11.1":{"package_url":"pkg:nuget/Microsoft.NET.Test.Sdk@17.11.1","relationship":"direct","scope":"development"},
+  "pkg:nuget/xunit@2.9.0":{"package_url":"pkg:nuget/xunit@2.9.0","relationship":"direct","scope":"development"},
+  "pkg:nuget/Newtonsoft.Json@13.0.1":{"package_url":"pkg:nuget/Newtonsoft.Json@13.0.1","relationship":"indirect","scope":"development"}}},
+ "backend/Directory.Packages.props":{"name":"backend/Directory.Packages.props","file":{"source_location":"backend/Directory.Packages.props"},"resolved":{
+  "pkg:nuget/Newtonsoft.Json@13.0.3":{"package_url":"pkg:nuget/Newtonsoft.Json@13.0.3","relationship":"direct","scope":"runtime"}}}}
+J
+)
+eq "$got" "$want" "dependency snapshot manifests"
+echo "dotnet-service-build dependency-snapshot: OK"

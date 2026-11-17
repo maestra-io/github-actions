@@ -1,0 +1,47 @@
+---
+# Drives the role's REAL task files against fake_am.py. Run by
+# test-os-update-tail-silence.sh, which asserts on what reached the fake AM.
+- name: Tail silence and the one-at-a-time guard
+  hosts: all
+  gather_facts: false
+  vars:
+    role_tasks: "{{ playbook_dir }}/../../collections/maestra/infra/roles/os_update/tasks"
+    os_update_mode: apply
+    os_update_contour: us_test_lw
+    os_update_farm: us_test_lw_kubernetes
+    os_update_peers: [us-test-worker01]
+    os_update_allow_single_node: false
+    os_update_run_url: https://example.invalid/run/1
+    os_update_silence_minutes: 25
+    os_update_tail_silence_minutes: 15
+    # A host set plus a kube workload set, the shape vars.yml + silence-workload.yml build.
+    os_update_silence_sets:
+      - - {name: instance, value: "us-test-worker02.*", isRegex: true}
+      - - {name: namespace, value: "^(kafka-common)$", isRegex: true}
+        - {name: cluster, value: us-test-cluster, isRegex: false}
+  tasks:
+    - name: A tail held by another host does NOT block this host's guard
+      ansible.builtin.include_tasks: "{{ role_tasks }}/guards.yml"
+      vars:
+        os_update_am_url: "{{ am }}/tail"
+
+    - name: A maintenance silence held by another host DOES block it (negative control)
+      block:
+        - name: Guard against a live drain
+          ansible.builtin.include_tasks: "{{ role_tasks }}/guards.yml"
+          vars:
+            os_update_am_url: "{{ am }}/drain"
+        - name: Unreachable if the guard passed
+          ansible.builtin.fail:
+            msg: the guard let a second drain through
+      rescue:
+        - name: The guard refused, as it must
+          ansible.builtin.assert:
+            that: "'Another os-update drain window is open' in ansible_failed_result.msg"
+
+    - name: Success path — tail first, then expire the maintenance silences
+      ansible.builtin.include_tasks: "{{ role_tasks }}/{{ item }}"
+      loop: [tail_silence.yml, unsilence.yml]
+      vars:
+        os_update_am_url: "{{ am }}/run"
+        os_update_silence_ids: [orig-1, orig-2]

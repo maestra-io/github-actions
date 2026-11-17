@@ -56,4 +56,7 @@ case_dir; run '' >/dev/null
 
 case_dir; run '7.0.x' >/dev/null
 [ ! -e "$d/w/global.json" ] || fail "SDK not installed: nothing to pin"
+# dotnet-service-build.yml (test job) runs the same program: the copies must not drift.
+copy=$(sed -n '/# sdk-pin: begin/,/# sdk-pin: end/p' "$here/../.github/workflows/dotnet-service-build.yml" | sed 's/^          //')
+[ "$copy" = "$prog" ] || { echo "FAIL sdk-pin: dotnet-service-build.yml copy differs from nuget-package-publish.yml"; exit 1; }
 echo "nuget-sdk-pin: OK"

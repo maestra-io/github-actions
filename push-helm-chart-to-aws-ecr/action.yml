@@ -4,8 +4,12 @@ description: >-
   in us-west-2, the GitHub port of the GitLab helm-ci helm-chart-push-aws job.
   The version is Chart.yaml's or the `version` input (build-number charts).
   An already published version is skipped (release tags are immutable).
+  The chart digest is then cosign-keyless-signed (when not signed yet: a re-run
+  signs a version published before signing existed) and verified with the
+  identity the clusters check (Flux OCIRepository spec.verify, issues-maestra#1680).
   Auth: Teleport workload identity -> role/teleport-image-push, the job needs
-  `id-token: write`.
+  `id-token: write`. A `tbot` already on PATH (the caller installed it) skips
+  the Teleport download.
 inputs:
   chartPath:
     description: 'Chart directory.'
@@ -56,6 +60,9 @@ outputs:
   pushed:
     description: 'true when this run pushed the chart.'
     value: ${{ steps.push.outputs.pushed }}
+  digest:
+    description: 'Digest of the published (and signed) chart.'
+    value: ${{ steps.sign.outputs.digest }}
 runs:
   using: "composite"
   steps:
@@ -69,8 +76,15 @@ runs:
       run: |
         bash "${GITHUB_ACTION_PATH}/resolve-version.sh" | tee -a "$GITHUB_OUTPUT"
 
-    - name: Get Teleport version
+    - name: Is tbot already on PATH?
       if: ${{ steps.chart.outputs.version != '0.0.0' }}
+      id: tbot
+      shell: bash
+      run: |
+        if command -v tbot >/dev/null; then echo "installed=true"; else echo "installed=false"; fi >> "$GITHUB_OUTPUT"
+
+    - name: Get Teleport version
+      if: ${{ steps.chart.outputs.version != '0.0.0' && steps.tbot.outputs.installed != 'true' }}
       id: tp-version
       shell: bash
       env:
@@ -80,8 +94,8 @@ runs:
           | jq -r '.auto_update.tools_version // .server_version')
         echo "version=$version" >> "$GITHUB_OUTPUT"
 
-    - if: ${{ steps.chart.outputs.version != '0.0.0' }}
-      uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
+    - if: ${{ steps.chart.outputs.version != '0.0.0' && steps.tbot.outputs.installed != 'true' }}
+      uses: teleport-actions/setup@10b5e9f760190f027a1e04e342178d8d6e7eae30 # v2.0.0
       with:
         version: ${{ steps.tp-version.outputs.version }}
         proxy: ${{ inputs.teleportFqdn }}
@@ -113,13 +127,15 @@ runs:
             audiences: ["sts.amazonaws.com"]
         EOF
         mkdir -p "$out/svid"
-        tbot start -c "$out/tbot.yaml" || true
-        test -s "$out/svid/jwt_svid" || { echo "::error::tbot minted no JWT SVID with token ${TELEPORT_TOKEN}: is the ref main/master, and does the job have id-token: write?"; exit 1; }
+        # Retries transient Teleport backend / GitHub OIDC failures, fails at once
+        # on configuration errors (../tbot-join/tbot-join.sh, same ref as this action).
+        bash "${GITHUB_ACTION_PATH}/../tbot-join/tbot-join.sh" -c "$out/tbot.yaml" -r "$out/svid/jwt_svid" \
+          -l "token ${TELEPORT_TOKEN}" -H "is the ref main/master, and does the job have id-token: write?"
         echo "PUSH_ECR_JWT_SVID=$out/svid/jwt_svid" >> "$GITHUB_ENV"
 
     - name: Configure AWS Credentials (workload identity)
       if: ${{ steps.chart.outputs.version != '0.0.0' }}
-      uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+      uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
       with:
         role-to-assume: ${{ inputs.awsRoleArn }}
         aws-region: ${{ inputs.awsRegion }}
@@ -139,19 +155,30 @@ runs:
         APP_VERSION: ${{ steps.chart.outputs.app-version }}
         PREFIX: ${{ inputs.repositoryPrefix }}
         AWS_REGION: ${{ inputs.awsRegion }}
+        AWS_ROLE_ARN: ${{ inputs.awsRoleArn }}
       run: |
         set -euo pipefail
         repo="${PREFIX}/${NAME}"
-        registry="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${AWS_REGION}.amazonaws.com"
-        if aws ecr describe-images --repository-name "$repo" --image-ids "imageTag=${VERSION}" >/dev/null 2>&1; then
+        # Every aws-cli call is ~2.5 s of Python start-up on a t3a: the account
+        # comes from the role ARN, and one describe-images answers both "is the
+        # version published" and "does the repository exist".
+        IFS=: read -r _ _ _ _ account _ <<<"${AWS_ROLE_ARN}"  # arn:<partition>:iam::<account>:role/<name>
+        [[ "$account" =~ ^[0-9]{12}$ ]] || { echo "::error::awsRoleArn ${AWS_ROLE_ARN} carries no 12-digit account"; exit 1; }
+        registry="${account}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+        printf 'registry=%s\nrepository=%s\n' "$registry" "$repo" >> "$GITHUB_OUTPUT"
+        if err=$(aws ecr describe-images --repository-name "$repo" --image-ids "imageTag=${VERSION}" 2>&1 >/dev/null); then
           echo "::warning::Chart ${NAME}@${VERSION} already exists in ECR ${AWS_REGION}; skipping push. Bump version in Chart.yaml to release."
           echo "pushed=false" >> "$GITHUB_OUTPUT"
           exit 0
         fi
-        aws ecr describe-repositories --repository-names "$repo" >/dev/null 2>&1 || {
-          bash ./create-repository.sh "$repo"
-          aws ecr set-repository-policy --repository-name "$repo" --policy-text file://ecr-policy.json >/dev/null
-        }
+        case "$err" in
+          *RepositoryNotFoundException*)
+            bash ./create-repository.sh "$repo"
+            aws ecr set-repository-policy --repository-name "$repo" --policy-text file://ecr-policy.json >/dev/null
+            ;;
+          *ImageNotFoundException*) ;;
+          *) echo "$err" >&2; exit 1 ;;
+        esac
         aws ecr get-login-password | helm registry login "$registry" --username AWS --password-stdin
         pkg="$(mktemp -d)"
         helm package --dependency-update "$CHART_PATH" --destination "$pkg" \
@@ -159,3 +186,48 @@ runs:
         helm push "${pkg}/${NAME}-${VERSION}.tgz" "oci://${registry}/${PREFIX}"
         echo "pushed=true" >> "$GITHUB_OUTPUT"
         echo "Pushed oci://${registry}/${repo}:${VERSION}"
+
+    # Sign after the push: `helm push` names the tag after the chart version, so
+    # there is no staging tag to sign first (bake-oci-manifests does that). A
+    # failed sign fails the job loudly; the published version then has no
+    # signature, and every cluster OCIRepository with spec.verify refuses it until
+    # a re-run signs it (the push is skipped, the signing is not).
+    - id: cosign-install
+      if: ${{ steps.chart.outputs.version != '0.0.0' }}
+      continue-on-error: true
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+    - if: ${{ steps.chart.outputs.version != '0.0.0' && steps.cosign-install.outcome == 'failure' }}
+      shell: bash
+      run: sleep 20
+    - if: ${{ steps.chart.outputs.version != '0.0.0' && steps.cosign-install.outcome == 'failure' }}
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+    - name: cosign sign + verify chart
+      if: ${{ steps.chart.outputs.version != '0.0.0' }}
+      id: sign
+      shell: bash
+      env:
+        REGISTRY: ${{ steps.push.outputs.registry }}
+        REPOSITORY: ${{ steps.push.outputs.repository }}
+        VERSION: ${{ steps.chart.outputs.version }}
+      run: |
+        set -euo pipefail
+        digest=$(aws ecr describe-images --repository-name "$REPOSITORY" --image-ids "imageTag=${VERSION}" \
+          --query 'imageDetails[0].imageDigest' --output text)
+        [[ "$digest" == sha256:* ]] || { echo "::error::no digest for ${REPOSITORY}:${VERSION} (${digest})"; exit 1; }
+        ref="${REGISTRY}/${REPOSITORY}@${digest}"
+        aws ecr get-login-password | cosign login "$REGISTRY" --username AWS --password-stdin >/dev/null
+        if err=$(aws ecr describe-images --repository-name "$REPOSITORY" \
+             --image-ids "imageTag=sha256-${digest#sha256:}.sig" 2>&1 >/dev/null); then
+          echo "${ref} already signed: sign skipped"
+        elif [[ "$err" == *ImageNotFoundException* ]]; then
+          cosign sign --yes "$ref"
+        else
+          echo "$err" >&2; exit 1
+        fi
+        cosign verify \
+          --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+          --certificate-identity-regexp '^https://github\.com/maestra-io/' \
+          "$ref" >/dev/null
+        echo "${ref}: signature verified"
+        echo "digest=$digest" >> "$GITHUB_OUTPUT"

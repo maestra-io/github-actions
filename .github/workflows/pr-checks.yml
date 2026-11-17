@@ -1,0 +1,269 @@
+# Reusable pull-request checks: the merge-request checks every service had
+# (check-encoding, plus a kustomize build of the overlays), ported to GitHub.
+# dotnet-service-build.yml and service-build.yml call it on pull_request, so every
+# service that releases through them gets it; mcf-build.yml calls it for the
+# kustomize build only. A repo with its own workflows calls it directly:
+#
+#   jobs:
+#     checks:
+#       uses: maestra-io/github-actions/.github/workflows/pr-checks.yml@main
+#       permissions: { contents: read }
+#
+# The secret scan is not here and not in any shared workflow: it is each repo's own
+# workflow calling gitleaks.yml (gitleaks/gitleaks-action):
+#
+# .github/workflows/gitleaks.yml in the repo:
+#   name: gitleaks
+#   on: pull_request
+#   permissions: { contents: read, pull-requests: write }
+#   jobs:
+#     gitleaks:
+#       uses: maestra-io/github-actions/.github/workflows/gitleaks.yml@main
+#       secrets: inherit
+#
+# Everything is scoped to what the PR changes, so a file nobody touched never blocks a
+# merge:
+#   check-encoding  the changed files with these extensions must be UTF-8.
+#   kustomize       `kustomize build` of every overlay under kustomize-path when a file
+#                   under it changed (Flux builds the same trees from <service>-manifests;
+#                   the bake only packs them, so a broken overlay otherwise surfaces in
+#                   the cluster).
+#   fixed-digest tags  every clickhouse/clickhouse-server tag in the built overlays must be
+#                   a key of fluxcd's `fixedDigests` (vendored: pr-checks/fixed-digests.yaml):
+#                   the clusters pin that image by digest at admission and deny a tag they
+#                   cannot pin (pr-checks/check-fixed-digests.py, issues-maestra#1726).
+#   image-signatures  the images a change under kustomize-path adds to the built overlays,
+#                   judged by kyverno-cli with the policy the clusters enforce
+#                   (pr-checks/check-image-signatures.py). Runs after the kustomize step
+#                   and downloads Kyverno only when such an image exists. A rejected image
+#                   is a warning until image-signatures-enforce is on.
+#   networkPolicy   when a change under kustomize-path touched a tree holding a
+#                   `networkPolicy:` key: every overlay's commons-app / commons-app-init / postgres HelmRelease
+#                   with that key is rendered as Flux will (kustomize build, postBuild vars,
+#                   `helm template` of the pinned chart pulled from ECR with the runner's
+#                   instance role), the Cilium policies pass kubeconform -strict against the
+#                   vendored CRD schema and fluxcd's netpol-broad-gate.py; every rendered
+#                   policy must be allow-only (enableDefaultDeny false both ways: the deny
+#                   lives only in fluxcd; pr-checks/check-network-policy.py, issues-maestra#1714). A chart
+#                   error (schema, template `fail`) fails the job with the chart's text in
+#                   the log and the job summary: Kargo pushes a release straight to fluxcd
+#                   main, where it would block every later promotion of the service.
+#
+# Inputs:
+#   check-encoding       default true.
+#   encoding-extensions  default txt,xml,json,config,cs,csproj,sln (the component's).
+#   kustomize            default true.
+#   kustomize-path       default kustomization.
+#   image-signatures     default true. Needs the kustomize step.
+#   image-signatures-enforce  default false: a rejected image warns. true fails the job.
+#   ref                  ref of maestra-io/github-actions the scripts are read from
+#                        (default main; set it when testing a branch).
+#   gitleaks             DEPRECATED, ignored: the scan is the repo's own gitleaks.yml
+#                        workflow; removed once no caller passes it (a reusable
+#                        workflow rejects an undeclared input, so it stays declared).
+#
+# Only on pull_request (the job is skipped otherwise). Needs contents: read only: the
+# changed files come from the test merge commit.
+
+name: pr-checks
+
+on:
+  workflow_call:
+    inputs:
+      # DEPRECATED, ignored: the scan is the repo's own gitleaks.yml workflow;
+      # removed once no caller passes it.
+      gitleaks:
+        type: boolean
+        default: true
+      check-encoding:
+        type: boolean
+        default: true
+      encoding-extensions:
+        type: string
+        default: txt,xml,json,config,cs,csproj,sln
+      kustomize:
+        type: boolean
+        default: true
+      kustomize-path:
+        type: string
+        default: kustomization
+      image-signatures:
+        type: boolean
+        default: true
+      image-signatures-enforce:
+        type: boolean
+        default: false
+      ref:
+        type: string
+        default: main
+
+permissions:
+  contents: read
+
+env:
+  KUSTOMIZE_VERSION: v5.8.3
+  KUSTOMIZE_SHA256: cb9e31198d3f63b44848bd0afc4c8efc56e6cfef9c93a4a39a211940e6decd61
+  # The version kyverno-image-signatures is tested with (fluxcd, kyverno-signature-tests).
+  KYVERNO_VERSION: v1.19.2
+  KYVERNO_SHA256: 357eaf1df8bc24ddd5a73979fadeaae6a032e8710f11af264229756e4956bf4a
+  # networkPolicy gate. Helm 4: Flux 2.8.6's helm-controller (v1.5.4) renders with the
+  # helm.sh/helm/v4 SDK, so the gate renders with the same major. get.helm.sh .sha256sum and
+  # the kubeconform release CHECKSUMS.
+  HELM_VERSION: v4.3.1
+  HELM_SHA256: 0403a88ae20913d11b10a2467b50087721fea7581736da6b9d3992f5357fe54b
+  KUBECONFORM_VERSION: v0.8.0
+  KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+  ECR_REGISTRY: 515260921971.dkr.ecr.us-west-2.amazonaws.com
+
+jobs:
+  checks:
+    name: pr checks
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: runs-on=${{ github.run_id }}-pr-checks/pool=small
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      # The test merge commit and its first parent, the base branch tip (HEAD^1). No
+      # token left in git config: the steps below read the PR's own files.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: maestra-io/github-actions
+          ref: ${{ inputs.ref }}
+          path: .pr-checks
+          sparse-checkout: pr-checks
+          persist-credentials: false
+      - name: changed files
+        run: |
+          set -euo pipefail
+          # NUL-separated and unquoted: core.quotePath would turn a non-ASCII name
+          # into an octal-escaped string that names no file.
+          git -c core.quotePath=false diff -z --name-only --diff-filter=d HEAD^1 HEAD > "$RUNNER_TEMP/changed"
+          echo "$(tr -cd '\0' < "$RUNNER_TEMP/changed" | wc -c) files changed"
+
+      - name: check-encoding
+        if: ${{ !cancelled() && inputs.check-encoding }}
+        env:
+          EXTENSIONS: ${{ inputs.encoding-extensions }}
+        run: |
+          set -euo pipefail
+          if [ ! -s "$RUNNER_TEMP/changed" ]; then echo "no changed files"; exit 0; fi
+          xargs -0 python3 -I .pr-checks/pr-checks/check-encoding.py "$EXTENSIONS" < "$RUNNER_TEMP/changed"
+
+      - name: kustomize build (changed overlays tree)
+        if: ${{ !cancelled() && inputs.kustomize }}
+        env:
+          KPATH: ${{ inputs.kustomize-path }}
+        run: |
+          set -euo pipefail
+          if [ ! -d "$KPATH" ] || ! grep -qz "^${KPATH%/}/" "$RUNNER_TEMP/changed"; then
+            echo "nothing changed under $KPATH"; exit 0
+          fi
+          curl -fsSL -o "$RUNNER_TEMP/kustomize.tar.gz" \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          echo "${KUSTOMIZE_SHA256}  $RUNNER_TEMP/kustomize.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/kustomize.tar.gz" -C "$RUNNER_TEMP" kustomize
+          failed=0
+          for ep in $(bash .pr-checks/pr-checks/kustomize-entry-points.sh "$KPATH"); do
+            if out=$("$RUNNER_TEMP/kustomize" build --load-restrictor LoadRestrictionsNone "$ep" 2>&1 >/dev/null); then
+              echo "ok   $ep"
+            else
+              echo "::error::kustomize build $ep failed"; echo "$out"; failed=1
+            fi
+          done
+          exit $failed
+
+      - name: fixed-digest tags (changed overlays tree)
+        if: ${{ !cancelled() && inputs.kustomize }}
+        env:
+          KPATH: ${{ inputs.kustomize-path }}
+        run: |
+          set -euo pipefail
+          # The kustomize step installs the binary only when something changed under KPATH.
+          if [ ! -x "$RUNNER_TEMP/kustomize" ]; then echo "nothing changed under $KPATH"; exit 0; fi
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet pyyaml==6.0.3
+          # An overlay that does not build is the kustomize step's verdict, not this one's.
+          for ep in $(bash .pr-checks/pr-checks/kustomize-entry-points.sh "$KPATH"); do
+            "$RUNNER_TEMP/kustomize" build --load-restrictor LoadRestrictionsNone "$ep" 2>/dev/null && echo '---' || true
+          done > "$RUNNER_TEMP/fixed-digests-head.yaml"
+          python3 -I .pr-checks/pr-checks/check-fixed-digests.py .pr-checks/pr-checks/fixed-digests.yaml \
+            "$RUNNER_TEMP/fixed-digests-head.yaml"
+
+      - name: image signatures (changed overlays tree)
+        if: ${{ !cancelled() && inputs.kustomize && inputs.image-signatures }}
+        env:
+          KPATH: ${{ inputs.kustomize-path }}
+          ENFORCE: ${{ inputs.image-signatures-enforce }}
+        run: |
+          set -euo pipefail
+          # The kustomize step installs the binary only when something changed under KPATH.
+          if [ ! -x "$RUNNER_TEMP/kustomize" ]; then echo "nothing changed under $KPATH"; exit 0; fi
+          check=$PWD/.pr-checks/pr-checks/check-image-signatures.py
+          policy=$PWD/.pr-checks/pr-checks/image-signatures-policy.yaml
+          entry_points=$PWD/.pr-checks/pr-checks/kustomize-entry-points.sh
+          # build_all <overlays to leave out> <file for the ones that fail>. An overlay that
+          # does not build on the PR is the kustomize step's verdict, not this one's.
+          build_all() {
+            [ -d "$KPATH" ] || return 0
+            for ep in $(bash "$entry_points" "$KPATH"); do
+              if grep -qxF "$ep" "$1"; then echo "no baseline for $ep: its base does not build" >&2; continue; fi
+              "$RUNNER_TEMP/kustomize" build --load-restrictor LoadRestrictionsNone "$ep" 2>/dev/null || echo "$ep" >> "$2"
+            done
+          }
+          # The base first: an overlay that fails there has no baseline, and every image in
+          # it would look new. One the base does not have at all is new, and is judged.
+          : > "$RUNNER_TEMP/base-failed"
+          git worktree add --quiet --detach "$RUNNER_TEMP/base" HEAD^1
+          (cd "$RUNNER_TEMP/base" && build_all /dev/null "$RUNNER_TEMP/base-failed") > "$RUNNER_TEMP/base.yaml"
+          build_all "$RUNNER_TEMP/base-failed" /dev/null > "$RUNNER_TEMP/head.yaml"
+          python3 -I "$check" list "$policy" "$RUNNER_TEMP/head.yaml" "$RUNNER_TEMP/base.yaml" > "$RUNNER_TEMP/images"
+          if [ ! -s "$RUNNER_TEMP/images" ]; then echo "no new image the policy covers"; exit 0; fi
+          cat "$RUNNER_TEMP/images"
+          curl -fsSL -o "$RUNNER_TEMP/kyverno.tar.gz" \
+            "https://github.com/kyverno/kyverno/releases/download/${KYVERNO_VERSION}/kyverno-cli_${KYVERNO_VERSION}_linux_x86_64.tar.gz"
+          echo "${KYVERNO_SHA256}  $RUNNER_TEMP/kyverno.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/kyverno.tar.gz" -C "$RUNNER_TEMP" kyverno
+          flag=()
+          if [ "$ENFORCE" = true ]; then flag=(--enforce); fi
+          python3 -I "$check" verify "$policy" "$RUNNER_TEMP/kyverno" "${flag[@]}" < "$RUNNER_TEMP/images"
+
+      - name: networkPolicy values gate (changed overlays tree)
+        if: ${{ !cancelled() && inputs.kustomize }}
+        env:
+          KPATH: ${{ inputs.kustomize-path }}
+        run: |
+          set -euo pipefail
+          # The kustomize step installs the binary only when something changed under KPATH.
+          if [ ! -x "$RUNNER_TEMP/kustomize" ]; then echo "nothing changed under $KPATH"; exit 0; fi
+          # A tree without the key (most repos today) downloads nothing. A key of another
+          # chart (dragonfly's `networkPolicy: enabled`) gets past this grep; the script then
+          # finds no commons-app/commons-app-init/postgres block and says so.
+          if ! grep -rqE '^\s*networkPolicy:' "$KPATH"; then echo "no networkPolicy key under $KPATH"; exit 0; fi
+          curl -fsSL -o "$RUNNER_TEMP/helm.tar.gz" "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_SHA256}  $RUNNER_TEMP/helm.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/helm.tar.gz" -C "$RUNNER_TEMP" --strip-components=1 linux-amd64/helm
+          curl -fsSL -o "$RUNNER_TEMP/kubeconform.tar.gz" \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  $RUNNER_TEMP/kubeconform.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/kubeconform.tar.gz" -C "$RUNNER_TEMP" kubeconform
+          # The chart comes from ECR with the runner's instance role (read only, the same
+          # login the test job uses for a private base image). A fresh RunsOn instance can
+          # lack the role's credentials for a few seconds. No credentials = a loud failure:
+          # a gate that silently skips is no gate.
+          region=$(cut -d. -f4 <<< "$ECR_REGISTRY")
+          for i in 1 2 3 4 5; do
+            aws sts get-caller-identity --region "$region" >/dev/null 2>&1 && break
+            [ "$i" -lt 5 ] && sleep 10
+          done
+          aws ecr get-login-password --region "$region" \
+            | "$RUNNER_TEMP/helm" registry login --username AWS --password-stdin "$ECR_REGISTRY" \
+            || { echo "::error::no AWS credentials for the ECR chart pull: the networkPolicy gate cannot render the chart"; exit 1; }
+          mapfile -t eps < <(bash .pr-checks/pr-checks/kustomize-entry-points.sh "$KPATH")
+          KUSTOMIZE="$RUNNER_TEMP/kustomize" HELM="$RUNNER_TEMP/helm" KUBECONFORM="$RUNNER_TEMP/kubeconform" \
+            python3 -I .pr-checks/pr-checks/check-network-policy.py --kustomize-path "$KPATH" --charts-dir "$RUNNER_TEMP/charts" \
+              --ecr-registry "$ECR_REGISTRY" "${eps[@]}"

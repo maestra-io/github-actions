@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites><testsuite name="Svc.Tests" tests="3" failures="1" skipped="1" timestamp="2026-10-13T17:00:00">
+<testcase classname="Svc.Tests.A" name="Ok" time="0.012"/>
+<testcase classname="Svc.Tests.A" name="Bad" time="1.5"><failure message="Expected 1 but was 2">at Svc.Tests.A.Bad() in A.cs:line 10
+at Runner</failure></testcase>
+<testcase classname="Svc.Tests.A" name="Skip" time="0"><skipped message="nope"/></testcase>
+</testsuite></testsuites>

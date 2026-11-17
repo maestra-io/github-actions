@@ -1,0 +1,55 @@
+name: "Service container through nora"
+description: >-
+  A job dependency (Postgres, a registry, ...) started from a packages.maestra.io image, in
+  place of `services:` / `container:`: the runner pulls those before the first step, with no
+  credential but a stored secret, so they go to Docker Hub past nora's 3-day quarantine
+  (issues-maestra#1649). The image, `packages.maestra.io/<path>:<tag>@sha256:<digest>`, is
+  pulled with a nora session token held only in a throwaway docker config for that pull, then
+  started with `docker run -d` and waited on: healthy when it has a health check, running
+  otherwise. The post step removes it, whatever the job's result. Steps reach it at
+  localhost:<published port>, or by `docker exec` on the `id` output. Needs
+  `permissions: id-token: write`.
+
+inputs:
+  image:
+    description: "packages.maestra.io/<path>:<tag>@sha256:<digest>."
+    required: true
+  name:
+    description: "Container name; empty = docker's random one."
+    required: false
+    default: ""
+  ports:
+    description: "Published ports, one per line, as `docker run -p` takes them (5432:5432)."
+    required: false
+    default: ""
+  env:
+    description: "Environment, one KEY=VALUE per line."
+    required: false
+    default: ""
+  options:
+    description: >-
+      More `docker run` flags, quoted as in a shell, as `services.<id>.options` takes them
+      (`--health-cmd "pg_isready -U postgres" --health-interval 2s`).
+    required: false
+    default: ""
+  timeout:
+    description: "Seconds to wait for healthy (or running, without a health check)."
+    required: false
+    default: "180"
+  url:
+    description: "nora base URL."
+    required: false
+    default: "https://packages.maestra.io"
+  audience:
+    description: "`aud` of the GitHub OIDC token nora accepts."
+    required: false
+    default: "packages.maestra.io"
+
+outputs:
+  id:
+    description: "The container's id."
+
+runs:
+  using: node24
+  main: main.js
+  post: post.js

@@ -10,6 +10,26 @@
 #     i.e. a protection that reads correct and does nothing.
 #   * it does not trust the hold to be enough on its own: apt is free to satisfy a
 #     dependency by REMOVING a held package. The tripwire below catches that.
+#
+# The holds we set are recorded in os_update_holds_file before apt-mark runs. A
+# host that goes UNREACHABLE (reboot, verify) is dropped from the play, so
+# neither rescue nor always restores them; the next run (apply, stage or
+# undrain-only) reads the record and releases them.
+
+- name: Read the holds an earlier run of ours left behind
+  ansible.builtin.slurp:
+    src: "{{ os_update_holds_file }}"
+  register: os_update_holds_file_raw
+  failed_when: >-
+    (os_update_holds_file_raw.failed | default(false))
+    and 'not found' not in (os_update_holds_file_raw.msg | default('') | lower)
+  check_mode: false
+
+- name: Recorded holds
+  ansible.builtin.set_fact:
+    os_update_holds_recorded: >-
+      {{ (os_update_holds_file_raw.content | b64decode | from_json)
+         if (os_update_holds_file_raw.content is defined) else [] }}
 
 - name: Apply holds
   when: os_update_holds_action == 'apply'
@@ -25,8 +45,22 @@
           {{ (os_update_pinned_base + os_update_pinned_extra)
              | unique
              | select('in', ansible_facts.packages)
-             | difference(os_update_holds_before)
+             | difference(os_update_holds_before | difference(os_update_holds_recorded))
              | list }}
+
+    - name: Record dir
+      ansible.builtin.file:
+        path: "{{ os_update_holds_file | dirname }}"
+        state: directory
+        mode: "0755"
+      check_mode: false
+
+    - name: Record them before holding
+      ansible.builtin.copy:
+        dest: "{{ os_update_holds_file }}"
+        content: "{{ os_update_our_holds | union(os_update_holds_recorded) | to_json }}\n"
+        mode: "0644"
+      check_mode: false
 
     - name: Hold them
       # -o DPkg::Lock::Timeout, and retries on top. `apt.yml` has always passed
@@ -91,6 +125,20 @@
     # main.yml dead code — a swallowed unhold failure (dpkg lock right after apt
     # activity, full disk) leaves teleport/frr/consul held FOREVER, and their own
     # IaC-driven upgrades then fail silently on the next run.
+    - name: Read the holds in place now
+      ansible.builtin.command:
+        argv: [apt-mark, showhold]
+      register: os_update_showhold_before_restore
+      changed_when: false
+      check_mode: false
+
+    - name: Ours = held by this run or recorded by an earlier one, and still held
+      ansible.builtin.set_fact:
+        os_update_our_holds: >-
+          {{ os_update_our_holds | default([])
+             | union(os_update_holds_recorded)
+             | intersect(os_update_showhold_before_restore.stdout_lines) }}
+
     - name: Unhold only what WE held (someone else's pins stay put)
       # Same lock discipline as the hold above — see the note there. This is the
       # call that actually failed in production.
@@ -125,3 +173,9 @@
           Left held, their IaC-driven upgrades (`apt-get install teleport=X`) fail
           silently. Clean up with `apt-mark unhold` by hand.
       when: (os_update_our_holds | default([]) | length) > 0
+
+    - name: Drop the record
+      ansible.builtin.file:
+        path: "{{ os_update_holds_file }}"
+        state: absent
+      check_mode: false

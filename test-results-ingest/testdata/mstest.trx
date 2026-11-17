@@ -1,0 +1,68 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TestRun id="bfc8e802-85c9-4b83-8993-1bc09e3a7073" name="@Igors-Mac-mini 2026-10-13 18:44:31" xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Times creation="2026-10-13T18:44:31.7962910+01:00" queuing="2026-10-13T18:44:31.7962920+01:00" start="2026-10-13T18:44:31.3703830+01:00" finish="2026-10-13T18:44:31.7994980+01:00" />
+  <TestSettings name="default" id="0da8bb41-4e13-47ff-89f6-0b14caf60d1c">
+    <Deployment runDeploymentRoot="_Igors-Mac-mini_2026-10-13_18_44_31" />
+  </TestSettings>
+  <Results>
+    <UnitTestResult executionId="050af03c-6215-43ce-89bf-4640b60170c7" testId="1f35d20e-b96d-8db5-8f1c-ceb27eed7892" testName="Rows (2)" computerName="Igors-Mac-mini" duration="00:00:00.0000809" startTime="2026-10-13T18:44:31.7412190+01:00" endTime="2026-10-13T18:44:31.7417650+01:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="050af03c-6215-43ce-89bf-4640b60170c7" />
+    <UnitTestResult executionId="f96685cf-b226-41de-9159-f8dec3d72098" testId="17853e3d-542e-8b40-8d81-065a7b6b41ac" testName="Fails" computerName="Igors-Mac-mini" duration="00:00:00.0057993" startTime="2026-10-13T18:44:31.7343240+01:00" endTime="2026-10-13T18:44:31.7402690+01:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Failed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="f96685cf-b226-41de-9159-f8dec3d72098">
+      <Output>
+        <ErrorInfo>
+          <Message>Assert.AreEqual failed. Expected:&lt;1&gt;. Actual:&lt;2&gt;. 'expected' expression: '1', 'actual' expression: '2'. one is not two</Message>
+          <StackTrace>   at Microsoft.VisualStudio.TestTools.UnitTesting.Assert.ThrowAssertAreEqualFailed(Object expected, Object actual, String userMessage) in /_/src/TestFramework/TestFramework/Assertions/Assert.AreEqual.cs:line 665
+   at Microsoft.VisualStudio.TestTools.UnitTesting.Assert.AreEqual[T](T expected, T actual, IEqualityComparer`1 comparer, String message, String expectedExpression, String actualExpression) in /_/src/TestFramework/TestFramework/Assertions/Assert.AreEqual.cs:line 492
+   at Microsoft.VisualStudio.TestTools.UnitTesting.Assert.AreEqual[T](T expected, T actual, String message, String expectedExpression, String actualExpression) in /_/src/TestFramework/TestFramework/Assertions/Assert.AreEqual.cs:line 405
+   at Sample.Test1.Fails() in /private/tmp/claude-501/-Users-igorkudrin-work/54971a36-d4a9-43ad-8364-c71370ef30da/scratchpad/sample/proj/Test1.cs:line 6
+   at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="5af50af9-ba4a-48e2-aebe-a1b527f61c6a" testId="13f350d4-578c-82d9-9bc2-69c3bd08bde1" testName="Rows (1)" computerName="Igors-Mac-mini" duration="00:00:00.0000232" startTime="2026-10-13T18:44:31.7404910+01:00" endTime="2026-10-13T18:44:31.7411890+01:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="5af50af9-ba4a-48e2-aebe-a1b527f61c6a" />
+    <UnitTestResult executionId="5cf9a00e-21c9-470a-8ee1-5c1b901a71c6" testId="1b43e579-3557-8c9d-b0c9-c246d9c08cbe" testName="Skipped" computerName="Igors-Mac-mini" startTime="2026-10-13T18:44:31.7403950+01:00" endTime="2026-10-13T18:44:31.7404840+01:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="NotExecuted" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="5cf9a00e-21c9-470a-8ee1-5c1b901a71c6">
+      <Output></Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="ed2576a1-d445-42f9-aaa4-10cf928cd35d" testId="148a575d-f1a1-85af-b4fa-855764b91ceb" testName="Passes" computerName="Igors-Mac-mini" duration="00:00:00.0024053" startTime="2026-10-13T18:44:31.7224490+01:00" endTime="2026-10-13T18:44:31.7323260+01:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="ed2576a1-d445-42f9-aaa4-10cf928cd35d" />
+  </Results>
+  <TestDefinitions>
+    <UnitTest name="Fails" storage="/private/tmp/claude-501/-users-igorkudrin-work/54971a36-d4a9-43ad-8364-c71370ef30da/scratchpad/sample/proj/bin/release/net10.0/sample.dll" id="17853e3d-542e-8b40-8d81-065a7b6b41ac">
+      <Execution id="f96685cf-b226-41de-9159-f8dec3d72098" />
+      <TestMethod codeBase="/private/tmp/claude-501/-Users-igorkudrin-work/54971a36-d4a9-43ad-8364-c71370ef30da/scratchpad/sample/proj/bin/Release/net10.0/Sample.dll" adapterTypeName="executor://mstestadapter/v4" className="Sample.Test1" name="Fails" />
+    </UnitTest>
+    <UnitTest name="Skipped" storage="/private/tmp/claude-501/-users-igorkudrin-work/54971a36-d4a9-43ad-8364-c71370ef30da/scratchpad/sample/proj/bin/release/net10.0/sample.dll" id="1b43e579-3557-8c9d-b0c9-c246d9c08cbe">
+      <Execution id="5cf9a00e-21c9-470a-8ee1-5c1b901a71c6" />
+      <TestMethod codeBase="/private/tmp/claude-501/-Users-igorkudrin-work/54971a36-d4a9-43ad-8364-c71370ef30da/scratchpad/sample/proj/bin/Release/net10.0/Sample.dll" adapterTypeName="executor://mstestadapter/v4" className="Sample.Test1" name="Skipped" />
+    </UnitTest>
+    <UnitTest name="Passes" storage="/private/tmp/claude-501/-users-igorkudrin-work/54971a36-d4a9-43ad-8364-c71370ef30da/scratchpad/sample/proj/bin/release/net10.0/sample.dll" id="148a575d-f1a1-85af-b4fa-855764b91ceb">
+      <Execution id="ed2576a1-d445-42f9-aaa4-10cf928cd35d" />
+      <TestMethod codeBase="/private/tmp/claude-501/-Users-igorkudrin-work/54971a36-d4a9-43ad-8364-c71370ef30da/scratchpad/sample/proj/bin/Release/net10.0/Sample.dll" adapterTypeName="executor://mstestadapter/v4" className="Sample.Test1" name="Passes" />
+    </UnitTest>
+    <UnitTest name="Rows (2)" storage="/private/tmp/claude-501/-users-igorkudrin-work/54971a36-d4a9-43ad-8364-c71370ef30da/scratchpad/sample/proj/bin/release/net10.0/sample.dll" id="1f35d20e-b96d-8db5-8f1c-ceb27eed7892">
+      <Execution id="050af03c-6215-43ce-89bf-4640b60170c7" />
+      <TestMethod codeBase="/private/tmp/claude-501/-Users-igorkudrin-work/54971a36-d4a9-43ad-8364-c71370ef30da/scratchpad/sample/proj/bin/Release/net10.0/Sample.dll" adapterTypeName="executor://mstestadapter/v4" className="Sample.Test1" name="Rows" />
+    </UnitTest>
+    <UnitTest name="Rows (1)" storage="/private/tmp/claude-501/-users-igorkudrin-work/54971a36-d4a9-43ad-8364-c71370ef30da/scratchpad/sample/proj/bin/release/net10.0/sample.dll" id="13f350d4-578c-82d9-9bc2-69c3bd08bde1">
+      <Execution id="5af50af9-ba4a-48e2-aebe-a1b527f61c6a" />
+      <TestMethod codeBase="/private/tmp/claude-501/-Users-igorkudrin-work/54971a36-d4a9-43ad-8364-c71370ef30da/scratchpad/sample/proj/bin/Release/net10.0/Sample.dll" adapterTypeName="executor://mstestadapter/v4" className="Sample.Test1" name="Rows" />
+    </UnitTest>
+  </TestDefinitions>
+  <TestEntries>
+    <TestEntry testId="1f35d20e-b96d-8db5-8f1c-ceb27eed7892" executionId="050af03c-6215-43ce-89bf-4640b60170c7" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="17853e3d-542e-8b40-8d81-065a7b6b41ac" executionId="f96685cf-b226-41de-9159-f8dec3d72098" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="13f350d4-578c-82d9-9bc2-69c3bd08bde1" executionId="5af50af9-ba4a-48e2-aebe-a1b527f61c6a" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="1b43e579-3557-8c9d-b0c9-c246d9c08cbe" executionId="5cf9a00e-21c9-470a-8ee1-5c1b901a71c6" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="148a575d-f1a1-85af-b4fa-855764b91ceb" executionId="ed2576a1-d445-42f9-aaa4-10cf928cd35d" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+  </TestEntries>
+  <TestLists>
+    <TestList name="Results Not in a List" id="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestList name="All Loaded Results" id="19431567-8539-422a-85d7-44ee4e166bda" />
+  </TestLists>
+  <ResultSummary outcome="Failed">
+    <Counters total="5" executed="4" passed="3" failed="1" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0" disconnected="0" warning="0" completed="0" inProgress="0" pending="0" />
+    <Output>
+      <StdOut>Test 'Skipped' was skipped in the test run.
+</StdOut>
+    </Output>
+  </ResultSummary>
+</TestRun>

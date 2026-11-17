@@ -1,0 +1,112 @@
+# Central gitleaks config, passed to gitleaks-action by .github/workflows/gitleaks.yml
+# (GITLEAKS_CONFIG) for every repo; a repo's own gitleaks config is not read. It
+# extends gitleaks' default rules with allowlists that apply to any repo: generic file
+# classes and placeholder patterns. A project-specific allowlist is added here, scoped
+# by path; a single accepted finding goes to the repo's .gitleaksignore.
+title = "Gitleaks Configuration"
+minVersion = "v8.25.0"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "*.example files and test paths hold sample values, not real secrets"
+paths = [
+  '''(?i).*\.example$''',
+  '''(?i)(^|/)(tests?|__tests__|testdata|test-data|fixtures|spec)/''',
+  '''(?i)\.(test|spec)\.[a-z0-9]+$''',
+]
+
+[[allowlists]]
+description = "knowledge directories may contain intentionally secret-looking examples for security documentation"
+paths = ['''(?i)(^|/)knowledge/''']
+
+[[allowlists]]
+description = "translationKey i18n property name is not a secret"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''(?i)translationKey''']
+
+[[allowlists]]
+description = "fixtures directories and Storybook story files contain mock data, not real secrets"
+targetRules = ["generic-api-key"]
+paths = [
+  '''(?i)(^|/)fixtures/''',
+  '''(?i)\.(story|stories)\.(tsx?|jsx?)$''',
+]
+
+[[allowlists]]
+description = "google-services.json is a public Firebase app config, not a secret"
+targetRules = ["gcp-api-key", "generic-api-key"]
+paths = ['''(?i)(^|/)google-services\.json$''']
+
+[[allowlists]]
+description = "curl doc examples use the literal YOUR_TOKEN placeholder, not a real bearer token"
+targetRules = ["curl-auth-header"]
+regexTarget = "match"
+regexes = ['''YOUR_TOKEN''']
+
+[[allowlists]]
+description = "*-verification-key DNS TXT records are published publicly for domain verification, not secrets"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''(?i)-verification-key=''']
+
+[[allowlists]]
+description = "bun.lock entries are registry package identifiers and integrity metadata, not credentials"
+targetRules = ["generic-api-key"]
+paths = ['''(?i)(^|/)bun\.lock$''']
+
+[[allowlists]]
+description = "Algolia searchApiKey is the search-only DocSearch key, published to browsers by design"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''(?i)searchApiKey''']
+
+[[allowlists]]
+description = "GPG_KEY holds a public signing-key fingerprint used to verify release artifacts"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''(?i)GPG_KEY''']
+
+[[allowlists]]
+description = "Environment.TickCount64 is a .NET clock call, not a secret"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''Environment\.TickCount''']
+
+[[allowlists]]
+description = "CloudNativePG replicaCluster.promotionToken is base64 checkpoint/WAL metadata used to validate replica promotion, not a credential"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''(?i)promotionToken''']
+
+[[allowlists]]
+description = "Datadog RUM ClientToken (pub... prefix) is a write-only browser telemetry ingest token, shipped to clients by design"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''(?i)ClientToken"?\s*[:=]\s*"?pub[0-9a-f]{32}''']
+
+[[allowlists]]
+description = "renovate.json hostRules[].encrypted values are PGP-armored payloads only the Renovate bot's private key can decrypt"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+regexes = ['''^wc[A-Za-z0-9]M[A-Za-z0-9+/]''']
+
+[[allowlists]]
+description = "curl -u with shell or Helm-templated variable references ($VAR / $${VAR}) carries no literal credential"
+targetRules = ["curl-auth-user", "curl-auth-header"]
+regexTarget = "match"
+regexes = ['''-u\s*"?\$\$?\{''']
+
+[[allowlists]]
+description = "sortKey in TypeScript prop declarations is a type name or column identifier, not a secret"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''(?i)sortKey''']
+
+[[allowlists]]
+description = "deliberately degenerate xxxx-xxxx placeholders in credential-hint heuristics and their demo fixtures"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+regexes = ['''^[xX]{3,}([-_][xX]{3,})+$''']

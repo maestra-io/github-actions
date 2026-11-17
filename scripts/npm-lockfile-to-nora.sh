@@ -7,7 +7,8 @@
 # Artifactory locals serve scoped tarballs as /-/@scope/name-ver.tgz, nora (like
 # npmjs) as /-/name-ver.tgz, so both the prefix and that segment change. npm's
 # `replace-registry-host` cannot do this: it keeps the old path. registry.npmjs.org
-# URLs are left alone (`replace-registry-host=npmjs` routes them through nora).
+# URLs go to nora too: npm 11's `replace-registry-host=npmjs` drops nora's /npm/ for
+# names starting with `npm` (npm-run-path -> packages.maestra.io/npm-run-path/..., 404).
 # `integrity` is untouched: the imported tarballs are byte-identical. Idempotent.
 #
 # Usage: npm-lockfile-to-nora.sh [lockfile...]
@@ -30,6 +31,7 @@ for f in "${files[@]}"; do
   sed -i.bak -E \
     -e "s#(\"resolved\": *\")https://artifactory\.mindbox\.ru/artifactory/api/npm/[^/\"]+/#\1${nora}#g" \
     -e "s#(\"resolved\": *\"${nora_re}@[^/\"]+/[^/\"]+/-/)@[^/\"]+/#\1#g" \
+    -e "s#(\"resolved\": *\")https://registry\.npmjs\.org/#\1${nora}#g" \
     "$f"
   if cmp -s "$f" "$f.bak"; then echo "unchanged: $f"; else echo "fixed:     $f"; fi
   rm -f "$f.bak"

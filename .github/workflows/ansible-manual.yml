@@ -119,10 +119,16 @@ on:
         required: false
         type: string
         default: "teleport.maestra.io:443"
-      requirements_pip:
+      uv_project:
+        description: "Directory of pyproject.toml + uv.lock (see ansible-run.yml)."
         required: false
         type: string
-        default: "ansible/requirements-pip.txt"
+        default: "ansible"
+      requirements_pip:
+        description: "Deprecated and ignored (issues-maestra#1649): Python packages come from uv_project's uv.lock only. Kept so a caller that still passes it does not break."
+        required: false
+        type: string
+        default: ""
       requirements_galaxy:
         required: false
         type: string
@@ -175,7 +181,7 @@ jobs:
       no_hosts_fail_on_apply: ${{ inputs.no_hosts_fail_on_apply }}
       teleport_join_token: ${{ inputs.teleport_join_token }}
       teleport_fqdn: ${{ inputs.teleport_fqdn }}
-      requirements_pip: ${{ inputs.requirements_pip }}
+      uv_project: ${{ inputs.uv_project }}
       requirements_galaxy: ${{ inputs.requirements_galaxy }}
       python_version: ${{ inputs.python_version }}
       # Approval gate only for omega; omicron passes '' (ungated).

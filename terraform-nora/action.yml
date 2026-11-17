@@ -1,0 +1,43 @@
+name: "Terraform providers through nora"
+description: >-
+  Point Terraform at packages.maestra.io (nora) for every registry.terraform.io
+  provider: a CLI config with a network_mirror (quarantine and a 3-day
+  min_release_age on new versions, issues-maestra#1649) plus a credentials helper
+  that hands Terraform a fresh GitHub OIDC token per run, so a token never
+  expires between init and a later init in the same job. Providers from other
+  hosts (terraform.releases.teleport.dev, ...) still install directly. Needs
+  `permissions: id-token: write`. Run it AFTER hashicorp/setup-terraform: it
+  exports TF_CLI_CONFIG_FILE, which replaces ~/.terraformrc, so it copies the
+  credentials setup-terraform wrote there into the new file.
+
+inputs:
+  url:
+    description: "nora base URL."
+    required: false
+    default: "https://packages.maestra.io"
+  audience:
+    description: "`aud` of the GitHub OIDC token nora accepts."
+    required: false
+    default: "packages.maestra.io"
+  fs-mirror-path:
+    description: >-
+      Optional local filesystem_mirror directory (e.g. a private provider fetched
+      from a GitHub release). Its `fs-mirror-include` patterns install from there.
+    required: false
+    default: ""
+  fs-mirror-include:
+    description: "Comma-separated provider patterns served by `fs-mirror-path` (e.g. registry.terraform.io/mindbox-private/*)."
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: terraform CLI config for nora
+      shell: bash
+      env:
+        NORA_URL: ${{ inputs.url }}
+        NORA_AUDIENCE: ${{ inputs.audience }}
+        FS_MIRROR_PATH: ${{ inputs.fs-mirror-path }}
+        FS_MIRROR_INCLUDE: ${{ inputs.fs-mirror-include }}
+      run: bash "${GITHUB_ACTION_PATH}/terraform-nora.sh"

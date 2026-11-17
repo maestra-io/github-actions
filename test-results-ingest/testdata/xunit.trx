@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TestRun id="1" xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Results>
+    <UnitTestResult executionId="e1" testId="t1" testName="Svc.Tests.X.Works" outcome="Passed" duration="00:00:00.0100000" startTime="2026-10-13T17:00:00.000+00:00" endTime="2026-10-13T17:00:00.010+00:00" />
+  </Results>
+  <TestDefinitions>
+    <UnitTest name="Svc.Tests.X.Works" id="t1"><Execution id="e1" /><TestMethod codeBase="x.dll" className="Svc.Tests.X" name="Works" /></UnitTest>
+  </TestDefinitions>
+</TestRun>

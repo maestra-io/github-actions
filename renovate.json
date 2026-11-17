@@ -2,34 +2,133 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended",
-    "helpers:pinGitHubActionDigests"
+    "github>maestra-io/renovate-config:externalImages",
+    "github>maestra-io/renovate-config:mcfUploadBase",
+    "github>maestra-io/renovate-config:daily"
   ],
   "timezone": "Europe/Lisbon",
   "semanticCommits": "enabled",
   "semanticCommitType": "chore",
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "DEPS_BASE of mcf-build.yml. Looked up on Docker Hub, the source nora proxies: Renovate has no docker credentials for nora. So the 3-day hold of externalImages applies, and a digest move is a PR for a person.",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/mcf-build\\.yml$/"
+      ],
+      "matchStrings": [
+        "packages\\.maestra\\.io/docker-hub/library/(?<depName>node):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "DEPS_NPM of mcf-build.yml: the npm installed into the with-deps image.",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/mcf-build\\.yml$/"
+      ],
+      "matchStrings": [
+        "DEPS_NPM: (?<depName>npm)@(?<currentValue>\\S+)"
+      ],
+      "datasourceTemplate": "npm"
+    },
+    {
+      "customType": "regex",
+      "description": "BuildKit image in the driver-opts of setup-buildx/action.yml and of the workflow copies (issues-maestra#1649; scripts/test-dotnet-service-build.sh asserts every copy is equal, so all of them move in one PR). Looked up on Docker Hub, the source nora proxies, like DEPS_BASE above.",
+      "managerFilePatterns": [
+        "/^setup-buildx/action\\.yml$/",
+        "/^\\.github/workflows/[^/]+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "packages\\.maestra\\.io/docker-hub/(?<depName>moby/buildkit):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    }
+  ],
   "packageRules": [
     {
-      "description": "Every external action in this repo is pinned to a full-length commit sha with a trailing `# vX.Y.Z` label. pinDigests keeps that true: a `@v6` written by hand comes back as a PR converting it to a sha, and a new upstream tag arrives as a sha bump with the label rewritten. Grouped and weekly because these workflows are a shared library — one PR a week is one review and one release tag, instead of a dozen tags nobody reads. `separateMajorMinor: false` is what makes it literally one PR -- config:recommended would otherwise split majors into a second branch. Flip it back to true if a stuck major (checkout v7, setup-python v7, configure-aws-credentials v6 are all waiting) starts holding the routine bumps hostage.",
-      "matchManagers": ["github-actions"],
-      "groupName": "github actions",
-      "groupSlug": "github-actions",
-      "pinDigests": true,
+      "description": "People merge this repo's Renovate PRs (renovate-config#42 makes renovate/daily automerge): first in this list so it beats the preset; a later rule's own automerge (a package that is safe to land alone) still wins. maestra-io/github-actions keeps the org-inherited automerge.",
+      "matchUpdateTypes": [
+        "minor",
+        "patch",
+        "digest"
+      ],
+      "matchPackageNames": [
+        "!maestra-io/github-actions"
+      ],
+      "automerge": false
+    },
+    {
+      "description": "DEPS_BASE keeps the Node major of the node-version input of mcf-build.yml; the workflow fails when they differ.",
+      "matchFileNames": [
+        ".github/workflows/mcf-build.yml"
+      ],
+      "matchPackageNames": [
+        "node"
+      ],
+      "allowedVersions": "<25"
+    },
+    {
+      "description": "DEPS_NPM keeps the npm major that Node 24 bundles.",
+      "matchFileNames": [
+        ".github/workflows/mcf-build.yml"
+      ],
+      "matchPackageNames": [
+        "npm"
+      ],
+      "matchDatasources": [
+        "npm"
+      ],
+      "allowedVersions": "<12"
+    },
+    {
+      "description": "python-version of actions/setup-python in collection-lint.yml and ansible-os-update.yml stays on 3.14: ansible/pyproject.toml pins requires-python ==3.14.*, and ansible-core 2.21 supports Python up to 3.14 (on 3.15 ansible-lint dies with `module 'dataclasses' has no attribute '_is_type'`, PR #79). Lift together with requires-python once an ansible-core release supports 3.15.",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchDepNames": [
+        "python"
+      ],
+      "allowedVersions": "<3.15"
+    },
+    {
+      "description": "Every external action in this repo is referenced by its version tag (`@vX.Y.Z`), never by a commit sha: no digests are pinned, Renovate bumps the tag. Weekly (the rule at the end of this list) and in the daily preset's branches because these workflows are a shared library — one PR a week is one review and one release tag, instead of a dozen tags nobody reads. `separateMajorMinor: false` is what makes it literally one PR -- config:recommended would otherwise split majors into a second branch. Flip it back to true if a stuck major (setup-python v7, configure-aws-credentials v6 are waiting) starts holding the routine bumps hostage.",
+      "matchManagers": [
+        "github-actions"
+      ],
       "separateMajorMinor": false,
       "separateMinorPatch": false,
-      "schedule": ["* 0-6 * * 1"],
-      "commitMessageTopic": "the pinned GitHub Actions"
+      "schedule": [
+        "* 0-6 * * 1"
+      ]
     },
     {
       "description": "ansible-lint / yamllint in ansible/requirements-lint.txt are `==` pins consumed only by collection-lint.yml. Same weekly window, own PR: a linter bump can turn the lint job red on code nobody touched, and that must not be bisected out of an actions group.",
-      "matchManagers": ["pip_requirements"],
-      "groupName": "ansible lint toolchain",
-      "schedule": ["* 0-6 * * 1"]
+      "matchManagers": [
+        "pip_requirements"
+      ],
+      "schedule": [
+        "* 0-6 * * 1"
+      ]
     },
     {
       "description": "Never let a dependency PR cut anything but a patch tag. release.yml derives the bump from Conventional Commits (ci/next-version.sh): `feat:` is a minor and `!`/BREAKING CHANGE is a major, and consumers pin `vX`. `chore(deps)` keeps every automated bump on the patch line.",
-      "matchPackageNames": ["*"],
+      "matchPackageNames": [
+        "*"
+      ],
       "semanticCommitType": "chore",
       "semanticCommitScope": "deps"
+    },
+    {
+      "description": "Keep this repo's own cadence: the daily preset groups the updates into renovate/daily and renovate/daily-review, this rule (after the preset's rules) puts its schedule back. Weekly, Monday 00:00-06:59 in this repo's timezone (Europe/Lisbon), the window the github-actions and ansible-lint rules already had: these workflows are a shared library, one review and one release tag a week.",
+      "matchPackageNames": [
+        "*"
+      ],
+      "schedule": [
+        "* 0-6 * * 1"
+      ]
     }
   ],
   "ansible-galaxy": {

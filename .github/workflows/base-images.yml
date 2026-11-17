@@ -1,0 +1,82 @@
+# Reusable pull-request check: no base image nora still holds in quarantine
+# (issues-maestra#1649). Renovate holds an external image 3 days only where the registry
+# gives a release date (Docker Hub); for mcr/ghcr/quay/... the 3-day control is nora's
+# quarantine, which runs in `observe`, so nothing else blocks a digest built hours ago.
+# dotnet-service-build.yml and service-build.yml call it on pull_request and gate `pr gate`
+# on it; this repo's selftest runs it on its own PRs (mcf-build's DEPS_BASE lives here).
+# A repo with its own workflows calls it directly (it needs id-token for the nora token):
+#
+#   jobs:
+#     base-images:
+#       uses: maestra-io/github-actions/.github/workflows/base-images.yml@main
+#       permissions: { contents: read, id-token: write }
+#
+# What it judges (pr-checks/check-base-images.py): every image the PR ADDS against its
+# base branch, in any Dockerfile of the repo (FROM, COPY/ADD --from, RUN --mount from,
+# ARG defaults substituted) and every digest-pinned packages.maestra.io image of a
+# workflow or action. Unchanged images never turn a PR red, and it never runs on a push:
+# a default branch that already carries a held digest builds as before.
+# nora is asked with `Cache-Control: only-if-cached`, so the check never starts a
+# digest's clock. Held = red, with the UTC time it matures; re-run after it. nora down or
+# erroring = red with "nora check error" (fail closed). The only bypass is a digest
+# exception in fluxcd iota/us-iota-lw-kube-infra/nora/quarantine-exceptions.yaml, which
+# nora itself honors.
+#
+# Inputs:
+#   packages-url       nora (default https://packages.maestra.io).
+#   packages-audience  `aud` of the GitHub OIDC token nora accepts.
+#   ref                ref of maestra-io/github-actions the script is read from
+#                      (default main; set it when testing a branch).
+
+name: base-images
+
+on:
+  workflow_call:
+    inputs:
+      packages-url:
+        type: string
+        default: https://packages.maestra.io
+      packages-audience:
+        type: string
+        default: packages.maestra.io
+      ref:
+        type: string
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  base-images:
+    name: base images
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: runs-on=${{ github.run_id }}-base-images/pool=small
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # nora session token
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      # The test merge commit and its first parent, the base branch tip (HEAD^1).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: maestra-io/github-actions
+          ref: ${{ inputs.ref }}
+          path: .pr-checks
+          sparse-checkout: pr-checks
+          persist-credentials: false
+      - name: nora session token
+        id: session
+        uses: maestra-io/github-actions/nora-session@1b6e07a656e9eb1045ba563d4b9394631ecaa640 # v1.74.0
+        with:
+          url: ${{ inputs.packages-url }}
+          audience: ${{ inputs.packages-audience }}
+      - name: base images held by nora's quarantine
+        env:
+          NORA_URL: ${{ inputs.packages-url }}
+          NORA_TOKEN: ${{ steps.session.outputs.token }}
+        run: python3 -I .pr-checks/pr-checks/check-base-images.py HEAD HEAD^1

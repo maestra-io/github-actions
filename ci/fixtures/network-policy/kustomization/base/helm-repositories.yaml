@@ -1,0 +1,11 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: maestra-helm-charts
+  namespace: universal-channel-http-sender
+spec:
+  type: oci
+  interval: 1h
+  url: oci://${CONTAINER_REGISTRY}/helm-charts
+  secretRef:
+    name: image-pull

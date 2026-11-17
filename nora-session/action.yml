@@ -1,0 +1,33 @@
+name: "nora session token"
+description: >-
+  A nora credential that outlives the job's GitHub OIDC token: the JWT (~5 min) is
+  exchanged at nora for a session token with the same role and namespace scope that
+  lives 1 hour (issues-maestra#1649). For a credential written once into a config file
+  (Maven settings.xml, .npmrc, bower) or passed as a Docker build secret. Needs
+  `permissions: id-token: write`. Run it right before the step that uses the token.
+
+inputs:
+  url:
+    description: "nora base URL."
+    required: false
+    default: "https://packages.maestra.io"
+  audience:
+    description: "`aud` of the GitHub OIDC token nora accepts."
+    required: false
+    default: "packages.maestra.io"
+
+outputs:
+  token:
+    description: "The nora session token (masked); the raw OIDC token, warned, if nora has no exchange."
+    value: ${{ steps.nora-session.outputs.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: nora session token
+      id: nora-session
+      shell: bash
+      env:
+        NORA_URL: ${{ inputs.url }}
+        NORA_AUDIENCE: ${{ inputs.audience }}
+      run: bash "${GITHUB_ACTION_PATH}/nora-session.sh"

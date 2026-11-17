@@ -14,7 +14,12 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/ansible-os-update.yml"
+      - ".github/workflows/ansible-run.yml"
+      - ".github/workflows/ansible-pr.yml"
+      - ".github/workflows/collection-lint.yml"
       - ".github/workflows/dotnet-service-build.yml"
+      - ".github/workflows/frontend-codegen.yml"
+      - ".github/workflows/hot-test-publish.yml"
       - ".github/workflows/mcf-build.yml"
       - ".github/workflows/npm-package-publish.yml"
       - ".github/workflows/nuget-package-publish.yml"
@@ -25,6 +30,25 @@ on:
       - "ci/**"
       - "scripts/**"
       - "push-helm-chart-to-aws-ecr/**"
+      - "bake-oci-manifests/**"
+      - "sign-image/**"
+      - "tbot-join/**"
+      - "terraform-nora/**"
+      - "uv-nora/**"
+      - "go-nora/**"
+      - "cargo-nora/**"
+      - "nora-session/**"
+      - "nora-service/**"
+      - "check-encoding/**"
+      - "translation-checker/**"
+      - "nora-image-prewarm/**"
+      - ".github/workflows/pr-checks.yml"
+      - ".github/workflows/base-images.yml"
+      - "pr-checks/**"
+      - ".github/workflows/gitleaks.yml"
+      - "gitleaks/**"
+      - ".github/workflows/security-scan.yml"
+      - "security-scan/**"
 
 permissions:
   contents: read
@@ -34,7 +58,7 @@ jobs:
     runs-on: runs-on=${{ github.run_id }}-shell/runner=t3a-small
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -50,7 +74,7 @@ jobs:
       - name: dockerfile-from-fix (rewrite, keep, idempotence)
         run: bash scripts/test-dockerfile-from-fix.sh
 
-      - name: npm-lockfile-to-nora (rewrite, keep, idempotence, workflow copy)
+      - name: npm-lockfile-to-nora (rewrite, keep, idempotence, workflow lockfile check)
         run: bash scripts/test-npm-lockfile-to-nora.sh
 
       - name: nuget SDK set (TFM scan, override, workflow copy)
@@ -59,23 +83,103 @@ jobs:
       - name: push-helm-chart-to-aws-ecr version resolution
         run: bash scripts/test-helm-chart-version.sh
 
+      - name: push-helm-chart-to-aws-ecr package-and-push step (stub aws/helm)
+        run: bash scripts/test-helm-chart-push.sh
+
+      - name: push-helm-chart-to-aws-ecr sign + verify step (stub aws/cosign)
+        run: bash scripts/test-helm-chart-sign.sh
+
+      - name: bake-oci-manifests staging tag, re-run reuse, publish after sign (stub aws/flux)
+        run: bash scripts/test-bake-oci-manifests.sh
+
+      - name: tbot-join retries (stub tbot; real 5 s / 15 s backoff, ~70 s)
+        run: bash scripts/test-tbot-join.sh
+
+      - name: terraform-nora CLI config and credentials helper (stub curl)
+        run: bash scripts/test-terraform-nora.sh
+
+      - name: nora-session JWT exchanged for a session token, fallback, refusal (stub curl)
+        run: bash scripts/test-nora-session.sh
+
+      - name: nora-service pull credential, docker run flags, health wait, post cleanup (stub docker/curl)
+        run: bash scripts/test-nora-service.sh
+
+      - name: go-nora GOPROXY, GOAUTH helper, token output (stub curl)
+        run: bash scripts/test-go-nora.sh
+
+      - name: cargo-nora source replacement, token-from-stdout helper, token output (stub curl)
+        run: bash scripts/test-cargo-nora.sh
+
+      - name: uv-nora keyring helper, UV_* env, token output (stub curl, local 401 index)
+        run: bash scripts/test-uv-nora.sh
+
+      - name: nora-image-prewarm image mapping, flate diff, OIDC round trip (stub)
+        run: python3 nora-image-prewarm/prewarm.py --self-test
+
+      - name: security-scan reports (field allowlist, hashes, raw-secret check)
+        run: python3 security-scan/report.py --self-test
+
       - name: nuget build SDK pin (highest TFM, global.json kept/restored, workflow copy)
         run: bash scripts/test-nuget-sdk-pin.sh
 
       - name: pypi upload (skip existing, 409, pinned twine, workflow copy)
         run: bash scripts/test-pypi-upload.sh
 
+      - name: test-results-ingest converter (TRX + JUnit fixtures)
+        run: bash scripts/test-test-results-ingest.sh
+
       - name: dotnet-service-build image-targets / bakes, global.json SDK, AWS credentials wait (workflow copy)
         run: bash scripts/test-dotnet-service-build.sh
+
+      # Real tools at the pr-checks.yml pins and the real commons-app / commons-app-init charts
+      # from ECR with the runner's instance role: the same path a service PR takes, so a runner
+      # image without PyYAML or ECR read fails here, not on the first service PR with a block.
+      - name: pr-checks networkPolicy gate (fixture pilot tree, ECR chart pull, kubeconform, broad gate)
+        run: bash scripts/test-network-policy-gate.sh
 
       # A cached layer that holds the packages token replays it after it expired
       # (maestra-io/billing publish -r linux-x64: 401). Docker + a fake feed that
       # accepts only the current token; the GitLab-era Dockerfile must reproduce it.
       - name: dotnet-service-build packages token (layer cache, token files, expired-token e2e; workflow copy)
         run: bash scripts/test-dotnet-service-build-cache.sh
+      - name: dotnet-service-build graphql-schemas (.graphqlrc.json discovery, hosts, build contexts, token override, OIDC/auth-jwt/401/HTML/no SDL; stub curl/dotnet; workflow copy)
+        run: bash scripts/test-dotnet-service-build-graphql.sh
 
       - name: service-build image-targets parsing (workflow copy)
         run: bash scripts/test-service-build.sh
+      - name: ecr-push-check (tag absent / same digest / other digest)
+        run: bash scripts/test-ecr-push-check.sh
+      - name: github-release-create (403 after main moved with a workflow change; workflow copies)
+        run: bash scripts/test-github-release-create.sh
+      - name: sign-image status, background SBOM, cosign pin, no syft auth env (stub cosign/curl/docker/aws)
+        run: bash scripts/test-sign-image.sh
+
+      - name: hot-test-publish stand names, manifest override, route wait, release bucket check, summary (workflow copy)
+        run: bash scripts/test-hot-test-publish.sh
+      - name: mcf-build static-prefix, static-manifest and static-version-file inputs (workflow copy)
+        run: bash scripts/test-mcf-build-static.sh
+      - name: mcf-build deps-prune, DEPS_PRUNE and what only it needs leave node_modules (workflow copy)
+        run: bash scripts/test-mcf-build-deps-prune.sh
+      - name: mcf-build localization-keys exit code and checks verdict (workflow copy)
+        run: bash scripts/test-mcf-build-localization-keys.sh
+      - name: mcf-build / npm-package-publish eslint --concurrency (workflow copies)
+        run: bash scripts/test-eslint-concurrency.sh
+      - name: mcf-build lockfile in sync with package.json (workflow copy)
+        run: bash scripts/test-lockfile-sync.sh
+
+      - name: mcf-build tests/ detection, http-server wait, functional summary (workflow copy)
+        run: bash scripts/test-functional.sh
+      - name: mcf-build e2e detection, e2e-stand and e2e wiring, credentials, e2e summary (workflow copy)
+        run: bash scripts/test-e2e.sh
+      - name: mcf-build pr gate (needs, verdict; workflow copy)
+        run: bash scripts/test-mcf-build-pr-gate.sh
+
+      - name: pr-checks check-encoding and kustomize entry points
+        run: bash scripts/test-pr-checks.sh
+      - name: base-images Dockerfile parser, nora verdicts, only-if-cached probe (stub nora)
+        run: python3 -I pr-checks/check-base-images.py --self-test
+      - name: pr-changes (kustomization-only PRs skip build and test)
+        run: bash scripts/test-pr-changes.sh
 
       # warn-as-error must keep tests running on the Microsoft.Testing.Platform
       # runner too (a bare /warnaserror ran zero tests there, exit 5).
@@ -84,6 +188,9 @@ jobs:
           dotnet-version: 10.0.x
       - name: dotnet-service-build warn-as-error on MTP and VSTest runners (workflow copy)
         run: bash scripts/test-dotnet-service-build-mtp.sh
+      # After the setup-dotnet 10.0.x above: the image itself ships only its newest SDK.
+      - name: dotnet-service-build SDK pin on real SDKs (build SDK = pinned SDK 10, image's newest beside it)
+        run: bash scripts/test-dotnet-sdk-pin-real.sh
 
       # `mode: stage` is only safe BECAUSE it disrupts nothing — that is why it is
       # allowed to skip preflight. This checks the property structurally, so the
@@ -99,6 +206,17 @@ jobs:
       - name: binary-update wiring (a failed host must stay drained)
         run: bash ansible/tests/test-binary-update-wiring.sh
 
+      # The os-update apply leg pins the Teleport FQDN away from the proxy on its
+      # own target (us-iota: proxy hostNetwork on the nodes it reboots). The test
+      # runs the workflow's own step block against stubs.
+      - name: avoid-target-proxy pin (ansible-run.yml)
+        run: bash ansible/tests/test-avoid-target-proxy.sh
+
+      # The Python install of every Ansible workflow: the caller's uv.lock through
+      # nora only, and no install at all without one (issues-maestra#1649).
+      - name: python-deps block (uv.lock through nora only)
+        run: bash ansible/tests/test-python-deps.sh
+
       # The test carries its own copy of the selector; a change to the workflow
       # that does not update the test would leave the test green and meaningless.
       - name: the test's copy of the selector still matches the workflow
@@ -112,6 +230,84 @@ jobs:
             grep -qF -- "$line" ansible/tests/test-host-limit-selector.sh \
               || { echo "::error::test no longer contains: $line"; exit 1; }
           done
+
+  # nora-service for real: Postgres pulled through nora by digest with the job's OIDC token,
+  # reached on the published port and by docker exec, removed by the post step.
+  nora-service:
+    runs-on: runs-on=${{ github.run_id }}-nora-service/runner=t3a-small
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # nora session token for the pull
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./nora-service
+        id: pg
+        with:
+          image: packages.maestra.io/docker-hub/library/postgres:17@sha256:3b0cda93be7c8dba2ed484d19393d93845dc3dafb88973e248ba8e6d99d784e1
+          ports: 127.0.0.1:5432:5432
+          env: POSTGRES_HOST_AUTH_METHOD=trust
+          options: --health-cmd "pg_isready -U postgres" --health-interval 2s --health-timeout 5s --health-retries 30
+      - name: Postgres answers by docker exec and on the published port
+        env:
+          PG: ${{ steps.pg.outputs.id }}
+        run: |
+          [ "$(docker exec "$PG" psql -U postgres -Atc 'select 1')" = 1 ]
+          timeout 5 bash -c '</dev/tcp/127.0.0.1/5432'
+          docker image inspect --format '{{join .RepoDigests " "}}' "$(docker inspect -f '{{.Image}}' "$PG")" \
+            | grep -qF 'packages.maestra.io/docker-hub/library/postgres@sha256:3b0cda93be7c8dba2ed484d19393d93845dc3dafb88973e248ba8e6d99d784e1'
+          # the pull's credential stayed out of the runner's docker config
+          ! grep -qs packages.maestra.io "${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+
+  # check-encoding and translation-checker for real over this repo: check-encoding runs
+  # the Python port, translation-checker pulls our image from ECR with the runner's
+  # instance role. No id-token: neither action needs one.
+  mindbox-lint:
+    runs-on: runs-on=${{ github.run_id }}-mindbox-lint/runner=t3a-small
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./check-encoding
+      - uses: ./translation-checker
+
+  # The shared PR checks on this repo's own pull requests, with the scripts and the
+  # gitleaks config of the PR head. The workflow skips itself outside pull_request.
+  pr-checks:
+    uses: ./.github/workflows/pr-checks.yml
+    permissions:
+      contents: read
+    with:
+      ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+  # The base-image check of the PR head on this repo's own pull requests: mcf-build's
+  # DEPS_BASE and the other digest-pinned nora images of these workflows move here.
+  base-images:
+    uses: ./.github/workflows/base-images.yml
+    permissions:
+      contents: read
+      id-token: write # nora session token
+    with:
+      ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+  # The gitleaks workflow of the PR head on this repo's own pull requests. Skips
+  # itself outside pull_request. Needs the org secret GITLEAKS_LICENSE
+  # (gitleaks-action exits 1 without it on an org repo).
+  gitleaks:
+    uses: ./.github/workflows/gitleaks.yml
+    secrets: inherit
+    with:
+      ref: ${{ github.event.pull_request.head.sha || github.sha }}
+    permissions:
+      contents: read
+      pull-requests: write
 
   # End to end: the real reusable workflow on a net8.0 + net10.0 solution with no
   # global.json. Each test asserts it runs on its own target's runtime (no

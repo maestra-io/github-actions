@@ -32,3 +32,49 @@ fails "=t" "no image"
 fails "x=:t" "empty dockerfile"
 fails "x=a:b:c:d" "four fields"
 echo "service-build image-targets: ok"
+
+# release: release-version wins over RELEASE_PREFIX.run_number and must be X.Y.Z.
+rel_prog=$(sed -n '/# >>> release/,/# <<< release/p' "$wf" | sed 's/^          //')
+[ -n "$rel_prog" ] || { echo "release block not found in $wf"; exit 1; }
+rel() { RELEASE_VERSION="$1" PREFIX="${2:-}" TAG_PREFIX="${3:-}" RUN_NUMBER=7 bash -c "set -eo pipefail; $rel_prog"$'\n''echo "$release $tag"'; }
+eq "$(rel "")" "1.1.7 1.1.7" "default prefix"
+eq "$(rel "" 2.3)" "2.3.7 2.3.7" "RELEASE_PREFIX"
+eq "$(rel 4.220.0 2.3)" "4.220.0 4.220.0" "release-version"
+eq "$(rel "" "" standard-blocks-v)" "1.1.7 standard-blocks-v1.1.7" "release-tag-prefix"
+for bad in 4.220 v4.220.0 4.220.0-beta "4.220.0 " $'4.220.0\nx=1'; do
+  if rel "$bad" >/dev/null 2>&1; then echo "FAIL release-version '$bad': accepted"; exit 1; fi
+done
+for bad in "a b" "a/b" $'a\nx=1' 'a;b'; do
+  if rel "" "" "$bad" >/dev/null 2>&1; then echo "FAIL release-tag-prefix '$bad': accepted"; exit 1; fi
+done
+echo "service-build release: ok"
+
+# shards: test-shards -> matrix of shard indexes, 1..20.
+sh_prog=$(sed -n '/# >>> shards/,/# <<< shards/p' "$wf" | sed 's/^          //')
+[ -n "$sh_prog" ] || { echo "shards block not found in $wf"; exit 1; }
+shards() { TEST_SHARDS="$1" bash -c "set -eo pipefail; $sh_prog"$'\n''echo "$shards"'; }
+eq "$(shards 1)" "[1]" "one shard"
+eq "$(shards 4)" "[1,2,3,4]" "four shards"
+for bad in 0 21 -1 x ""; do
+  if shards "$bad" >/dev/null 2>&1; then echo "FAIL test-shards '$bad': accepted"; exit 1; fi
+done
+echo "service-build shards: ok"
+
+# test-command uv credentials: the keyring helper answers nora URLs with a fresh
+# packages-token and nothing else; UV_* exported.
+uv_prog=$(sed -n '/# >>> uv-keyring/,/# <<< uv-keyring/p' "$wf" | sed 's/^          //')
+[ -n "$uv_prog" ] || { echo "uv-keyring block not found in $wf"; exit 1; }
+uvt=$(mktemp -d); trap 'rm -rf "$uvt"' EXIT
+mkdir -p "$uvt/bin"
+printf '#!/usr/bin/env bash\nprintf tok-1\n' > "$uvt/bin/packages-token"; chmod +x "$uvt/bin/packages-token"
+RUNNER_TEMP="$uvt" GITHUB_ENV="$uvt/env" PACKAGES_URL=https://packages.maestra.io/ bash -c "set -eo pipefail; $uv_prog"
+eq "$(cat "$uvt/env")" $'UV_KEYRING_PROVIDER=subprocess\nUV_INDEX_MAESTRA_USERNAME=token' "uv env"
+kr() { PATH="$uvt/bin:$PATH" "$uvt/bin/keyring" "$@"; }
+t1=$(kr get https://packages.maestra.io/simple/ token); t2=$(kr get https://packages.maestra.io/simple/six/six-1.17.0.tar.gz token)
+case "$t1" in tok-*) ;; *) echo "FAIL keyring index url: $t1"; exit 1 ;; esac
+case "$t2" in tok-*) ;; *) echo "FAIL keyring file url: $t2"; exit 1 ;; esac
+for bad in "get https://pypi.org/simple/ token" "get https://packages.maestra.io.evil.example/simple/ token" "set https://packages.maestra.io/simple/ token"; do
+  # shellcheck disable=SC2086
+  if kr $bad >/dev/null 2>&1; then echo "FAIL keyring answered: $bad"; exit 1; fi
+done
+echo "service-build uv keyring: ok"

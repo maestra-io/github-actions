@@ -1,5 +1,5 @@
 ---
-# The payload. Runs only while the host is DRAINED.
+# The payload. Runs while the host is DRAINED (apply) or still in rotation (stage).
 
 - name: Serialize against unattended-upgrades / apt-daily
   # The apt-daily timers are masked on these boxes (harden-apt), but the
@@ -18,8 +18,14 @@
     dpkg_options: force-confdef,force-confold
   environment:
     DEBIAN_FRONTEND: noninteractive
-    # needrestart is not installed on these hosts, but if it ever lands, `a` keeps
-    # it from opening an interactive service-restart prompt and hanging the run.
+    # needrestart IS installed where the image ships it (Ubuntu 24.04: all three
+    # us-iota nodes, 3.6-7ubuntu4.5) and in mode `a` it RESTARTS every service on
+    # an upgraded lib from inside dpkg — 07.10.2026 an unrelated apt run restarted
+    # k0scontroller (etcd) on all three iota nodes at once. Here the activation
+    # is ours to schedule: the reboot in `apply`, somebody else's reboot in
+    # `stage` (which runs on a host still in rotation). So needrestart is
+    # suspended; MODE `a` stays as the fallback against an interactive prompt.
+    NEEDRESTART_SUSPEND: "1"
     NEEDRESTART_MODE: a
   register: os_update_apt_result
 

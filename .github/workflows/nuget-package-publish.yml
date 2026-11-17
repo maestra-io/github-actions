@@ -6,7 +6,7 @@
 #
 #   jobs:
 #     package:
-#       uses: maestra-io/github-actions/.github/workflows/nuget-package-publish.yml@<sha> # vX.Y.Z
+#       uses: maestra-io/github-actions/.github/workflows/nuget-package-publish.yml@main
 #       permissions: { contents: read, id-token: write }
 #       with:
 #         solution-file: Mindbox.Validation.sln
@@ -45,10 +45,15 @@
 #                        value naming this account's ECR (515260921971...us-west-2) triggers
 #                        an ECR login (instance role, read only), so tests pull the
 #                        mirrored test-images/* (mirror-test-images.yml) instead of quay.io.
+#                        TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX defaults to
+#                        packages.maestra.io/docker-hub/ (nora, issues-maestra#1649).
 #
 # Auth: nora verifies the GitHub Actions OIDC token passed as the NuGet API key
 # (X-NuGet-ApiKey, maestra-io/nora#1), so no stored secret. --skip-duplicate makes a
 # re-run of the same run (same BuildNumber) a no-op.
+#
+# The PR secret scan is not part of this workflow: each repo runs it in its own
+# workflow that calls this repo's reusable secret-scan workflow (see the README).
 
 name: nuget-package-publish
 
@@ -117,7 +122,7 @@ jobs:
       id-token: write # nora OIDC token
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           lfs: ${{ inputs.lfs }}
@@ -128,6 +133,53 @@ jobs:
       # (W2, Mindbox.Tenants PR #2). Scope: the solution's directory tree plus
       # Directory.Build.* in its parent directories (all of the repo when
       # solution-file is empty). selftest.yml runs this program (scripts/test-nuget-sdk-set.sh).
+      # Testcontainers, docker compose and BuildKit pull packages.maestra.io images (the
+      # nora pull-through, issues-maestra#1649) with ~/.docker/config.json. nora takes the
+      # OIDC token, which lives minutes: a credential helper mints a fresh one per pull.
+      - name: nora docker credentials
+        env:
+          AUDIENCE: ${{ inputs.packages-audience }}
+          PACKAGES_URL: ${{ inputs.packages-url }}
+        run: |
+          # >>> nora-cred-helper (scripts/test-dotnet-service-build.sh runs this block; all copies equal)
+          bin="$RUNNER_TEMP/nora-bin"; mkdir -p "$bin"
+          # The helper runs in the caller's environment, which tox and other test runners
+          # scrub: the job's OIDC request URL and token go to a 0600 file next to it.
+          # nora's origin: PACKAGES_URL may carry a path (python-package-publish: …/simple/)
+          o="${PACKAGES_URL#*://}"; o="${PACKAGES_URL%%://*}://${o%%/*}"
+          ( umask 077; printf 'url=%q\ntoken=%q\naud=%q\nnora=%q\n' "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+            "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$AUDIENCE" "$o" > "$bin/oidc.env" )
+          cat > "$bin/docker-credential-nora" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          [ "${1:-}" = get ] || exit 0
+          server=$(cat) # docker sends it without a newline
+          . "${BASH_SOURCE[0]%/*}/oidc.env"
+          t=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $token" \
+            "$url&audience=$aud" | jq -r '.value // empty')
+          [ -n "$t" ]
+          # Testcontainers keeps the first credential for its whole run, so a ~5 min JWT failed
+          # pulls made later (api-mimic#72): hand out nora's 1 h session token for it instead.
+          # ponytail: a test process over 1 h still outlives it; 403/404 = no exchange, the JWT.
+          # the body to a 0600 file: curl truncates it before a retry, stdout would keep every attempt's
+          f=$(mktemp); trap 'rm -f "$f"' EXIT
+          code=$(curl -sS --retry 3 --connect-timeout 10 --max-time 30 -X POST -H "Authorization: Bearer $t" \
+            -o "$f" -w '%{http_code}' "$nora/api/oidc/session")
+          case "$code" in
+            200) t=$(jq -r '.token // empty' "$f"); [[ "$t" == nrs_* ]] ;;
+            403|404) ;;
+            *) exit 1 ;;
+          esac
+          jq -cn --arg s "$server" --arg t "$t" '{ServerURL: $s, Username: "token", Secret: $t}'
+          EOF
+          chmod 755 "$bin/docker-credential-nora"
+          echo "$bin" >> "$GITHUB_PATH"
+          host="${PACKAGES_URL#*://}"; host="${host%%/*}"
+          cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"; mkdir -p "$(dirname "$cfg")"
+          [ -s "$cfg" ] || echo '{}' > "$cfg"
+          jq --arg h "$host" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
+          # <<< nora-cred-helper
+
       - name: pick .NET SDKs
         id: sdk
         env:
@@ -190,11 +242,11 @@ jobs:
       # major, in a temporary global.json in the working directory (where dotnet
       # looks first). Other global.json keys are kept, and the repo's own file is put
       # back after pack. An explicit sdk.version with a narrower rollForward is
-      # respected, and so is the dotnet-version override (no pin). selftest.yml runs
-      # this program (scripts/test-nuget-sdk-pin.sh).
+      # respected. A dotnet-version override is pinned to its own highest major: with
+      # no pin, `8.0.x` callers built with the image's newest SDK (11 since the
+      # 17.11.2026 image). selftest.yml runs this program (scripts/test-nuget-sdk-pin.sh).
       - name: pin the build SDK
         id: pin
-        if: ${{ inputs.dotnet-version == '' }}
         env:
           VERSIONS: ${{ steps.sdk.outputs.versions }}
           BACKUP: ${{ runner.temp }}/global.json.repo
@@ -240,7 +292,6 @@ jobs:
             core.setOutput('token', t);
 
       - name: test-env
-        if: ${{ inputs.test-env != '' }}
         env:
           TEST_ENV: ${{ inputs.test-env }}
           ECR_REGISTRY: 515260921971.dkr.ecr.us-west-2.amazonaws.com
@@ -256,6 +307,11 @@ jobs:
             printf '%s\n' "$line" >> "$GITHUB_ENV"
             echo "test env: ${key}"
           done <<< "$TEST_ENV"
+          # Testcontainers pulls Docker Hub images (test images and its ryuk reaper) through
+          # nora's proxy and its 3-day quarantine, not Docker Hub / RunsOn's ECR pull-through
+          # (issues-maestra#1649); a test-env line with its own prefix wins.
+          grep -q '^TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX=' "$RUNNER_TEMP/test.env" \
+            || echo "TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX=packages.maestra.io/docker-hub/" | tee -a "$RUNNER_TEMP/test.env" >> "$GITHUB_ENV"
           # Testcontainers pulls with ~/.docker/config.json; log in to this
           # account's ECR when a value names it (instance role, read only).
           if grep -qF "$ECR_REGISTRY" "$RUNNER_TEMP/test.env"; then
@@ -295,10 +351,43 @@ jobs:
           dotnet build "${sln[@]}" --configuration Release --no-restore "${ver[@]}" "${wae[@]}"
           if [ "$RUN_TESTS" = "true" ]; then
             filter=(); [ -n "$FILTER" ] && filter=(--filter "$FILTER")
-            dotnet test "${sln[@]}" --configuration Release --no-build --no-restore "${filter[@]}"
+            # TRX for flaky-test telemetry (maestra-io/issues-maestra#1592), as MSBuild properties
+            # rather than --logger: the Microsoft.Testing.Platform runner rejects --logger and
+            # ignores these.
+            VSTestLogger=trx VSTestResultsDirectory="$RUNNER_TEMP/test-results" \
+              dotnet test "${sln[@]}" --configuration Release --no-build --no-restore "${filter[@]}"
           fi
           dotnet pack "${sln[@]}" --no-build --configuration Release --output "$RUNNER_TEMP/nupkg" "${ver[@]}" "${repo[@]}"
           ls -1 "$RUNNER_TEMP/nupkg"
+
+      # Where the test containers came from (issues-maestra#1649): Testcontainers' Docker Hub
+      # images show as packages.maestra.io/docker-hub/…
+      - name: test images
+        if: ${{ always() && inputs.run-tests }}
+        run: docker image ls --format '{{.Repository}}:{{.Tag}}' | sort || true
+
+      # Flaky-test telemetry (maestra-io/issues-maestra#1592): TRX of every attempt, pass or fail.
+      # github.job is the CALLED job id (test/package), the same for every call of this
+      # workflow in one run, and an artifact name cannot repeat: a per-job suffix.
+      - id: test-results-id
+        if: ${{ always() }}
+        run: echo "id=$(date +%s%N)" >> "$GITHUB_OUTPUT"
+      - name: upload test results
+        if: ${{ always() && inputs.run-tests }}
+        continue-on-error: true # telemetry never fails the build
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-results-${{ github.job }}-${{ github.run_attempt }}-${{ steps.test-results-id.outputs.id }}
+          path: ${{ runner.temp }}/test-results
+          retention-days: 30
+          if-no-files-found: ignore
+      # Flaky-test telemetry (maestra-io/issues-maestra#1592): one row per test result into
+      # ci-telemetry VictoriaLogs. The bearer comes from Vault (role ci-test-results-ingest,
+      # bound to this workflow file); never fails the build.
+      - name: ingest test results
+        if: ${{ always() && inputs.run-tests }}
+        continue-on-error: true
+        uses: maestra-io/github-actions/test-results-ingest@2450cdaaf4688887cb65579fc45ab5304cb81967 # v1.46.2
 
       # Never leave the temporary pin behind (nothing here commits, but the
       # workspace is the caller's checkout).
