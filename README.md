@@ -567,6 +567,11 @@ the newest SDK in `dotnet-nora/sdks.txt`; each tarball comes from nora raw
 `.github/raw-uploads/dotnet.txt`), is checked against the sha256 pinned in `sdks.txt` and
 unpacked next to the image's SDKs. linux-x64 only; the job needs `id-token: write`.
 
+The tarballs are cached (`actions/cache`, on RunsOn the Magic Cache in S3 next to the
+runners) under `dotnet-nora-sdk-linux-x64-<versions>-<hash of their pins>`: a job whose
+repository/branch (or default branch) already saved them fetches nothing from nora. A
+restored tarball is used only when its sha256 is the pin, else it is fetched from nora again.
+
 ```yaml
   - uses: maestra-io/github-actions/dotnet-nora@<40-hex sha> # vX.Y.Z
     with:
