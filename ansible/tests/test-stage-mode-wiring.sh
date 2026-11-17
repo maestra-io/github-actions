@@ -64,8 +64,8 @@ grep -A20 "^- name: PREFLIGHT" "$MAIN" | grep -q "when: os_update_mode != 'stage
 
 # 5. The /boot guard is deferred in stage so the pre-stage GC can fix it first —
 #    but it must still be asserted before anything is unpacked.
-grep -B8 "^  ansible.builtin.assert:" "$ROLE/tasks/plan.yml" \
-  | grep -q "os_update_mode != 'stage'" \
+grep -A3 "include_tasks: boot_guard.yml" "$MAIN" \
+  | grep -q "when: os_update_mode not in \['stage'" \
   && ok "plan's /boot guard is deferred for stage" \
   || bad "plan's /boot guard is not deferred for stage"
 echo "$stage_block" | grep -q "os_update_boot_free_needed_mb" \

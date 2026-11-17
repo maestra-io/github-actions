@@ -1,0 +1,33 @@
+---
+# Drives boot_guard.yml against the fake apt-get/df/du/ls in
+# test-os-update-boot-gc.sh. Everything plan.yml would have set comes in as -e.
+- name: The /boot guard and the kernel GC that can satisfy it
+  hosts: all
+  gather_facts: false
+  vars:
+    role_tasks: "{{ playbook_dir }}/../../collections/maestra/infra/roles/os_update/tasks"
+    os_update_pinned_base: [teleport, frr, consul]
+    os_update_pinned_extra: []
+    os_update_boot_free_factor: 2
+    os_update_boot_free_floor_mb: 150
+    os_update_boot_free_gc_threshold_mb: 500
+    os_update_boot_free_needed_mb: 200
+    os_update_kernel_cost_cmd: {stdout: "100"}
+    os_update_needed: true
+    os_update_reboot_needed: true
+    os_update_resuming: false
+  tasks:
+    - name: The running kernel (ansible_facts.kernel)
+      ansible.builtin.setup:
+        gather_subset: [min]
+
+    - name: What plan.yml measured (a fact, as in the role, so the guard can re-measure it)
+      ansible.builtin.set_fact:
+        os_update_boot_free_mb: "{{ boot_free | int }}"
+
+    - name: Guard
+      ansible.builtin.include_tasks: "{{ role_tasks }}/boot_guard.yml"
+
+    - name: What the guard left behind
+      ansible.builtin.debug:
+        msg: "final boot_free_mb={{ os_update_boot_free_mb }}"
