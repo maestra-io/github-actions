@@ -122,9 +122,6 @@ jobs:
       - name: nuget build SDK pin (highest TFM, global.json kept/restored, workflow copy)
         run: bash scripts/test-nuget-sdk-pin.sh
 
-      - name: dotnet-service-build SDK pin on the image's real SDKs (build SDK major = pinned)
-        run: bash scripts/test-dotnet-sdk-pin-real.sh
-
       - name: pypi upload (skip existing, 409, pinned twine, workflow copy)
         run: bash scripts/test-pypi-upload.sh
 
@@ -191,6 +188,9 @@ jobs:
           dotnet-version: 10.0.x
       - name: dotnet-service-build warn-as-error on MTP and VSTest runners (workflow copy)
         run: bash scripts/test-dotnet-service-build-mtp.sh
+      # After the setup-dotnet 10.0.x above: the image itself ships only its newest SDK.
+      - name: dotnet-service-build SDK pin on real SDKs (build SDK = pinned SDK 10, image's newest beside it)
+        run: bash scripts/test-dotnet-sdk-pin-real.sh
 
       # `mode: stage` is only safe BECAUSE it disrupts nothing — that is why it is
       # allowed to skip preflight. This checks the property structurally, so the

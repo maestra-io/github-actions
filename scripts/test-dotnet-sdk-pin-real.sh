@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Real-SDK check of the build SDK pin in dotnet-service-build.yml (test job), on the
-# runner image's own SDKs: a net10.0 repo whose global.json says 10.0.100 with
-# rollForward latestMajor must build with SDK 10, even when the image also ships a
-# newer major (RunsOn ubuntu24-full added SDK 11 on 17.11.2026 and event-logs failed
-# CA1860 under it). The SDK is read the way the build reads it: MSBuild's
-# NETCoreSdkVersion of the project.
+# runner's real SDKs: the image's newest (RunsOn ubuntu24-full of 17.11.2026 ships
+# 11.0.100 alone; event-logs failed CA1860 under it) plus an SDK 10 from setup-dotnet,
+# as in the workflow. A net10.0 repo whose global.json says 10.0.100 with rollForward
+# latestMajor must build with SDK 10. The SDK is read the way the build reads it:
+# MSBuild's NETCoreSdkVersion of the project.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 wf="$here/../.github/workflows/dotnet-service-build.yml"
@@ -13,7 +13,7 @@ set_prog=$(block sdk-set); pin_prog=$(block sdk-pin)
 [ -n "$set_prog" ] && [ -n "$pin_prog" ] || { echo "sdk-set/sdk-pin not found in $wf"; exit 1; }
 command -v dotnet >/dev/null || { echo "FAIL: no dotnet on this runner"; exit 1; }
 dotnet --list-sdks
-dotnet --list-sdks | grep -q '^10\.' || { echo "FAIL: the runner image has no SDK 10 to pin to"; exit 1; }
+dotnet --list-sdks | grep -q '^10\.' || { echo "FAIL: no SDK 10 installed (selftest.yml runs setup-dotnet 10.0.x before this)"; exit 1; }
 
 d="$(mktemp -d)"; trap 'rm -rf "$d"' EXIT
 mkdir "$d/w"
