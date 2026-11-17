@@ -1953,8 +1953,6 @@ jobs:
       # No dotnet-version and no global.json: the runner image's SDK.
       - if: ${{ steps.cpm.outputs.props != '[]' && (steps.sdk.outputs.version != '' || hashFiles('global.json') != '') }}
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
-        env:
-          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
           dotnet-version: ${{ steps.sdk.outputs.version }}
           global-json-file: ${{ steps.sdk.outputs.file }}
