@@ -66,6 +66,8 @@ repo; sqli old_one SELECT >> app/db.py; base_commit
 { head -4 app/db.py; printf '\n\ndef health():\n    return "ok"\n'; tail -n +5 app/db.py; } > app/db.py.new && mv app/db.py.new app/db.py
 pr_commit
 run "moved old sqli" opengrep 0
+# not vacuous: the head has the finding, the baseline is what drops it
+if grep -qE 'Current version has [1-9]' "$work/log"; then echo "ok   moved old sqli: found at head, dropped by the baseline"; else echo "FAIL moved old sqli: no finding at head, the case proves nothing"; fail=1; fi
 
 # 5. a dependency bump into a vulnerable version (PyYAML 5.3: CVE-2020-14343) fails trivy
 repo; base_commit
@@ -82,7 +84,14 @@ run "unrelated PR" gitleaks 0
 run "unrelated PR" opengrep 0
 run "unrelated PR" trivy 0
 
-# 7. not a merge checkout: broken, never green
+# 7. a PR that only deletes a file (with an old sqli in it): opengrep has nothing to scan
+repo; sqli old_one SELECT >> app/db.py; base_commit
+git rm -q app/db.py
+pr_commit
+run "deletion-only PR" opengrep 0
+if grep -q "nothing to scan" "$work/log"; then echo "ok   deletion-only PR: opengrep skipped"; else echo "FAIL deletion-only PR: opengrep not skipped"; fail=1; fi
+
+# 8. not a merge checkout: broken, never green
 repo; git add -A && git commit -qm only
 run "no parent commit" gitleaks 2
 

@@ -10,6 +10,7 @@
 #   opengrep  `opengrep scan --baseline-commit HEAD^1`: only the files the PR changes are
 #             scanned, and a match whose (rule id, path, matched lines) also matches at HEAD^1 is
 #             dropped, so a finding moved by unrelated edits stays out (opengrep Diff_scan).
+#             Skipped when the PR only deletes files: opengrep would scan no file.
 #   trivy     `trivy fs` of HEAD; when it has findings, `trivy fs` of HEAD^1 too (a git
 #             worktree, DB not re-downloaded), and only the head findings whose key is not in
 #             the base fail: vulnerability = (target, package, advisory id), secret = (target,
@@ -39,6 +40,11 @@ gitleaks)
   exit "$rc" ;;
 
 opengrep)
+  # A PR that only deletes files leaves opengrep no target (it scans the files the PR adds or
+  # changes); skipping its ~3 min rule load gives the same empty result.
+  if [ -z "$(git diff --name-only --diff-filter=d "$base" HEAD)" ]; then
+    echo "the PR adds or changes no file: nothing to scan"; exit 0
+  fi
   rc=0
   "${OPENGREP:?}" scan --config "${OPENGREP_RULES:?}" --severity=ERROR --taint-intrafile \
     --no-rewrite-rule-ids --error --baseline-commit "$base" \
