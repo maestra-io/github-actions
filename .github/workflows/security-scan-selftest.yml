@@ -2,7 +2,7 @@
 # security-scan PR mode for real: scripts/test-security-scan-pr.sh runs security-scan/pr-scan.sh
 # with gitleaks, trivy and opengrep on fixture repos (a new secret, sqli and vulnerable bump
 # fail; an old finding untouched or moved, and an unrelated PR, pass). The scanners are the
-# versions and sha256 pinned in security-scan.yml, through nora with the job's OIDC token, the
+# versions and sha256 pinned in security-scan.yml and trivy's DBs, through nora with the job's OIDC token, the
 # rules are the same semgrep-rules security selection.
 name: security-scan-selftest
 
@@ -13,6 +13,7 @@ on:
       - ".github/workflows/security-scan-selftest.yml"
       - ".github/workflows/security-scan.yml"
       - "security-scan/**"
+      - "nora-session/**"
       - "gitleaks/**"
       - "scripts/test-security-scan-pr.sh"
 
@@ -62,6 +63,24 @@ jobs:
           find . -name '*.yaml' ! -exec grep -qE '^[[:space:]]+category:[[:space:]]*security[[:space:]]*$' {} \; -delete
           find . -path '*/secrets/*' -delete
           find . -type d -empty -delete
+      - name: trivy DBs through nora
+        run: bash security-scan/trivy-nora-env.sh "$RUNNER_TEMP/trivy-docker"
+      # Proof that trivy fetches nothing around nora: the DB and a POM (commons-text 1.9,
+      # CVE-2022-42889) come from packages.maestra.io, Maven Central and mirror.gcr never appear.
+      - name: trivy fetches only from nora
+        run: |
+          set -euo pipefail
+          d=$(mktemp -d)
+          printf '%s\n' '<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion>' \
+            '<groupId>x</groupId><artifactId>y</artifactId><version>1</version><dependencies><dependency>' \
+            '<groupId>org.apache.commons</groupId><artifactId>commons-text</artifactId><version>1.9</version>' \
+            '</dependency></dependencies></project>' > "$d/pom.xml"
+          "$RUNNER_TEMP/trivy" fs --debug --scanners vuln --format json --output "$d/out.json" "$d" 2> "$d/log"
+          grep -E 'Downloading artifact|\[pom\] (Fetching|Failed|Adding mirror)|commons-text-1.9.pom' "$d/log" || true
+          grep -q 'repo="packages.maestra.io/ghcr/aquasecurity/trivy-db:2"' "$d/log"
+          if grep -E 'mirror\.gcr\.io|ghcr\.io/aquasecurity|repo\.maven\.apache\.org|repo1\.maven\.org' "$d/log"; then exit 1; fi
+          if grep '\[pom\] Failed to fetch' "$d/log"; then exit 1; fi
+          jq -e '[.Results[]?.Vulnerabilities[]? | select(.VulnerabilityID == "CVE-2022-42889")] | length > 0' "$d/out.json"
       - name: PR mode cases
         env:
           TRIVY_DISABLE_VEX_NOTICE: "true"

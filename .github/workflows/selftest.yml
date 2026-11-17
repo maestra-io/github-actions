@@ -125,6 +125,8 @@ jobs:
       - name: nora-image-prewarm image mapping, flate diff, OIDC round trip (stub)
         run: python3 nora-image-prewarm/prewarm.py --self-test
 
+      - name: security-scan trivy DBs through nora (stub curl)
+        run: bash scripts/test-security-scan-trivy-nora-env.sh
       - name: security-scan reports (field allowlist, hashes, raw-secret check)
         run: python3 security-scan/report.py --self-test
 

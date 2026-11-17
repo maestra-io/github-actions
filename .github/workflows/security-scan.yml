@@ -185,7 +185,9 @@ jobs:
           repository: maestra-io/github-actions
           ref: ${{ inputs.ref }}
           path: .github-actions
-          sparse-checkout: security-scan
+          sparse-checkout: |
+            nora-session
+            security-scan
           persist-credentials: false
       - name: Install trivy
         id: install
@@ -199,6 +201,8 @@ jobs:
             "https://packages.maestra.io/github/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
           echo "${TRIVY_SHA256}  ${tgz}" | sha256sum -c -
           tar -xzf "$tgz" -C "$RUNNER_TEMP" trivy
+          # The DBs come through nora too (not ghcr / mirror.gcr directly).
+          bash .github-actions/security-scan/trivy-nora-env.sh "$RUNNER_TEMP/trivy-docker"
           mv .github-actions/security-scan/{report.py,pr-scan.sh,pr-diff.py} "$RUNNER_TEMP/"
           rm -rf .github-actions
           echo "version=$TRIVY_VERSION" >> "$GITHUB_OUTPUT"
