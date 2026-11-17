@@ -147,4 +147,8 @@ jobs:
         run: bash ansible/tests/test-os-update-holds.sh
 
       - name: os_update /boot guard (real boot_guard.yml + kernel_gc.yml against a fake apt-get)
-        run: bash ansible/tests/test-os-update-boot-gc.sh
+        # The apply case purges through the real apt module, which needs the
+        # system python3-apt (the module respawns under /usr/bin/python3).
+        run: |
+          /usr/bin/python3 -c 'import apt' 2>/dev/null || sudo apt-get install -y -qq python3-apt
+          bash ansible/tests/test-os-update-boot-gc.sh

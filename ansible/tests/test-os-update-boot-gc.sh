@@ -104,8 +104,11 @@ scenario room-plan plan 141 "$OLD" "$MID" "$RUN" -- "$OLD"
 expect "plan: the GC makes room, the host passes with the line, nothing is removed" 0 no \
   "free_mb=141 wanted_mb=200 gc_removes=$OLD free_after_mb=232"
 
-# kernel_gc.yml purges through the apt module, which needs python3-apt: Linux only.
-if [ "$(uname -s)" = Linux ]; then
+# kernel_gc.yml purges through the apt module, which needs python3-apt: Linux
+# only, and there its absence is a failure, never a skip.
+if [ "$(uname -s)" = Linux ] && ! /usr/bin/python3 -c 'import apt' 2>/dev/null; then
+  bad "apply: python3-apt is missing for /usr/bin/python3 (apt-get install python3-apt)"
+elif [ "$(uname -s)" = Linux ]; then
   size room-apply 91 "$OLD"
   scenario room-apply apply 141 "$OLD" "$MID" "$RUN" -- "$OLD"
   expect "apply: the GC runs before the drain, the guard passes on the measured value" 0 yes \
