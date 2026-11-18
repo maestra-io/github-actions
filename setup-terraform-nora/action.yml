@@ -61,7 +61,8 @@ runs:
         NORA_TOOL_CACHE_DIR: ${{ steps.plan.outputs.cache-key != '' && format('{0}/nora-tool-cache/{1}', runner.temp, steps.plan.outputs.cache-key) || '' }}
       run: bash "${GITHUB_ACTION_PATH}/../nora-tool/nora-tool.sh" terraform install
     - name: Terraform archive into the cache
-      if: ${{ steps.install.outputs.save == 'true' && steps.restore.outputs.cache-hit != 'true' }}
+      # save=true: a fetched archive (also over a cached one the sha256 pin rejected)
+      if: ${{ steps.install.outputs.save == 'true' }}
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}/nora-tool-cache/${{ steps.plan.outputs.cache-key }}

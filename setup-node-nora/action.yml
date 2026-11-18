@@ -77,7 +77,8 @@ runs:
         NORA_TOOL_CACHE_DIR: ${{ steps.plan.outputs.cache-key != '' && format('{0}/nora-tool-cache/{1}', runner.temp, steps.plan.outputs.cache-key) || '' }}
       run: bash "${GITHUB_ACTION_PATH}/../nora-tool/nora-tool.sh" node install
     - name: Node.js archive into the cache
-      if: ${{ steps.install.outputs.save == 'true' && steps.restore.outputs.cache-hit != 'true' }}
+      # save=true: a fetched archive (also over a cached one the sha256 pin rejected)
+      if: ${{ steps.install.outputs.save == 'true' }}
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}/nora-tool-cache/${{ steps.plan.outputs.cache-key }}
@@ -89,17 +90,34 @@ runs:
         REGISTRY: ${{ inputs.registry-url }}
         SCOPE: ${{ inputs.scope }}
       run: |
-        # setup-node's authutil: a job-local .npmrc whose token is read from NODE_AUTH_TOKEN at npm run time
+        # setup-node's authutil: a job-local .npmrc whose token is read from NODE_AUTH_TOKEN at npm run
+        # time; GitHub Packages without a scope = the repository owner's. A second call keeps the
+        # other scopes' entries and replaces only its own.
         r="${REGISTRY%/}/"; s="${SCOPE#@}"
-        rc="$RUNNER_TEMP/.npmrc"
-        { echo "//${r#*://}:_authToken=\${NODE_AUTH_TOKEN}"
-          if [ -n "$s" ]; then echo "@${s}:registry=$r"; else echo "registry=$r"; fi; } > "$rc"
+        case "$r" in https://npm.pkg.github.com/*) [ -n "$s" ] || s=${GITHUB_REPOSITORY_OWNER,,} ;; esac
+        if [ -n "$s" ]; then key="@${s,,}:registry"; else key=registry; fi
+        auth="//${r#*://}:_authToken"
+        rc="$RUNNER_TEMP/.npmrc"; touch "$rc"
+        awk -v k="$key=" -v a="$auth=" 'index($0, k) != 1 && index($0, a) != 1' "$rc" > "$rc.t"
+        { echo "$auth=\${NODE_AUTH_TOKEN}"; echo "$key=$r"; } >> "$rc.t"; mv "$rc.t" "$rc"
         echo "NPM_CONFIG_USERCONFIG=$rc" >> "$GITHUB_ENV"
         [ -n "${NODE_AUTH_TOKEN:-}" ] || echo "NODE_AUTH_TOKEN=XXXXX-XXXXX-XXXXX-XXXXX" >> "$GITHUB_ENV"
+    - name: npm cache directory
+      id: npm-dir
+      if: ${{ inputs.cache == 'npm' }}
+      shell: bash
+      env:
+        LOCKS: ${{ hashFiles(inputs.cache-dependency-path || '**/package-lock.json') }}
+        DEP_PATH: ${{ inputs.cache-dependency-path || '**/package-lock.json' }}
+      run: |
+        # the directory npm uses (NPM_CONFIG_CACHE included); no lock file matched = no cache key
+        echo "dir=$(npm config get cache)" >> "$GITHUB_OUTPUT"
+        if [ -n "$LOCKS" ]; then echo "hash=$LOCKS" >> "$GITHUB_OUTPUT"
+        else echo "::warning::setup-node-nora: cache-dependency-path '$DEP_PATH' matched no file, npm cache off"; fi
     - name: npm cache
       id: npm
-      if: ${{ inputs.cache == 'npm' }}
+      if: ${{ inputs.cache == 'npm' && steps.npm-dir.outputs.hash != '' }}
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ~/.npm
-        key: setup-node-nora-${{ runner.os }}-${{ runner.arch }}-npm-${{ hashFiles(inputs.cache-dependency-path || '**/package-lock.json') }}
+        path: ${{ steps.npm-dir.outputs.dir }}
+        key: setup-node-nora-${{ runner.os }}-${{ runner.arch }}-npm-${{ steps.npm-dir.outputs.hash }}

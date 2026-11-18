@@ -40,6 +40,8 @@ refuse "no pinned version for '1.27.99'" go 1.27.99         # exact = exact
 expect "$g27" go "" $'module x\n\ngo 1.27.0'                   # go.mod: a floor within its line
 expect "$g26" go "" $'module x\n\ngo 1.26'
 expect 1.27.4 go "" $'module x\n\ngo 1.27.0\n\ntoolchain go1.27.4'
+expect 1.27.4 go "" $'module x\n\ngo 1.26.0 // floor\n\ntoolchain go1.27.3 // CI'  # comments ignored
+expect "$g26" go "" $'module x\n\ngo 1.26 // comment'
 refuse "no pinned Go 1.27.x at or above" go "" $'module x\ngo 1.27.99'
 refuse "names no Go version" go "" 'module x'
 expect 1.27.3 go 1.27.3 $'module x\ngo 1.26'                   # go-version wins over the file
@@ -57,6 +59,7 @@ tar -czf "$root/good" -C "$root/pkg" linux-amd64
 printf '9.9.9 %s\n' "$(sha256sum "$root/good" | cut -d' ' -f1)" > "$act/setup-helm-nora/versions.txt"
 cat > "$root/bin/curl" <<'STUB'
 #!/usr/bin/env bash
+echo "${*: -1}" >> "$BODY.all" # every call (token exchange too): the "nothing fetched" cases need none
 case "${*: -1}" in
   *audience=*) echo '{"value":"eyJ.stub.jwt"}' ;;
   */api/oidc/session) printf '{"token":"nrs_1_stub"}\n200' ;;
@@ -75,16 +78,18 @@ chmod +x "$root/bin/curl"
 run() { # run plan|install [cache dir]
   : > "$root/out"; : > "$root/path"
   PATH="$root/bin:$PATH" BODY="$root/body" TOOL_VERSION=9.9.9 RUNNER_TOOL_CACHE="$root/tc" RUNNER_TEMP="$root/tmp" \
-  NORA_URL=https://packages.maestra.io NORA_AUDIENCE=packages.maestra.io NORA_TOOL_CACHE_DIR="${2:-}" \
+  NORA_URL="${NORA_URL:-https://packages.maestra.io}" NORA_AUDIENCE=packages.maestra.io NORA_TOOL_CACHE_DIR="${2:-}" \
   ACTIONS_ID_TOKEN_REQUEST_URL='https://idtok.example/x?api-version=2.0' ACTIONS_ID_TOKEN_REQUEST_TOKEN=req \
   GITHUB_PATH="$root/path" GITHUB_ENV="$root/env" GITHUB_OUTPUT="$root/out" bash "$act/nora-tool/nora-tool.sh" helm "$1" > "$root/log" 2>&1
 }
 dir="$root/tc/helm/9.9.9/x64"
 key="nora-tool-helm-9.9.9-linux-x64-$(awk '{ print substr($2, 1, 16) }' "$act/setup-helm-nora/versions.txt")"
+if NORA_URL=http://packages.maestra.io run plan; then fail "plain http accepted"; fi
+grep -qF "is not https" "$root/log" || fail "no https refusal: $(cat "$root/log")"
 run plan || fail "plan: $(cat "$root/log")"
 grep -qx "cache-key=$key" "$root/out" || fail "plan key: $(cat "$root/out")"
 grep -qx "version=9.9.9" "$root/out" || fail "plan version: $(cat "$root/out")"
-[ ! -e "$root/body.calls" ] || fail "plan fetched something"
+[ ! -e "$root/body.all" ] || fail "plan called curl: $(cat "$root/body.all")"
 
 : > "$root/body" # tampered
 if run install; then fail "a tampered download was accepted: $(cat "$root/log")"; fi
@@ -102,16 +107,16 @@ grep -qx "save=true" "$root/out" || fail "cache miss: no save=true"
 grep -qx "path=$dir/helm" "$root/out" || fail "no path output: $(cat "$root/out")"
 cmp -s "$root/good" "$root/cache/helm-v9.9.9-linux-amd64.tar.gz" || fail "archive not kept for the cache save"
 
-rm -f "$root/body.calls"; : > "$root/body"
+rm -f "$root/body.calls" "$root/body.all"; : > "$root/body"
 run plan || fail "plan: $(cat "$root/log")"
 grep -qx "cache-key=" "$root/out" || fail "key while installed: $(cat "$root/out")"
 run install || fail "installed rerun: $(cat "$root/log")"
 grep -q "already in the tool cache" "$root/log" || fail "installed rerun not logged: $(cat "$root/log")"
-[ ! -e "$root/body.calls" ] || fail "installed rerun fetched"
+[ ! -e "$root/body.all" ] || fail "installed rerun called curl: $(cat "$root/body.all")"
 
 rm -rf "$dir" "$dir.complete"
 run install "$root/cache" || fail "cache hit: $(cat "$root/log")"   # nora would serve a tampered body
-[ ! -e "$root/body.calls" ] || fail "cache hit fetched from nora"
+[ ! -e "$root/body.all" ] || fail "cache hit called curl (nora session or fetch): $(cat "$root/body.all")"
 grep -q "from the runner cache" "$root/log" || fail "cache hit not logged: $(cat "$root/log")"
 ! grep -q "save=true" "$root/out" || fail "cache hit asked for a save"
 [ "$("$dir/helm")" = v9.9.9 ] || fail "cache hit: not installed"

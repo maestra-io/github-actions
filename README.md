@@ -603,7 +603,16 @@ action's `versions.txt`, which pins the archive's sha256; a version not listed f
 the runner tool cache (`$RUNNER_TOOL_CACHE/<tool>/<version>/<arch>`, as the setup actions lay it
 out; a version already complete there is used as it is). It is cached like `dotnet-nora`'s
 SDKs (`nora-tool-<tool>-<version>-linux-<arch>-<pin prefix>`), and a restored archive is used
-only when its sha256 is the pin. linux-x64 only; the job needs `id-token: write`.
+only when its sha256 is the pin (a rejected one is replaced: the fetched archive is saved over
+it, which RunsOn Magic Cache takes; on GitHub's own cache, where a key is immutable, delete the
+key). linux-x64 only; the job needs `id-token: write`.
+
+`setup-terraform-nora` has no wrapper, and `hashicorp/setup-terraform` turns its wrapper on by
+default: before the swap, a step that reads `steps.<id>.outputs.stdout` / `stderr` / `exitcode`
+of a `terraform` command (and did not set `terraform_wrapper: false`) writes them itself, e.g.
+`terraform show -no-color plan.out | tee "$RUNNER_TEMP/plan.txt"` and a `stdout<<EOF` block into
+`$GITHUB_OUTPUT`. `setup-uv-nora`'s `cache-dependency-glob` takes workspace paths only (hashFiles
+cannot see outside it; an absolute glob fails the step).
 
 ```yaml
   - uses: maestra-io/github-actions/setup-go-nora@<40-hex sha> # vX.Y.Z

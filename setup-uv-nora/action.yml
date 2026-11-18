@@ -84,7 +84,8 @@ runs:
         NORA_TOOL_CACHE_DIR: ${{ steps.plan.outputs.cache-key != '' && format('{0}/nora-tool-cache/{1}', runner.temp, steps.plan.outputs.cache-key) || '' }}
       run: bash "${GITHUB_ACTION_PATH}/../nora-tool/nora-tool.sh" uv install
     - name: uv archive into the cache
-      if: ${{ steps.install.outputs.save == 'true' && steps.restore.outputs.cache-hit != 'true' }}
+      # save=true: a fetched archive (also over a cached one the sha256 pin rejected)
+      if: ${{ steps.install.outputs.save == 'true' }}
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}/nora-tool-cache/${{ steps.plan.outputs.cache-key }}
@@ -95,14 +96,26 @@ runs:
       env:
         PY: ${{ inputs.python-version }}
         ENABLE_CACHE: ${{ inputs.enable-cache }}
+        GLOBS: ${{ inputs.cache-dependency-glob }}
         ACTIVATE: ${{ inputs.activate-environment }}
         VENV: ${{ inputs.venv-path }}
       run: |
         [ -z "$PY" ] || { echo "UV_PYTHON=$PY" >> "$GITHUB_ENV"; export UV_PYTHON="$PY"; }
-        [ "$ENABLE_CACHE" != true ] || echo "UV_CACHE_DIR=$RUNNER_TEMP/setup-uv-cache" >> "$GITHUB_ENV"
+        if [ "$ENABLE_CACHE" = true ]; then
+          # hashFiles sees the workspace only: a glob outside it would never change the key
+          while IFS= read -r g; do
+            g="${g#"${g%%[![:space:]]*}"}"; g="${g#!}"
+            case "$g" in /*|~*) echo "::error::setup-uv-nora: cache-dependency-glob '$g' is outside the workspace; hashFiles cannot hash it, move the file into the workspace"; exit 1 ;; esac
+          done <<< "$GLOBS"
+          # the caller's UV_CACHE_DIR is kept and cached as it is
+          d="${UV_CACHE_DIR:-$RUNNER_TEMP/setup-uv-cache}"
+          echo "UV_CACHE_DIR=$d" >> "$GITHUB_ENV"; echo "cache-dir=$d" >> "$GITHUB_OUTPUT"
+        fi
         if [ "$ACTIVATE" = true ]; then
           v=$(realpath -m "${VENV:-.venv}")
-          uv venv "$v"
+          # as setup-uv: an existing venv is recreated (--clear); any other directory there is refused
+          if [ -e "$v" ] && [ ! -f "$v/pyvenv.cfg" ]; then echo "::error::setup-uv-nora: $v exists and is not a virtual environment"; exit 1; fi
+          uv venv --clear "$v"
           { echo "VIRTUAL_ENV=$v"; } >> "$GITHUB_ENV"; echo "$v/bin" >> "$GITHUB_PATH"; echo "venv=$v" >> "$GITHUB_OUTPUT"
         fi
     - name: uv cache
@@ -110,5 +123,5 @@ runs:
       if: ${{ inputs.enable-cache == 'true' }}
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ${{ runner.temp }}/setup-uv-cache
+        path: ${{ steps.venv.outputs.cache-dir }}
         key: setup-uv-nora-${{ runner.os }}-${{ runner.arch }}-${{ inputs.python-version }}-${{ hashFiles(inputs.cache-dependency-glob || '**/uv.lock', inputs.cache-dependency-glob || '**/requirements*.txt') }}

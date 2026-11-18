@@ -20,6 +20,7 @@ on:
       - ".github/workflows/nora-tool-selftest.yml"
       - "nora-tool/**"
       - "setup-*-nora/**"
+      - "nora-session/**"
 
 permissions:
   contents: read
@@ -48,7 +49,7 @@ jobs:
           WANT: ${{ steps.file.outputs.go-version }}
         run: |
           set -euo pipefail
-          [ "$WANT" = "$(awk '$1 ~ /^1\.26\./ { v = $1 } END { print v }' setup-go-nora/versions.txt)" ]
+          [ "$WANT" = "$(awk '$1 ~ /^1\.26\./ { print $1 }' setup-go-nora/versions.txt | sort -V | tail -1)" ]
           [ "$(go env GOVERSION)" = "go$WANT" ]
           case "$(command -v go)" in "$RUNNER_TOOL_CACHE"/go/*) ;; *) echo "go is $(command -v go)"; exit 1 ;; esac
       - id: exact
@@ -83,7 +84,7 @@ jobs:
           WANT: ${{ steps.node.outputs.node-version }}
         run: |
           set -euo pipefail
-          [ "$WANT" = "v$(awk '$1 ~ /^22\./ { v = $1 } END { print v }' setup-node-nora/versions.txt)" ]
+          [ "$WANT" = "v$(awk '$1 ~ /^22\./ { print $1 }' setup-node-nora/versions.txt | sort -V | tail -1)" ]
           [ "$(node --version)" = "$WANT" ]
           [ "$(npm config get registry)" = https://packages.maestra.io/npm/ ]
           grep -qxF "//packages.maestra.io/npm/:_authToken=\${NODE_AUTH_TOKEN}" "$NPM_CONFIG_USERCONFIG"
@@ -122,6 +123,13 @@ jobs:
           set -euo pipefail
           [ "$(uv --version | cut -d' ' -f2)" = 0.13.6 ] && [ "$(command -v uv)" = "$UV" ]
           [ "$VIRTUAL_ENV" = "$VENV" ] && [ "$(command -v python)" = "$VENV/bin/python" ]
+      - name: the same venv-path again is recreated, not refused
+        uses: ./setup-uv-nora
+        with:
+          version: "0.13.6"
+          activate-environment: "true"
+          venv-path: ${{ runner.temp }}/venv
+      - run: '[ -f "$VIRTUAL_ENV/pyvenv.cfg" ]'
 
   terraform-helm:
     runs-on: runs-on=${{ github.run_id }}-nora-tool-tf/runner=t3a-small
