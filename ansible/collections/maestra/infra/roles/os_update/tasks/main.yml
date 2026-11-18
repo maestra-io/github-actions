@@ -436,14 +436,28 @@
     # One line per host for whoever drives the run: the workflow copies it into
     # the job summary (ansible-os-update.yml `summary_grep`). Every variable has a
     # default — a raise here would skip `Fail the job` below.
+    # Final kernel: facts are stale after a reboot until reboot.yml re-gathers them.
+    # Packages: what apt upgraded (pending minus pinned), 0 when apt did not run.
+    # Reboot pending clears only when reboot.yml proved the newest kernel booted.
     - name: Result
+      vars:
+        os_update_result_pinned: >-
+          ^Inst ({{ ((os_update_pinned_base | default([])) + (os_update_pinned_extra | default([])))
+          | unique | join('|') }})( |$)
+        os_update_result_packages: >-
+          {{ (os_update_pending | default([]) | reject('match', os_update_result_pinned) | list | length)
+          if (os_update_apt_result is defined and os_update_apt_result is not failed) else 0 }}
+        os_update_result_kernel: >-
+          {{ ansible_facts.kernel
+          if (not (os_update_rebooted | default(false)) or os_update_newest_kernel_post is defined)
+          else 'unknown' }}
       ansible.builtin.debug:
         msg: >-
           os-update result: {{ inventory_hostname }}
-          kernel {{ os_update_kernel_before | default(ansible_facts.kernel) }} -> {{ ansible_facts.kernel }},
-          packages {{ (os_update_pending | default([]) | length) if (os_update_needed | default(false)) else 0 }},
+          kernel {{ os_update_kernel_before | default(ansible_facts.kernel) }} -> {{ os_update_result_kernel }},
+          packages {{ os_update_result_packages }},
           rebooted {{ 'yes' if (os_update_rebooted | default(false)) else 'no' }},
-          reboot pending {{ (os_update_reboot_needed | default(false)) and not (os_update_rebooted | default(false)) }},
+          reboot pending {{ (os_update_reboot_needed | default(false)) and os_update_booted_kernel is not defined }},
           {{ 'FAILED' if ((os_update_failed | default(false)) or (os_update_undrain_failed | default(false))) else 'checks ok' }}
 
     - name: Fail the job
