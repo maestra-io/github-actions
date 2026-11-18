@@ -437,7 +437,8 @@
     # the job summary (ansible-os-update.yml `summary_grep`). Every variable has a
     # default — a raise here would skip `Fail the job` below.
     # Final kernel: facts are stale after a reboot until reboot.yml re-gathers them.
-    # Packages: what apt upgraded (pending minus pinned), 0 when apt did not run.
+    # Packages: the planned upgrade (pending minus pinned), 0 when apt did not run,
+    # `unknown` when apt failed part-way.
     # Reboot pending clears only when reboot.yml proved the newest kernel booted.
     - name: Result
       vars:
@@ -445,8 +446,9 @@
           ^Inst ({{ ((os_update_pinned_base | default([])) + (os_update_pinned_extra | default([])))
           | unique | join('|') }})( |$)
         os_update_result_packages: >-
-          {{ (os_update_pending | default([]) | reject('match', os_update_result_pinned) | list | length)
-          if (os_update_apt_result is defined and os_update_apt_result is not failed) else 0 }}
+          {{ 0 if os_update_apt_result is not defined
+          else ('unknown' if os_update_apt_result is failed
+          else (os_update_pending | default([]) | reject('match', os_update_result_pinned) | list | length)) }}
         os_update_result_kernel: >-
           {{ ansible_facts.kernel
           if (not (os_update_rebooted | default(false)) or os_update_newest_kernel_post is defined)
