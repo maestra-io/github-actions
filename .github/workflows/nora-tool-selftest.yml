@@ -1,0 +1,161 @@
+---
+# setup-{go,node,python,uv,terraform,helm}-nora for real: each toolchain from nora with the job's
+# OIDC token, checked against its pin, on PATH for later steps with the setup action's outputs and
+# environment. A re-run of the workflow restores the archives from the runner cache (log line
+# "from the runner cache", nothing fetched from nora). The stub-curl cases are
+# scripts/test-nora-tool.sh in selftest.
+name: nora-tool-selftest
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/nora-tool-selftest.yml"
+      - "nora-tool/**"
+      - "setup-*-nora/**"
+      - "nora-session/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/nora-tool-selftest.yml"
+      - "nora-tool/**"
+      - "setup-*-nora/**"
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: runs-on=${{ github.run_id }}-nora-tool-go/runner=t3a-small
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # nora session token
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: a module asking for go 1.26.0
+        run: printf 'module example.com/x\n\ngo 1.26.0\n' > "$RUNNER_TEMP/go.mod" && cp "$RUNNER_TEMP/go.mod" go.mod
+      - id: file
+        uses: ./setup-go-nora
+        with:
+          go-version-file: go.mod
+          cache: "false"
+      - name: the newest pinned 1.26 is go on PATH
+        env:
+          WANT: ${{ steps.file.outputs.go-version }}
+        run: |
+          set -euo pipefail
+          [ "$WANT" = "$(awk '$1 ~ /^1\.26\./ { v = $1 } END { print v }' setup-go-nora/versions.txt)" ]
+          [ "$(go env GOVERSION)" = "go$WANT" ]
+          case "$(command -v go)" in "$RUNNER_TOOL_CACHE"/go/*) ;; *) echo "go is $(command -v go)"; exit 1 ;; esac
+      - id: exact
+        uses: ./setup-go-nora
+        with:
+          go-version: "1.27.4"
+      - name: go 1.27.4 builds
+        run: |
+          set -euo pipefail
+          [ "$(go env GOVERSION)" = go1.27.4 ]
+          printf 'package main\n\nfunc main() { println("ok") }\n' > "$RUNNER_TEMP/m.go"
+          [ "$(go run "$RUNNER_TEMP/m.go" 2>&1)" = ok ]
+
+  node:
+    runs-on: runs-on=${{ github.run_id }}-nora-tool-node/runner=t3a-small
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # nora session token
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: node
+        uses: ./setup-node-nora
+        with:
+          node-version: 22
+          registry-url: https://packages.maestra.io/npm/
+      - name: the newest pinned 22 is node on PATH, npm reads the job's .npmrc
+        env:
+          WANT: ${{ steps.node.outputs.node-version }}
+        run: |
+          set -euo pipefail
+          [ "$WANT" = "v$(awk '$1 ~ /^22\./ { v = $1 } END { print v }' setup-node-nora/versions.txt)" ]
+          [ "$(node --version)" = "$WANT" ]
+          [ "$(npm config get registry)" = https://packages.maestra.io/npm/ ]
+          grep -qxF "//packages.maestra.io/npm/:_authToken=\${NODE_AUTH_TOKEN}" "$NPM_CONFIG_USERCONFIG"
+
+  uv:
+    runs-on: runs-on=${{ github.run_id }}-nora-tool-uv/runner=t3a-small
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # nora session token
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: latest
+        uses: ./setup-uv-nora
+      - name: latest is the newest pin
+        env:
+          WANT: ${{ steps.latest.outputs.uv-version }}
+        run: |
+          set -euo pipefail
+          [ "$WANT" = "$(awk '$1 ~ /^[0-9]/ { print $1 }' setup-uv-nora/versions.txt | sort -V | tail -1)" ]
+          [ "$(uv --version | cut -d' ' -f2)" = "$WANT" ]
+      - id: uv
+        uses: ./setup-uv-nora
+        with:
+          version: "0.13.6"
+          activate-environment: "true"
+          venv-path: ${{ runner.temp }}/venv
+      - name: uv 0.13.6 on PATH, a venv activated
+        env:
+          VENV: ${{ steps.uv.outputs.venv }}
+          UV: ${{ steps.uv.outputs.uv-path }}
+        run: |
+          set -euo pipefail
+          [ "$(uv --version | cut -d' ' -f2)" = 0.13.6 ] && [ "$(command -v uv)" = "$UV" ]
+          [ "$VIRTUAL_ENV" = "$VENV" ] && [ "$(command -v python)" = "$VENV/bin/python" ]
+
+  terraform-helm:
+    runs-on: runs-on=${{ github.run_id }}-nora-tool-tf/runner=t3a-small
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # nora session token
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./setup-terraform-nora
+        with:
+          terraform_version: "1.14.6"
+          terraform_wrapper: false
+      - id: helm
+        uses: ./setup-helm-nora
+        with:
+          version: v3.18.5
+      - name: terraform 1.14.6 and helm 3.18.5 on PATH
+        env:
+          HELM: ${{ steps.helm.outputs.helm-path }}
+          CHECKPOINT_DISABLE: "1"
+        run: |
+          set -euo pipefail
+          terraform version -json | jq -e '.terraform_version == "1.14.6"'
+          [ "$(helm version --template '{{ .Version }}')" = v3.18.5 ] && [ "$(command -v helm)" = "$HELM" ]
+      - name: terraform_wrapper true is refused
+        id: wrapper
+        continue-on-error: true
+        uses: ./setup-terraform-nora
+        with:
+          terraform_wrapper: true
+      - env:
+          OUTCOME: ${{ steps.wrapper.outcome }}
+        run: '[ "$OUTCOME" = failure ]'

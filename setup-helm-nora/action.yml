@@ -1,0 +1,61 @@
+name: "helm through nora"
+description: >-
+  azure/setup-helm without get.helm.sh: the helm named by version comes from packages.maestra.io
+  raw, sha256-pinned in versions.txt, into the runner tool cache (issues-maestra#1649). The archive
+  is cached next to the runners (RunsOn Magic Cache) and used from there only when its sha256 is
+  the pin. Needs `permissions: id-token: write`; linux-x64 only.
+
+inputs:
+  version:
+    description: "latest, N.M (the newest pinned patch) or an exact version, with or without v."
+    required: false
+    default: "latest"
+  token:
+    description: "Accepted for setup-helm compatibility (it reads the latest release with it): unused."
+    required: false
+    default: ""
+  url:
+    description: "nora base URL."
+    required: false
+    default: "https://packages.maestra.io"
+  audience:
+    description: "`aud` of the GitHub OIDC token nora accepts."
+    required: false
+    default: "packages.maestra.io"
+
+outputs:
+  helm-path:
+    description: "The helm executable."
+    value: ${{ steps.install.outputs.path }}
+
+runs:
+  using: composite
+  steps:
+    - name: helm cache key
+      id: plan
+      shell: bash
+      env:
+        TOOL_VERSION: ${{ inputs.version }}
+      run: bash "${GITHUB_ACTION_PATH}/../nora-tool/nora-tool.sh" helm plan
+    - name: helm archive from the cache
+      id: restore
+      if: ${{ steps.plan.outputs.cache-key != '' }}
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/nora-tool-cache-helm
+        key: ${{ steps.plan.outputs.cache-key }}
+    - name: helm through nora
+      id: install
+      shell: bash
+      env:
+        TOOL_VERSION: ${{ inputs.version }}
+        NORA_URL: ${{ inputs.url }}
+        NORA_AUDIENCE: ${{ inputs.audience }}
+        NORA_TOOL_CACHE_DIR: ${{ steps.plan.outputs.cache-key != '' && format('{0}/nora-tool-cache-helm', runner.temp) || '' }}
+      run: bash "${GITHUB_ACTION_PATH}/../nora-tool/nora-tool.sh" helm install
+    - name: helm archive into the cache
+      if: ${{ steps.install.outputs.save == 'true' && steps.restore.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/nora-tool-cache-helm
+        key: ${{ steps.plan.outputs.cache-key }}

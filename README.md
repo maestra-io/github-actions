@@ -583,6 +583,40 @@ A version `sdks.txt` does not hold fails the step (nothing falls back to Microso
 SDK: the dockerfiles PR first (its merge uploads), then the line in `sdks.txt`. Test:
 `scripts/test-dotnet-nora.sh` (selftest; the selftest also installs 10.0.x through it).
 
+## Toolchains through nora (`setup-{go,node,uv,terraform,helm}-nora`)
+
+In place of `actions/setup-go`, `actions/setup-node`, `astral-sh/setup-uv`,
+`hashicorp/setup-terraform` and `azure/setup-helm`, which download the tool from its vendor
+(issues-maestra#1649). The swap is the `uses:` line; the inputs are the ones our workflows pass:
+
+| action | inputs | archive in nora |
+| --- | --- | --- |
+| `setup-go-nora` | `go-version`, `go-version-file` (go.mod: the newest pinned patch at or above it), `cache`, `cache-dependency-path` | raw `src/go.dev/dl/` |
+| `setup-node-nora` | `node-version`, `cache: npm`, `cache-dependency-path`, `registry-url`, `scope` | raw `src/nodejs.org/dist/` |
+| `setup-uv-nora` | `version`, `enable-cache`, `cache-dependency-glob`, `python-version`, `activate-environment`, `venv-path` | GitHub Releases proxy |
+| `setup-terraform-nora` | `terraform_version` (no wrapper: `terraform_wrapper: true` fails) | releases.hashicorp.com proxy |
+| `setup-helm-nora` | `version` | raw `src/get.helm.sh/` |
+
+A spec (`latest`, `N`, `N.x`, `N.M`, `N.M.x`, exact) resolves to the newest version in the
+action's `versions.txt`, which pins the archive's sha256; a version not listed fails the step
+(nothing falls back to the vendor). The archive is checked against the pin and unpacked into
+the runner tool cache (`$RUNNER_TOOL_CACHE/<tool>/<version>/<arch>`, as the setup actions lay it
+out; a version already complete there is used as it is). It is cached like `dotnet-nora`'s
+SDKs (`nora-tool-<tool>-<version>-linux-<arch>-<pin prefix>`), and a restored archive is used
+only when its sha256 is the pin. linux-x64 only; the job needs `id-token: write`.
+
+```yaml
+  - uses: maestra-io/github-actions/setup-go-nora@<40-hex sha> # vX.Y.Z
+    with:
+      go-version-file: go.mod
+```
+
+A new version: for go / node / helm the maestra-io/dockerfiles `.github/raw-uploads/<tool>.txt`
+PR first (its merge uploads), then the line in `versions.txt`; for uv / terraform only
+`versions.txt` (the proxies hold a release for 3 days). One script, `nora-tool/nora-tool.sh`,
+does all of them. Tests: `scripts/test-nora-tool.sh` (selftest) and the real installs of
+`.github/workflows/nora-tool-selftest.yml`.
+
 ## Python packages through nora (`uv-nora`)
 
 Every Python repo uses uv with a committed `uv.lock` and nora as its only index

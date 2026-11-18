@@ -1,0 +1,105 @@
+name: "Node.js through nora"
+description: >-
+  actions/setup-node without github.com / nodejs.org: the Node.js named by node-version comes
+  from packages.maestra.io raw, sha256-pinned in versions.txt, into the runner tool cache
+  (issues-maestra#1649). The archive is cached next to the runners (RunsOn Magic Cache) and used
+  from there only when its sha256 is the pin. `cache: npm` and `registry-url` work as in
+  setup-node. Needs `permissions: id-token: write`; linux-x64 only.
+
+inputs:
+  node-version:
+    description: "latest, N, N.x, N.M or an exact version (the newest pinned match)."
+    required: false
+    default: ""
+  cache:
+    description: "npm: cache ~/.npm keyed by cache-dependency-path. Other package managers are not served."
+    required: false
+    default: ""
+  cache-dependency-path:
+    description: "Lock file(s) the npm cache key hashes (default **/package-lock.json)."
+    required: false
+    default: ""
+  package-manager-cache:
+    description: "Accepted for setup-node compatibility: only `cache` turns a cache on."
+    required: false
+    default: "false"
+  registry-url:
+    description: "npm registry written to an .npmrc (NPM_CONFIG_USERCONFIG) with an auth token from NODE_AUTH_TOKEN, as setup-node."
+    required: false
+    default: ""
+  scope:
+    description: "Scope for registry-url (`@scope:registry=`)."
+    required: false
+    default: ""
+  url:
+    description: "nora base URL."
+    required: false
+    default: "https://packages.maestra.io"
+  audience:
+    description: "`aud` of the GitHub OIDC token nora accepts."
+    required: false
+    default: "packages.maestra.io"
+
+outputs:
+  node-version:
+    description: "The Node.js version installed (vX.Y.Z)."
+    value: v${{ steps.install.outputs.version }}
+  cache-hit:
+    description: "Whether the npm cache was restored."
+    value: ${{ steps.npm.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - name: Node.js cache key
+      id: plan
+      shell: bash
+      env:
+        TOOL_VERSION: ${{ inputs.node-version }}
+        NODE_CACHE: ${{ inputs.cache }}
+      run: |
+        case "$NODE_CACHE" in ''|npm) ;; *) echo "::error::setup-node-nora: cache '$NODE_CACHE' is not served (npm only)"; exit 1 ;; esac
+        bash "${GITHUB_ACTION_PATH}/../nora-tool/nora-tool.sh" node plan
+    - name: Node.js archive from the cache
+      id: restore
+      if: ${{ steps.plan.outputs.cache-key != '' }}
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/nora-tool-cache-node
+        key: ${{ steps.plan.outputs.cache-key }}
+    - name: Node.js through nora
+      id: install
+      shell: bash
+      env:
+        TOOL_VERSION: ${{ inputs.node-version }}
+        NORA_URL: ${{ inputs.url }}
+        NORA_AUDIENCE: ${{ inputs.audience }}
+        NORA_TOOL_CACHE_DIR: ${{ steps.plan.outputs.cache-key != '' && format('{0}/nora-tool-cache-node', runner.temp) || '' }}
+      run: bash "${GITHUB_ACTION_PATH}/../nora-tool/nora-tool.sh" node install
+    - name: Node.js archive into the cache
+      if: ${{ steps.install.outputs.save == 'true' && steps.restore.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/nora-tool-cache-node
+        key: ${{ steps.plan.outputs.cache-key }}
+    - name: npm registry
+      if: ${{ inputs.registry-url != '' }}
+      shell: bash
+      env:
+        REGISTRY: ${{ inputs.registry-url }}
+        SCOPE: ${{ inputs.scope }}
+      run: |
+        # setup-node's authutil: a job-local .npmrc whose token is read from NODE_AUTH_TOKEN at npm run time
+        r="${REGISTRY%/}/"; s="${SCOPE#@}"
+        rc="$RUNNER_TEMP/.npmrc"
+        { echo "//${r#*://}:_authToken=\${NODE_AUTH_TOKEN}"
+          if [ -n "$s" ]; then echo "@${s}:registry=$r"; else echo "registry=$r"; fi; } > "$rc"
+        echo "NPM_CONFIG_USERCONFIG=$rc" >> "$GITHUB_ENV"
+        [ -n "${NODE_AUTH_TOKEN:-}" ] || echo "NODE_AUTH_TOKEN=XXXXX-XXXXX-XXXXX-XXXXX" >> "$GITHUB_ENV"
+    - name: npm cache
+      id: npm
+      if: ${{ inputs.cache == 'npm' }}
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.npm
+        key: setup-node-nora-${{ runner.os }}-${{ runner.arch }}-npm-${{ hashFiles(inputs.cache-dependency-path || '**/package-lock.json') }}
