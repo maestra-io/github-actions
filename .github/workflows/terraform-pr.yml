@@ -114,12 +114,13 @@ jobs:
     runs-on: runs-on=${{ github.run_id }}-fmt/runner=t3a-small
     permissions:
       contents: read
+      id-token: write # setup-*-nora: the toolchain from nora
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        uses: maestra-io/github-actions/setup-terraform-nora@f40b5191253ae7e28c10836989a77255666141e4 # v1.104.0
         with:
           terraform_version: ${{ inputs.terraform_version }}
           terraform_wrapper: false

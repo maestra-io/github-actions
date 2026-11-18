@@ -93,8 +93,8 @@ for wf in "${WFS[@]}"; do
   nora=$(grep -n 'uses: maestra-io/github-actions/uv-nora@' "$wf" | head -1 | cut -d: -f1)
   inst=$(grep -n '# >>> python-deps' "$wf" | cut -d: -f1)
   if [ -n "$nora" ] && [ "$nora" -lt "$inst" ]; then ok "$wf: uv-nora before the install"; else bad "$wf: no uv-nora before the install"; fi
-  if grep -A3 'astral-sh/setup-uv@' "$wf" | grep -q 'version: "0.13.6"' && ! grep -A3 'astral-sh/setup-uv@' "$wf" | grep -q 'enable-cache: true'
-  then ok "$wf: setup-uv pinned, no cache"; else bad "$wf: setup-uv must pin version 0.13.6 and enable-cache: false"; fi
+  if grep -A3 'maestra-io/github-actions/setup-uv-nora@' "$wf" | grep -q 'version: "0.13.6"' && ! grep -A3 'maestra-io/github-actions/setup-uv-nora@' "$wf" | grep -q 'enable-cache: true'
+  then ok "$wf: setup-uv-nora pinned, no cache"; else bad "$wf: setup-uv-nora must pin version 0.13.6 and enable-cache: false"; fi
 done
 [ "$(grep -c 'uv_project: ${{ inputs.uv_project }}' .github/workflows/ansible-os-update.yml)" -eq 2 ] \
   && ok "os-update forwards uv_project to both ansible-run calls" || bad "os-update: uv_project not forwarded twice"

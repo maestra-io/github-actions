@@ -57,12 +57,15 @@ jobs:
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: runs-on=${{ github.run_id }}-check/pool=small
     timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # setup-*-nora: the toolchain from nora
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+      - uses: maestra-io/github-actions/setup-helm-nora@f40b5191253ae7e28c10836989a77255666141e4 # v1.104.0
         with:
           version: ${{ inputs.helm-version }}
 
@@ -117,7 +120,7 @@ jobs:
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+      - uses: maestra-io/github-actions/setup-helm-nora@f40b5191253ae7e28c10836989a77255666141e4 # v1.104.0
         with:
           version: ${{ inputs.helm-version }}
       - uses: maestra-io/github-actions/push-helm-chart-to-aws-ecr@2450cdaaf4688887cb65579fc45ab5304cb81967 # v1.46.2
