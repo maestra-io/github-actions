@@ -1,0 +1,11 @@
+# CPython versions setup-python-nora installs: <version> <sha256> <python-build-standalone release>,
+# the sha256 of cpython-<version>+<release>-x86_64-unknown-linux-gnu-install_only.tar.gz (the
+# release's SHA256SUMS). Fetched through nora's GitHub Releases proxy
+# (/github/astral-sh/python-build-standalone/releases/download/<release>/), which holds a release
+# for 3 days. 3.8 is the last 3.8 build (python-build-standalone dropped 3.8 after 20241002).
+3.8.20 285e141c36f88b2e9357654c5f77d1f8fb29cc25132698fe35bb30d787f38e87 20241002
+3.11.18 a87ee63646c8f8438b7af3954b2135ed2af91d033c631f12a8f20af903046d06 20261026
+3.12.16 6a79e922e50006b601f29e688407659da1c2b86ebcd4e9c7254cf234be8b89de 20261026
+3.13.18 126343c54daff4068efc1ac269518d0cc202d57857794948103dd1454e8881be 20261026
+3.14.10 1b38024924eb7f4cf0cab45d7b871d1f1991354190fccd2625ac7529a43786e2 20261026
+3.15.2 08d4ae9024a7cfbd3b70e559241afa2571cd3208d7bd5f96f88e0080dd4092aa 20261026

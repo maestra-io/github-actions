@@ -167,6 +167,58 @@ jobs:
           env | grep '^SRC_' | sort
           if [ "$GITHUB_RUN_ATTEMPT" -gt 1 ] && env | grep -q '^SRC_.*=nora$'; then echo "::error::re-run attempt $GITHUB_RUN_ATTEMPT fetched from nora"; exit 1; fi
 
+  python-uv:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: runs-on=${{ github.run_id }}-nora-tool-python/runner=t3a-small
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # nora session token
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: py
+        uses: ./setup-python-nora
+        with:
+          python-version: "3.13"
+      - name: the newest pinned 3.13 is python on PATH with pip
+        env:
+          WANT: ${{ steps.py.outputs.python-version }}
+          PY: ${{ steps.py.outputs.python-path }}
+        run: |
+          set -euo pipefail
+          [ "$WANT" = "$(awk '$1 ~ /^3\.13\./ { print $1 }' setup-python-nora/versions.txt | sort -V | tail -1)" ]
+          [ "$(python --version)" = "Python $WANT" ]
+          [ "$(command -v python)" = "$PY" ]
+          python -m pip --version
+          [ "$pythonLocation" = "${PY%/bin/python}" ]
+      - id: uv
+        uses: ./setup-uv-nora
+        with:
+          version: "0.13.6"
+          python-version: "3.13"
+          activate-environment: "true"
+          venv-path: ${{ runner.temp }}/venv
+      - name: uv 0.13.6 on PATH, a venv on the CPython above
+        env:
+          VENV: ${{ steps.uv.outputs.venv }}
+        run: |
+          set -euo pipefail
+          [ "$(uv --version | cut -d' ' -f2)" = 0.13.6 ]
+          [ "$VIRTUAL_ENV" = "$VENV" ]
+          [ "$(command -v python)" = "$VENV/bin/python" ]
+          [ "$(python -c 'import sys; print(sys.base_prefix)')" = "$pythonLocation" ]
+      - name: sources (a re-run takes nothing from nora)
+        env:
+          SRC_PY: ${{ steps.py.outputs.tool-source }}
+          SRC_UV: ${{ steps.uv.outputs.tool-source }}
+        run: |
+          set -euo pipefail
+          env | grep '^SRC_' | sort
+          if [ "$GITHUB_RUN_ATTEMPT" -gt 1 ] && env | grep -q '^SRC_.*=nora$'; then echo "::error::re-run attempt $GITHUB_RUN_ATTEMPT fetched from nora"; exit 1; fi
+
   terraform-helm:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: runs-on=${{ github.run_id }}-nora-tool-tf/runner=t3a-small

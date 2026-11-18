@@ -583,9 +583,9 @@ A version `sdks.txt` does not hold fails the step (nothing falls back to Microso
 SDK: the dockerfiles PR first (its merge uploads), then the line in `sdks.txt`. Test:
 `scripts/test-dotnet-nora.sh` (selftest; the selftest also installs 10.0.x through it).
 
-## Toolchains through nora (`setup-{go,node,uv,terraform,helm}-nora`)
+## Toolchains through nora (`setup-{go,node,python,uv,terraform,helm}-nora`)
 
-In place of `actions/setup-go`, `actions/setup-node`, `astral-sh/setup-uv`,
+In place of `actions/setup-go`, `actions/setup-node`, `actions/setup-python`, `astral-sh/setup-uv`,
 `hashicorp/setup-terraform` and `azure/setup-helm`, which download the tool from its vendor
 (issues-maestra#1649). The swap is the `uses:` line; the inputs are the ones our workflows pass:
 
@@ -593,6 +593,7 @@ In place of `actions/setup-go`, `actions/setup-node`, `astral-sh/setup-uv`,
 | --- | --- | --- |
 | `setup-go-nora` | `go-version`, `go-version-file` (go.mod: the newest pinned patch at or above it), `cache`, `cache-dependency-path` | raw `src/go.dev/dl/` |
 | `setup-node-nora` | `node-version`, `cache: npm`, `cache-dependency-path`, `registry-url`, `scope` | raw `src/nodejs.org/dist/` |
+| `setup-python-nora` | `python-version` (python-build-standalone `install_only`; also `pythonLocation`, `python` / `pip`) | GitHub Releases proxy |
 | `setup-uv-nora` | `version`, `enable-cache`, `cache-dependency-glob`, `python-version`, `activate-environment`, `venv-path` | GitHub Releases proxy |
 | `setup-terraform-nora` | `terraform_version` (no wrapper: `terraform_wrapper: true` fails) | releases.hashicorp.com proxy |
 | `setup-helm-nora` | `version` | raw `src/get.helm.sh/` |
