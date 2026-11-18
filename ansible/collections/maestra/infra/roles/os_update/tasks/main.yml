@@ -449,8 +449,10 @@
     # One line per host for whoever drives the run: the workflow copies it into
     # the job summary (ansible-os-update.yml `summary_grep`). Every variable has a
     # default — a raise here would skip `Fail the job` below.
-    # Final kernel and `rebooted` are `unknown` when the reboot started and did not
-    # end cleanly: the facts may be stale and the host may or may not have gone down.
+    # Final kernel is `unknown` when the reboot started and did not end cleanly: the
+    # facts may be stale. `rebooted` is `yes` when the reboot ended cleanly or the
+    # hook recorded that the host went down, `unknown` when it started and neither
+    # is known (a timeout).
     # Packages: the planned upgrade (pending minus pinned), 0 when apt did not run,
     # `unknown` when apt failed part-way.
     # Reboot pending clears only when the reboot include returned without a failure.
@@ -468,7 +470,7 @@
           if (not (os_update_reboot_started | default(false)) or (os_update_reboot_done | default(false)))
           else 'unknown' }}
         os_update_result_rebooted: >-
-          {{ 'yes' if (os_update_rebooted | default(false))
+          {{ 'yes' if ((os_update_rebooted | default(false)) or (os_update_reboot_done | default(false)))
           else ('unknown' if (os_update_reboot_started | default(false)) else 'no') }}
       ansible.builtin.debug:
         msg: >-

@@ -13,8 +13,9 @@ from one place.
   own `reboot.yml` sets, so a node rebooted by a consumer's `reboot.yml` (kube,
   Deckhouse) ended a clean run with `kernel A -> unknown … reboot pending
   True`. The line now reads two facts `main.yml` sets around the reboot
-  include. A reboot that started and did not end cleanly reports the kernel
-  and `rebooted` as `unknown`.
+  include. A reboot that started and did not end cleanly reports the final
+  kernel as `unknown`; `rebooted` is then `yes` if the hook recorded that the
+  host went down and `unknown` if it did not (a reboot timeout).
 
 ## 1.4.3
 
