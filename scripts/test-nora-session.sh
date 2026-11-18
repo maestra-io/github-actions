@@ -12,8 +12,12 @@ cat > "$root/bin/curl" <<'STUB'
 #!/usr/bin/env bash
 if [[ "${*: -1}" == https://packages.maestra.io/api/oidc/session ]]; then
   [[ " $* " == *" -X POST -H Authorization: Bearer eyJ.stub.jwt "* ]] || { echo "bad exchange: $*" >&2; exit 22; }
-  [ -z "${SESSION_CODE:-}" ] || { printf '{"error":"x"}\n%s' "$SESSION_CODE"; exit 0; }
-  printf '{"token":"nrs_1_stub","expires_in":3600}\n200'; exit 0
+  # Real curl: -o FILE is truncated before a retry, stdout keeps every attempt's body.
+  o=; prev=; for a in "$@"; do [ "$prev" = -o ] && o=$a; prev=$a; done
+  [ -n "$o" ] || { echo "body not written to a file: $*" >&2; exit 22; }
+  code=200 body='{"token":"nrs_1_stub","expires_in":3600}'
+  [ -z "${SESSION_CODE:-}" ] || { code=$SESSION_CODE body='{"error":"x"}'; }
+  printf '%s' "$body" > "$o"; printf '%s' "$code"; exit 0
 fi
 [[ " $* " == *" -H Authorization: bearer req-token "* ]] || { echo "bad auth header: $*" >&2; exit 22; }
 [[ "${*: -1}" == "https://idtok.example/x?api-version=2.0&audience=packages.maestra.io" ]] || { echo "bad url: ${*: -1}" >&2; exit 22; }

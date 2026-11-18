@@ -63,7 +63,8 @@ cat > "$root/bin/curl" <<'STUB'
 #!/usr/bin/env bash
 case "${*: -1}" in
   *audience=*) echo '{"value":"eyJ.stub.jwt"}' ;;
-  */api/oidc/session) printf '{"token":"nrs_1_stub"}\n200' ;;
+  */api/oidc/session) o=; p=; for a in "$@"; do [ "$p" = -o ] && o=$a; p=$a; done; [ -n "$o" ] || { echo "session body not sent to a file: $*" >&2; exit 22; }
+    printf '{"token":"nrs_1_stub"}' > "$o"; printf 200 ;;
   */raw/src/builds.dotnet.microsoft.com/dotnet/Sdk/*)
     echo "${*: -1}" >> "$BODY.calls"
     cfg=$(cat) # -K -: the credential arrives on stdin
