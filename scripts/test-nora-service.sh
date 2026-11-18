@@ -12,7 +12,8 @@ mkdir -p "$root/bin"
 cat > "$root/bin/curl" <<'STUB'
 #!/usr/bin/env bash
 if [[ "${*: -1}" == https://packages.maestra.io/api/oidc/session ]]; then
-  printf '{"token":"nrs_1_stub","expires_in":3600}\n200'; exit 0
+  o=; p=; for a in "$@"; do [ "$p" = -o ] && o=$a; p=$a; done; [ -n "$o" ] || { echo "session body not sent to a file: $*" >&2; exit 22; }
+  printf '{"token":"nrs_1_stub","expires_in":3600}' > "$o"; printf 200; exit 0
 fi
 echo '{"value":"eyJ.stub.jwt"}'
 STUB

@@ -64,7 +64,8 @@ cat > "$root/bin/curl" <<'STUB'
 echo "${*: -1}" >> "$BODY.all" # every call (token exchange too): the "nothing fetched" cases need none
 case "${*: -1}" in
   *audience=*) echo '{"value":"eyJ.stub.jwt"}' ;;
-  */api/oidc/session) printf '{"token":"nrs_1_stub"}\n200' ;;
+  */api/oidc/session) o=; p=; for a in "$@"; do [ "$p" = -o ] && o=$a; p=$a; done; [ -n "$o" ] || { echo "session body not sent to a file: $*" >&2; exit 22; }
+    printf '{"token":"nrs_1_stub"}' > "$o"; printf 200 ;;
   */raw/src/get.helm.sh/helm-v9.9.9-linux-amd64.tar.gz)
     echo "${*: -1}" >> "$BODY.calls"
     cfg=$(cat) # -K -: the credential arrives on stdin

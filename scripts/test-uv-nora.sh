@@ -12,8 +12,9 @@ cat > "$root/bin/curl" <<'STUB'
 #!/usr/bin/env bash
 if [[ "${*: -1}" == */api/oidc/session ]]; then  # nora, or the local index below
   [[ " $* " == *" -X POST -H Authorization: Bearer eyJ.stub.jwt "* ]] || { echo "bad exchange: $*" >&2; exit 22; }
-  [ -z "${SESSION_CODE:-}" ] || { printf '{"error":"x"}\n%s' "$SESSION_CODE"; exit 0; }
-  printf '{"token":"nrs_1_stub"}\n200'; exit 0
+  o=; p=; for a in "$@"; do [ "$p" = -o ] && o=$a; p=$a; done; [ -n "$o" ] || { echo "session body not sent to a file: $*" >&2; exit 22; }
+  [ -z "${SESSION_CODE:-}" ] || { printf '{"error":"x"}' > "$o"; printf '%s' "$SESSION_CODE"; exit 0; }
+  printf '{"token":"nrs_1_stub"}' > "$o"; printf 200; exit 0
 fi
 [[ " $* " == *" -H Authorization: bearer req-token "* ]] || { echo "bad auth header: $*" >&2; exit 22; }
 # The keyring helper mints with --get; the token output (nora-session.sh) with &audience=.

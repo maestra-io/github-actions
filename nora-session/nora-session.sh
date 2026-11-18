@@ -14,11 +14,13 @@ nora_token() ( # a subshell: tracing is off inside it whatever the caller set
     "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${aud}" | jq -r .value) || exit 1
   [ -n "$jwt" ] && [ "$jwt" != null ] || exit 1
   echo "::add-mask::$jwt" >&2 # stderr: stdout is the token alone
-  out=$(curl -sS --retry 3 -X POST -H "Authorization: Bearer ${jwt}" -w '\n%{http_code}' \
+  # The body goes to a file: curl truncates it before a retry, while stdout would keep a
+  # failed attempt's body ("Service Unavailable") in front of the JSON (status-router#41).
+  f=$(mktemp); trap 'rm -f "$f"' EXIT
+  code=$(curl -sS --retry 3 -X POST -H "Authorization: Bearer ${jwt}" -o "$f" -w '%{http_code}' \
     "${nora}/api/oidc/session") || { echo "::error::nora session exchange at $nora failed" >&2; exit 1; }
-  code="${out##*$'\n'}"
   case "$code" in
-    200) session=$(jq -r .token <<<"${out%$'\n'*}") ;;
+    200) session=$(jq -r '.token // empty' "$f") ;;
     # 404: a nora without the exchange; 403: a provider that grants no session.
     403|404) echo "::warning::nora at $nora gives no session (HTTP $code): the OIDC token (~5 min) is used" >&2
        printf '%s\n' "$jwt"; exit 0 ;;
