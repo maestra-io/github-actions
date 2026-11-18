@@ -61,7 +61,7 @@
 #                       single `test` job). Each gets SHARD_INDEX (1..N) and SHARD_TOTAL
 #                       (test-command env, docker-test-target `-e`) and picks its part,
 #                       e.g. `playwright test --shard=$SHARD_INDEX/$SHARD_TOTAL`.
-#   python-version      actions/setup-python before test-command (empty = skip).
+#   python-version      setup-python-nora before test-command (empty = skip).
 #   node-version        actions/setup-node before test-command (empty = skip).
 #   uv-version          astral-sh/setup-uv with this uv version before test-command
 #                       (empty = skip). test-command always gets uv credentials for
@@ -635,7 +635,7 @@ jobs:
 
       # ── test-command on the runner (the repo's GitLab test jobs) ─────────
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' && inputs.python-version != '' }}
-        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        uses: maestra-io/github-actions/setup-python-nora@38486b9a95224937098e20fb91a527e6103a7606 # v1.106.0
         with:
           python-version: ${{ inputs.python-version }}
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' && inputs.node-version != '' }}

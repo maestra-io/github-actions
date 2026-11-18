@@ -182,7 +182,7 @@ jobs:
               args+=(--active)
             else
               # setup-python's interpreter, as `pip install --system` did; --inexact keeps its pip.
-              export UV_PROJECT_ENVIRONMENT="${pythonLocation:?actions/setup-python must run first}"
+              export UV_PROJECT_ENVIRONMENT="${pythonLocation:?setup-python-nora must run first}"
               args+=(--inexact)
             fi
             uv sync "${args[@]}"

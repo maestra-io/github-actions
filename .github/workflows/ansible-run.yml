@@ -334,7 +334,7 @@ jobs:
           ref: ${{ inputs.checkout_ref }}
 
       - name: Set up Python
-        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        uses: maestra-io/github-actions/setup-python-nora@38486b9a95224937098e20fb91a527e6103a7606 # v1.106.0
         with:
           python-version: ${{ inputs.python_version }}
 
@@ -414,7 +414,7 @@ jobs:
               args+=(--active)
             else
               # setup-python's interpreter, as `pip install --system` did; --inexact keeps its pip.
-              export UV_PROJECT_ENVIRONMENT="${pythonLocation:?actions/setup-python must run first}"
+              export UV_PROJECT_ENVIRONMENT="${pythonLocation:?setup-python-nora must run first}"
               args+=(--inexact)
             fi
             uv sync "${args[@]}"
