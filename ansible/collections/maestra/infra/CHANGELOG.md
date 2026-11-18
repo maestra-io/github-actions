@@ -7,6 +7,16 @@ finding, and because the `os_update` contract is shared across four repos:
 anything that changes a variable name or a hook expectation has to be findable
 from one place.
 
+## 1.4.4
+
+- `os_update`: the `Result` line of 1.4.3 read two facts that only the role's
+  own `reboot.yml` sets, so a node rebooted by a consumer's `reboot.yml` (kube,
+  Deckhouse) ended a clean run with `kernel A -> unknown … reboot pending
+  True`. The line now reads two facts `main.yml` sets around the reboot
+  include. A reboot that started and did not end cleanly reports the final
+  kernel as `unknown`; `rebooted` is then `yes` if the hook recorded that the
+  host went down and `unknown` if it did not (a reboot timeout).
+
 ## 1.4.3
 
 - `os_update`: an `apply` run ends every touched host with one `Result` line —
