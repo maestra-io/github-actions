@@ -40,44 +40,62 @@ runs:
       run: |
         echo "package-path=./packages/${{ inputs.octopusProject }}.${{ inputs.version }}.zip" >> $GITHUB_OUTPUT
 
+    # octo runs from its image through nora (issues-maestra#1649): a `uses: docker://` image
+    # is pulled by the runner at job setup, around nora. Needs `permissions: id-token: write`.
+    # The image's entrypoint and the docker:// mount of the workspace are kept: paths stay
+    # relative to the workspace, the arguments are the ones docker:// passed.
+    - name: Pull octo through nora
+      shell: bash
+      env:
+        OCTO_IMAGE: packages.maestra.io/docker-hub/octopusdeploy/octo:9.1.7@sha256:0ca92b9e81e6b3ec29fcca0b89765f35065db1e30e6898dee03e6ddc0ca92054
+      run: |
+        set -euo pipefail
+        : "${ACTIONS_ID_TOKEN_REQUEST_URL:?no GitHub OIDC token available: the job needs permissions: id-token: write}"
+        source "${GITHUB_ACTION_PATH}/../nora-session/nora-session.sh"
+        cfg=$(mktemp -d); trap 'rm -rf "$cfg"' EXIT
+        token=$(nora_token https://packages.maestra.io packages.maestra.io)
+        echo "::add-mask::$token"
+        ( umask 077; printf 'token:%s' "$token" | base64 | tr -d '\n' \
+          | jq -Rn '{auths: {"packages.maestra.io": {auth: input}}}' > "$cfg/config.json" )
+        DOCKER_CONFIG="$cfg" docker pull -q "$OCTO_IMAGE"
+        echo "OCTO_IMAGE=$OCTO_IMAGE" >> "$GITHUB_ENV"
+
     - name: Create and upload octopus package
-      uses: docker://octopusdeploy/octo
-      with:
-        args: >-
-          pack
-          --id ${{ inputs.octopusProject }}
-          --version ${{ inputs.version }}
-          --outFolder ./packages
-          --include ${{ inputs.folderToPack }}
-          --format Zip
-          --verbose
-          --overwrite
+      shell: bash
       env:
         OCTOPUS_CLI_API_KEY: ${{ inputs.OCTOPUS_CLI_API_KEY }}
         OCTOPUS_CLI_SERVER: ${{ inputs.OCTOPUS_CLI_SERVER }}
+        PROJECT: ${{ inputs.octopusProject }}
+        VERSION: ${{ inputs.version }}
+        FOLDER: ${{ inputs.folderToPack }}
+      run: |
+        docker run --rm -e OCTOPUS_CLI_API_KEY -e OCTOPUS_CLI_SERVER -v "$PWD:$PWD" -w "$PWD" "$OCTO_IMAGE" \
+          pack --id "$PROJECT" --version "$VERSION" --outFolder ./packages --include "$FOLDER" \
+          --format Zip --verbose --overwrite
 
     - name: Upload octopus package
-      uses: docker://octopusdeploy/octo
-      with:
-        args: >-
-          push
-          --package ${{ steps.package-info.outputs.package-path }}
-          --space ${{ inputs.space }}
+      shell: bash
       env:
         OCTOPUS_CLI_API_KEY: ${{ inputs.OCTOPUS_CLI_API_KEY }}
         OCTOPUS_CLI_SERVER: ${{ inputs.OCTOPUS_CLI_SERVER }}
+        PACKAGE: ${{ steps.package-info.outputs.package-path }}
+        SPACE: ${{ inputs.space }}
+      run: |
+        docker run --rm -e OCTOPUS_CLI_API_KEY -e OCTOPUS_CLI_SERVER -v "$PWD:$PWD" -w "$PWD" "$OCTO_IMAGE" \
+          push --package "$PACKAGE" --space "$SPACE"
 
     - name: Create octopus release
-      uses: docker://octopusdeploy/octo
-      with:
-        args: >-
-          create-release
-          --project ${{ inputs.octopusProject }}
-          --version ${{ inputs.version }}
-          --packageVersion ${{ inputs.version }}
-          --space ${{ inputs.space }}
-          ${{ inputs.gitRef != '' && format('--gitRef {0}', inputs.gitRef) || '' }}
-          ${{ inputs.releaseNotes != '' && format('--releasenotes "{0}"', inputs.releaseNotes) || '' }}
+      shell: bash
       env:
         OCTOPUS_CLI_API_KEY: ${{ inputs.OCTOPUS_CLI_API_KEY }}
         OCTOPUS_CLI_SERVER: ${{ inputs.OCTOPUS_CLI_SERVER }}
+        PROJECT: ${{ inputs.octopusProject }}
+        VERSION: ${{ inputs.version }}
+        SPACE: ${{ inputs.space }}
+        GIT_REF: ${{ inputs.gitRef }}
+        RELEASE_NOTES: ${{ inputs.releaseNotes }}
+      run: |
+        args=(create-release --project "$PROJECT" --version "$VERSION" --packageVersion "$VERSION" --space "$SPACE")
+        [ -z "$GIT_REF" ] || args+=(--gitRef "$GIT_REF")
+        [ -z "$RELEASE_NOTES" ] || args+=(--releasenotes "$RELEASE_NOTES")
+        docker run --rm -e OCTOPUS_CLI_API_KEY -e OCTOPUS_CLI_SERVER -v "$PWD:$PWD" -w "$PWD" "$OCTO_IMAGE" "${args[@]}"

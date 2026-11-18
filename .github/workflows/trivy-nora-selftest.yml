@@ -1,0 +1,121 @@
+---
+# trivy-nora for real: an image scan (EOL alpine, known HIGH findings), a misconfig fs scan and a pom.xml fs scan (POMs from nora's maven2),
+# the trivy binary and all three databases through nora with the job's OIDC token;
+# the exit code, the ignore file, the reused binary, and the runner's docker config left
+# without the nora credential.
+name: trivy-nora-selftest
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/trivy-nora-selftest.yml"
+      - "trivy-nora/**"
+      - "nora-session/**"
+
+permissions:
+  contents: read
+
+jobs:
+  trivy-nora:
+    runs-on: runs-on=${{ github.run_id }}-trivy-nora/runner=t3a-small
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write # nora session token: binary, DBs, scanned image
+    env:
+      IMAGE: packages.maestra.io/docker-hub/library/alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: image scan, json report
+        uses: ./trivy-nora
+        with:
+          image-ref: ${{ env.IMAGE }}
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          format: json
+          output: ${{ runner.temp }}/alpine.json
+          exit-code: "0"
+      - name: findings reported, DBs from nora
+        run: |
+          set -euo pipefail
+          n=$(jq '[.Results[]?.Vulnerabilities // [] | .[]] | length' "$RUNNER_TEMP/alpine.json")
+          echo "alpine 3.20 HIGH/CRITICAL: $n"
+          [ "$n" -gt 0 ]
+          test -s "$RUNNER_TEMP/trivy-nora/cache/db/trivy.db"
+          jq -r '.Results[].Vulnerabilities[0].VulnerabilityID' "$RUNNER_TEMP/alpine.json" | head -1 > "$RUNNER_TEMP/ignore-one"
+          if grep -qs packages.maestra.io "${DOCKER_CONFIG:-$HOME/.docker}/config.json"; then echo "nora credential left in the runner docker config"; exit 1; fi
+          # on PATH for later steps, as after trivy-action
+          trivy convert --format table "$RUNNER_TEMP/alpine.json" > /dev/null
+
+      - name: same scan with exit-code 1 fails
+        id: strict
+        continue-on-error: true
+        uses: ./trivy-nora
+        with:
+          image-ref: ${{ env.IMAGE }}
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: "true"
+          exit-code: "1"
+      - name: exit code passed through
+        env:
+          OUTCOME: ${{ steps.strict.outcome }}
+        run: '[ "$OUTCOME" = failure ]'
+
+      - name: ignore file drops a finding
+        uses: ./trivy-nora
+        with:
+          image-ref: ${{ env.IMAGE }}
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          format: json
+          output: ${{ runner.temp }}/alpine-ignored.json
+          trivyignores: ${{ runner.temp }}/ignore-one
+      - name: the ignored id is gone
+        run: |
+          set -euo pipefail
+          id=$(cat "$RUNNER_TEMP/ignore-one")
+          ! jq -e --arg id "$id" '[.Results[]?.Vulnerabilities // [] | .[] | select(.VulnerabilityID == $id)] | length > 0' \
+            "$RUNNER_TEMP/alpine-ignored.json"
+
+      - name: misconfig fixture
+        run: |
+          mkdir -p "$RUNNER_TEMP/fixture"
+          printf 'FROM alpine:3.20\nRUN echo hi\n' > "$RUNNER_TEMP/fixture/Dockerfile"
+      - name: fs scan, checks bundle from nora
+        uses: ./trivy-nora
+        with:
+          scan-type: fs
+          scan-ref: ${{ runner.temp }}/fixture
+          scanners: misconfig
+          format: json
+          output: ${{ runner.temp }}/fixture.json
+      - name: a Dockerfile without USER is reported
+        run: |
+          jq -e '[.Results[]?.Misconfigurations // [] | .[] | select(.ID == "DS-0002" or .ID == "DS002")] | length > 0' \
+            "$RUNNER_TEMP/fixture.json"
+
+      - name: pom fixture (commons-text 1.9, CVE-2022-42889)
+        run: |
+          mkdir -p "$RUNNER_TEMP/pom"
+          printf '%s\n' '<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion>' \
+            '<groupId>x</groupId><artifactId>y</artifactId><version>1</version><dependencies><dependency>' \
+            '<groupId>org.apache.commons</groupId><artifactId>commons-text</artifactId><version>1.9</version>' \
+            '</dependency></dependencies></project>' > "$RUNNER_TEMP/pom/pom.xml"
+      - name: fs scan, POMs from nora's maven2
+        uses: ./trivy-nora
+        with:
+          scan-type: fs
+          scan-ref: ${{ runner.temp }}/pom
+          scanners: vuln
+          format: json
+          output: ${{ runner.temp }}/pom.json
+      - name: the pom's vulnerable dependency is reported
+        run: |
+          jq -e '[.Results[]?.Vulnerabilities // [] | .[] | select(.VulnerabilityID == "CVE-2022-42889")] | length > 0' \
+            "$RUNNER_TEMP/pom.json"

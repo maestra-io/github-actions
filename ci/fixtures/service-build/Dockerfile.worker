@@ -1,5 +1,5 @@
 # Fixture for service-build-selftest.yml: a second Dockerfile with a named stage.
-FROM docker.io/library/busybox:1.37 AS worker
+FROM packages.maestra.io/docker-hub/library/busybox:1.38@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4 AS worker
 RUN echo worker > /stage
 # The packages token as the workflow hands it to the build (secret files, header
 # "Registry token"): NUGET_CREDENTIALS in NuGet's env-credential format.

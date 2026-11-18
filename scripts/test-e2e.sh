@@ -140,9 +140,61 @@ image() { # image <playwright version>: the step's output, fails the test when t
     GITHUB_OUTPUT="$fake/out" FAKE_PULLS="$fake/pulls" bash -c "set -eo pipefail; $img_prog" > "$fake/log" 2>&1
 }
 image 1.56.1 || { cat "$fake/log"; echo "FAIL playwright-image exited non-zero"; exit 1; }
-eq "$(cat "$fake/out")" "image=packages.maestra.io/mcr/playwright@sha256:abc" "playwright-image runs by digest"
-eq "$(cat "$fake/pulls")" "packages.maestra.io/mcr/playwright@sha256:abc" "playwright-image pulls the digest"
+eq "$(cat "$fake/out")" "$(printf 'image=packages.maestra.io/mcr/playwright@sha256:abc\ndigest=abc')" "playwright-image runs by digest"
+eq "$(cat "$fake/pulls")" "" "playwright-image only resolves the digest: playwright-pull pulls it"
 eq "$(jq -c .credHelpers "$fake/home/.docker/config.json")" '{"packages.maestra.io":"nora"}' "playwright-image nora credentials"
+# The image cache (issues-maestra#1649): functional and e2e carry the same steps, keyed by the digest.
+cache_steps=$(awk '/# >>> playwright-cache restore/{on=1} on{print} /# <<< playwright-cache save/{on=0}' "$wf")
+cache_first=$(awk '/# >>> playwright-cache restore/{on=1} on{print} /# <<< playwright-cache save/{exit}' "$wf")
+eq "$(grep -c '# >>> playwright-cache restore' "$wf")" "2" "playwright-cache in functional and e2e"
+eq "$cache_steps" "$(printf '%s\n%s' "$cache_first" "$cache_first")" "playwright-cache: functional and e2e carry the same copy"
+has "$e2e" "      # >>> playwright-cache restore" "e2e restores the Playwright image cache"
+has "$(jobtext functional)" "      # >>> playwright-cache restore" "functional restores the Playwright image cache"
+key='          key: playwright-image-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.digest }}'
+eq "$(grep -cF -- "$key" <<<"$cache_first")" "2" "restore and save use the digest key"
+hasnt "$cache_first" "restore-keys" "no prefix restore: only this digest is loaded"
+for s in restore pack save; do
+  has "$(awk -v n="playwright image cache ($s)" 'index($0,n){on=1} on&&/continue-on-error/{print;exit}' <<<"$cache_first")" \
+    "continue-on-error: true" "cache $s never fails the job"
+done
+hasnt "$(awk '/name: playwright image \(pull\)/{on=1} on&&/run: \|/{exit} on' <<<"$cache_first")" "continue-on-error" "the pull itself fails the job"
+pull_prog=$(awk 'index($0,"# >>> playwright-pull"){n++} n==1{print} n==1&&index($0,"# <<< playwright-pull"){exit}' "$wf" | sed 's/^          //')
+# A fake docker for playwright-pull: load prints FAKE_LOADED, the image's ID is FAKE_ID.
+cat > "$fake/bin/docker" <<'D'
+#!/usr/bin/env bash
+case "$*" in
+  "load -q") cat > /dev/null; [ -n "${FAKE_LOADED:-}" ] || exit 1; echo "Loaded image ID: $FAKE_LOADED" ;;
+  "pull -q "*) echo "$3" >> "${FAKE_PULLS:?}" ;;
+  "image inspect -f {{.Id}} "*) echo "$FAKE_ID" ;;
+  *) echo "ERROR: $*" >&2; exit 1 ;;
+esac
+D
+pull() { # pull <cache-hit> <loaded ID>: playwright-pull with a cache file, the image is sha256:cfg
+  : > "$fake/out"; : > "$fake/pulls"; mkdir -p "$fake/tmp/playwright-image"
+  echo data | zstd -q -f -o "$fake/tmp/playwright-image/image.tar.zst"
+  PATH="$fake/bin:$PATH" HIT="$1" FAKE_LOADED="$2" FAKE_ID=sha256:cfg RUNNER_TEMP="$fake/tmp" \
+    IMAGE=packages.maestra.io/mcr/playwright@sha256:abc GITHUB_OUTPUT="$fake/out" FAKE_PULLS="$fake/pulls" \
+    bash -c "set -eo pipefail; $pull_prog" > "$fake/log" 2>&1 || { cat "$fake/log"; echo "FAIL playwright-pull exited non-zero"; exit 1; }
+  eq "$(cat "$fake/pulls")" "packages.maestra.io/mcr/playwright@sha256:abc" "playwright-pull pulls the digest (hit=$1)"
+  eq "$(cat "$fake/out")" "id=sha256:cfg" "playwright-pull image ID (hit=$1)"
+}
+pull true sha256:cfg; grep -qF "playwright image cache: hit, packages.maestra.io/mcr/playwright@sha256:abc (sha256:cfg) verified" "$fake/log" \
+  || { cat "$fake/log"; echo "FAIL playwright-pull: hit not logged"; exit 1; }
+pull false sha256:cfg; grep -qF "playwright image cache: miss" "$fake/log" || { cat "$fake/log"; echo "FAIL playwright-pull: a miss loads nothing"; exit 1; }
+pull true sha256:other; grep -qF "::warning::playwright image cache: loaded sha256:other, but" "$fake/log" \
+  || { cat "$fake/log"; echo "FAIL playwright-pull: a cached image of another digest is not reported"; exit 1; }
+pull true ""; grep -qF "::warning::playwright image cache: docker load failed" "$fake/log" \
+  || { cat "$fake/log"; echo "FAIL playwright-pull: a failed load is not reported"; exit 1; }
+echo "playwright image cache: ok"
+# back to the imagetools fake for the cases below
+cat > "$fake/bin/docker" <<'D'
+#!/usr/bin/env bash
+case "$*" in
+  "buildx imagetools inspect packages.maestra.io/mcr/playwright:v1.56.1-noble --format {{json .Manifest}}") echo '{"digest":"sha256:abc"}' ;;
+  "pull -q "*) echo "$3" >> "${FAKE_PULLS:?}" ;;
+  *) echo "ERROR: not found" >&2; exit 1 ;;
+esac
+D
 if image 9.9.9; then echo "FAIL playwright-image passed for a tag nora does not serve"; exit 1; fi
 grep -qF '::error::nora does not serve packages.maestra.io/mcr/playwright:v9.9.9-noble' "$fake/log" \
   || { cat "$fake/log"; echo "FAIL playwright-image: no error for a missing tag"; exit 1; }

@@ -635,15 +635,15 @@ jobs:
 
       # ── test-command on the runner (the repo's GitLab test jobs) ─────────
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' && inputs.python-version != '' }}
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ inputs.python-version }}
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' && inputs.node-version != '' }}
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ inputs.node-version }}
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' && inputs.uv-version != '' }}
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: ${{ inputs.uv-version }}
           enable-cache: false
@@ -711,6 +711,22 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
           driver-opts: image=packages.maestra.io/docker-hub/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
+      - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            for (const k of ['ACTIONS_RUNTIME_TOKEN', 'ACTIONS_RUNTIME_URL', 'ACTIONS_CACHE_URL', 'ACTIONS_RESULTS_URL', 'ACTIONS_CACHE_SERVICE_V2']) {
+              if (process.env[k]) core.exportVariable(k, process.env[k]);
+            }
+            core.setSecret(process.env.ACTIONS_RUNTIME_TOKEN);
+      - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
+        env:
+          PACKAGES_TOKEN: ${{ steps.token.outputs.token }}
+          PACKAGES_URL: ${{ inputs.packages-url }}
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: bash -eo pipefail -c "$TEST_COMMAND"
+      # After test-command: it saves what test-command pulled from nora too (the Playwright image
+      # of popmechanic-client, Testcontainers images), not only moby/buildkit (issues-maestra#1649).
       # >>> nora-image-cache save (test)
       - name: nora image cache (pack)
         id: nora-images-2-pack
@@ -738,20 +754,6 @@ jobs:
           path: ${{ runner.temp }}/nora-images
           key: ${{ steps.nora-images-2-pack.outputs.key }}
       # <<< nora-image-cache save
-      - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        with:
-          script: |
-            for (const k of ['ACTIONS_RUNTIME_TOKEN', 'ACTIONS_RUNTIME_URL', 'ACTIONS_CACHE_URL', 'ACTIONS_RESULTS_URL', 'ACTIONS_CACHE_SERVICE_V2']) {
-              if (process.env[k]) core.exportVariable(k, process.env[k]);
-            }
-            core.setSecret(process.env.ACTIONS_RUNTIME_TOKEN);
-      - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
-        env:
-          PACKAGES_TOKEN: ${{ steps.token.outputs.token }}
-          PACKAGES_URL: ${{ inputs.packages-url }}
-          TEST_COMMAND: ${{ inputs.test-command }}
-        run: bash -eo pipefail -c "$TEST_COMMAND"
 
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command == '' }}
         run: echo "::notice::no test-command and no docker-test-target, tests skipped"
@@ -1052,7 +1054,7 @@ jobs:
       - name: ecr login
         id: ecr
         if: ${{ needs.version.outputs.publish == 'true' }}
-        uses: maestra-io/github-actions/push-to-aws-ecr-repository@4810e33793d010b8ff485d52a0798d48fc7df5a6 # v1.46.1
+        uses: maestra-io/github-actions/push-to-aws-ecr-repository@2450cdaaf4688887cb65579fc45ab5304cb81967 # v1.46.2
         with:
           awsRegion: us-west-2
           repositories: ${{ matrix.image }}

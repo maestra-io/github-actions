@@ -18,7 +18,9 @@
 #                        for every netN.M target framework of the solution's project/props
 #                        files, plus global.json when present; the build then runs on the
 #                        SDK of the highest one (temporary global.json pin, see "pin the
-#                        build SDK"). Set = exactly these SDKs and no pin.
+#                        build SDK"). Set = exactly these SDKs, pinned to their highest major.
+#                        The SDKs come from nora (dotnet-nora, sha256-pinned), never from
+#                        builds.dotnet.microsoft.com (issues-maestra#1649).
 #   version              Explicit package version (-p:PackageVersion). Empty = the
 #                        repo's own scheme, $(VersionMajor).$(VersionMinor).$(BuildNumber)$(VersionTag)
 #                        in Directory.Build.props, fed BuildNumber below (GitLab parity).
@@ -228,12 +230,13 @@ jobs:
           echo "global-json=${global_json:-true}" >> "$GITHUB_OUTPUT"
           echo "SDKs: ${versions//$'\n'/ }"
           # sdk-set: end
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      # setup-dotnet syntax, from nora raw instead of builds.dotnet.microsoft.com (README).
+      - uses: maestra-io/github-actions/dotnet-nora@8ebf680b9d3977cae5fab267f84d90a13b99c4c5 # v1.100.0
         with:
           dotnet-version: ${{ steps.sdk.outputs.versions }}
           global-json-file: ${{ inputs.dotnet-version == '' && steps.sdk.outputs.global-json == 'true' && hashFiles('global.json') != '' && 'global.json' || '' }}
 
-      # The runner image ships the newest SDK and setup-dotnet only adds SDKs, so
+      # The runner image ships the newest SDK and dotnet-nora only adds SDKs, so
       # without a global.json pin (none, or rollForward latestMajor/major) the newest
       # one builds. Its new analyzers and EOL-framework warnings then fail
       # /warnaserror where the GitLab sdk:<N> image passed (DumpTool, GraphQL,
@@ -242,17 +245,18 @@ jobs:
       # major, in a temporary global.json in the working directory (where dotnet
       # looks first). Other global.json keys are kept, and the repo's own file is put
       # back after pack. An explicit sdk.version with a narrower rollForward is
-      # respected, and so is the dotnet-version override (no pin). selftest.yml runs
-      # this program (scripts/test-nuget-sdk-pin.sh).
+      # respected. A dotnet-version override is pinned to its own highest major: with
+      # no pin, `8.0.x` callers built with the image's newest SDK (11 since the
+      # 17.11.2026 image). selftest.yml runs this program (scripts/test-nuget-sdk-pin.sh).
       - name: pin the build SDK
         id: pin
-        if: ${{ inputs.dotnet-version == '' }}
         env:
           VERSIONS: ${{ steps.sdk.outputs.versions }}
           BACKUP: ${{ runner.temp }}/global.json.repo
         run: |
           # sdk-pin: begin
-          major=$(printf '%s\n' "$VERSIONS" | sed -nE 's/^([0-9]+)\.0\.x$/\1/p' | sort -n | tail -1)
+          # Any setup-dotnet form (10, 10.x, 10.0, 10.0.x, 10.0.4xx, 10.0.404) names its major.
+          major=$(printf '%s\n' "$VERSIONS" | sed -nE 's/^[[:space:]]*([0-9]+)([.][0-9x]+)*[[:space:]]*$/\1/p' | sort -n | tail -1)
           if [ -z "$major" ]; then
             echo "no netN.M target framework: build SDK left to global.json / the newest installed"; exit 0
           fi
@@ -375,7 +379,7 @@ jobs:
       - name: upload test results
         if: ${{ always() && inputs.run-tests }}
         continue-on-error: true # telemetry never fails the build
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-results-${{ github.job }}-${{ github.run_attempt }}-${{ steps.test-results-id.outputs.id }}
           path: ${{ runner.temp }}/test-results
@@ -387,7 +391,7 @@ jobs:
       - name: ingest test results
         if: ${{ always() && inputs.run-tests }}
         continue-on-error: true
-        uses: maestra-io/github-actions/test-results-ingest@4810e33793d010b8ff485d52a0798d48fc7df5a6 # v1.46.1
+        uses: maestra-io/github-actions/test-results-ingest@2450cdaaf4688887cb65579fc45ab5304cb81967 # v1.46.2
 
       # Never leave the temporary pin behind (nothing here commits, but the
       # workspace is the caller's checkout).

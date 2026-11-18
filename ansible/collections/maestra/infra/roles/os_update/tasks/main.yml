@@ -3,7 +3,8 @@
 # `serial: 1` in the consumer playbook is only a safety net for a local operator.
 #
 # Order is load-bearing:
-#   vars -> guards -> marker(read) -> plan -> PREFLIGHT -> [silence -> drain ->
+#   vars -> guards -> marker(read) -> plan -> boot_guard (pre-drain kernel GC) ->
+#   PREFLIGHT -> [silence -> drain ->
 #   boot_safety -> holds -> apt -> reboot -> kernel_gc -> VERIFY]
 #   always: holds(restore) -> UNDRAIN -> marker(clear) -> SETTLE ->
 #           [tail silence, successful apply or undrain-only] -> unsilence
@@ -93,6 +94,14 @@
   # mode whose whole point is a <=10 min per-host cycle, issues-maestra#1373.)
   ansible.builtin.include_tasks: plan.yml
   when: os_update_mode != 'binary-update'
+
+- name: Guard — /boot must have room to unpack a kernel
+  # Deferred in `stage`: that mode reclaims /boot itself (pre-stage kernel GC)
+  # and then re-asserts the same condition before it unpacks a single package.
+  # Elsewhere a tight /boot passes when a kernel GC would make room; `apply` runs
+  # that GC here, before anything is drained. See boot_guard.yml.
+  ansible.builtin.include_tasks: boot_guard.yml
+  when: os_update_mode not in ['stage', 'binary-update']
 
 - name: PREFLIGHT — is the peer healthy, and is this host safe to reboot
   # Skipped in `stage`, and that is the point rather than an oversight: every gate

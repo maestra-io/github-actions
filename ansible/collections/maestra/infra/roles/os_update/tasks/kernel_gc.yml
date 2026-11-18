@@ -3,7 +3,7 @@
 # `autoremove --purge` has a wider blast radius than "delete old kernels", and the
 # kernel we might have to fall back to is worth more than the megabytes it occupies.
 #
-# Two phases, selected by `os_update_gc_phase`:
+# Three phases, selected by `os_update_gc_phase`:
 #
 #   post-reboot (default) — the original behaviour, unchanged: only after a
 #     successful reboot, gated on os_update_rebooted. The kernel we just left is
@@ -17,6 +17,9 @@
 #     the stage mode is unusable on the kube tier — /boot there is 467 MB with
 #     241 free against a 196 MB guard (measured us-omega worker23, 2026-08-27),
 #     i.e. one bad week of kernels away from refusing every stage run.
+#
+#   pre-apply — the same GC for `mode: apply`, before the drain, when the /boot
+#     guard can only pass with it (boot_guard.yml decides and re-asserts).
 
 - name: Re-measure /boot
   ansible.builtin.shell:
@@ -32,17 +35,22 @@
   ansible.builtin.apt:
     autoremove: true
     purge: true
+  environment:
+    # Same as apt.yml: pre-stage and pre-apply purge on a host still in rotation,
+    # and needrestart in mode `a` would restart services from inside dpkg.
+    NEEDRESTART_SUSPEND: "1"
+    NEEDRESTART_MODE: a
   register: os_update_gc
   when:
-    # post-reboot: unchanged gate. pre-stage: the reboot has not happened and
-    # never will in this mode, so the gate is "the plan guard could not be met".
+    # post-reboot: unchanged gate. pre-stage / pre-apply: the reboot has not
+    # happened yet, so the gate is "the plan guard could not be met".
     - >-
-      (os_update_gc_phase | default('post-reboot')) == 'pre-stage'
+      (os_update_gc_phase | default('post-reboot')) in ['pre-stage', 'pre-apply']
       or (os_update_rebooted | default(false))
     - >-
       (os_update_boot_free_post.stdout | trim | int)
       < ((os_update_boot_free_needed_mb | int)
-         if (os_update_gc_phase | default('post-reboot')) == 'pre-stage'
+         if (os_update_gc_phase | default('post-reboot')) in ['pre-stage', 'pre-apply']
          else (os_update_boot_free_gc_threshold_mb | int))
 
 # Re-probe when the GC actually ran — os_update_boot_free_post was measured

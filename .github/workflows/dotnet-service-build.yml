@@ -4,6 +4,7 @@
 # create-gitlab-release), issues-maestra#1442 wave W0c.
 #
 #   version ─► test ─► images (matrix) ─► release ─► bake
+#   default branch, in parallel: dependency-graph (resolved NuGet graph for Dependabot, CPM repos)
 #   pull_request: version ─► test, checks (pr-checks.yml), base-images ─► pr-gate (the required check)
 #
 # Warehouse refresh: no job here. The GitHub org webhook (workflow_run completed)
@@ -54,7 +55,7 @@
 #                       rejects `--filter` with "Unknown option".
 #   docker-test-target  Dockerfile stage that runs the tests (GitLab .run-docker-test,
 #                       usually `tests`). Set = `test` builds and runs that stage
-#                       instead of setup-dotnet + dotnet test.
+#                       instead of dotnet-nora (the SDK from nora) + dotnet test.
 #   test-command        Non-.NET repos: shell command run instead of dotnet test
 #                       (`bash -eo pipefail -c`: any failing line fails the job; `sh -ec`
 #                       with test-image), with test-env, PACKAGES_TOKEN (nora OIDC token)
@@ -844,7 +845,7 @@ jobs:
           # <<< graphql-schemas
       # Only when `images` runs (its own `if`).
       - if: ${{ steps.graphql.outputs.artifact != '' && (github.event_name != 'pull_request' || inputs.pr-images) }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.graphql.outputs.artifact }}
           path: ${{ runner.temp }}/graphql-schemas.tgz
@@ -949,26 +950,12 @@ jobs:
           key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/*.props', '**/packages.lock.json', '**/nuget.config', 'global.json') }}
           restore-keys: nuget-${{ runner.os }}-
 
-      # ── test-command (non-.NET repos) ───────────────────────────────────
-      - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
-        env:
-          TEST_COMMAND: ${{ inputs.test-command }}
-          TEST_IMAGE: ${{ inputs.test-image }}
-          PACKAGES_TOKEN: ${{ steps.token.outputs.token }}
-          PACKAGES_URL: ${{ inputs.packages-url }}
-        run: |
-          if [ -n "$TEST_IMAGE" ]; then
-            docker run --rm --env-file "$RUNNER_TEMP/test.env" -e PACKAGES_TOKEN -e PACKAGES_URL \
-              -v "$PWD:/src" -w /src "$TEST_IMAGE" sh -ec "$TEST_COMMAND"
-          else
-            bash -eo pipefail -c "$TEST_COMMAND"
-          fi
-
-      # ── dotnet test (GitLab .update-source-and-test) ─────────────────────
+      # ── SDK: dotnet test (GitLab .update-source-and-test), and a test-command
+      # on the runner in a .NET repo ───────────────────────────────────────
       # setup-dotnet rejects a global.json `rollForward` with a version that is not a
       # full SDK version (10.0.0, 8.0.0); dotnet itself rolls forward from it. Such a
       # file gets <major>.<minor>.x; an explicit dotnet-version always wins.
-      - if: ${{ inputs.docker-test-target == '' && inputs.test-command == '' }}
+      - if: ${{ inputs.docker-test-target == '' && (inputs.test-command == '' || (inputs.test-image == '' && hashFiles('**/*.csproj') != '')) }}
         id: sdk
         env:
           DOTNET_VERSION: ${{ inputs.dotnet-version }}
@@ -987,11 +974,131 @@ jobs:
           fi
           { echo "version=$version"; echo "file=$file"; } >> "$GITHUB_OUTPUT"
           # <<< sdk-version
-      - if: ${{ inputs.docker-test-target == '' && inputs.test-command == '' }}
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      # The runner image ships only the newest SDK (RunsOn ubuntu24-full of 17.11.2026:
+      # 11.0.100 alone) and setup-dotnet / dotnet-nora only add SDKs: a global.json with rollForward
+      # latestMajor/major, or none, built with SDK 11 and its new analyzers, failing
+      # warn-as-error (event-logs CA1860, 17.11.2026). dotnet-nora now also installs
+      # <N>.0.x per target framework major (the SDK and the test runtime), and the
+      # build SDK is pinned after it. Same programs as
+      # nuget-package-publish.yml (program copied verbatim; scripts/test-nuget-sdk-set.sh
+      # and test-nuget-sdk-pin.sh check the copies): newest installed SDK of the highest
+      # target framework / global.json major, in a temporary global.json put back after
+      # the tests. A dotnet-version override is pinned to its own highest major.
+      - name: target framework majors
+        id: sdk-set
+        if: ${{ inputs.docker-test-target == '' && (inputs.test-command == '' || (inputs.test-image == '' && hashFiles('**/*.csproj') != '')) }}
+        env:
+          OVERRIDE: ${{ inputs.dotnet-version }}
+          SOLUTION: ${{ inputs.solution-file }}
+        run: |
+          # sdk-set: begin
+          if [ -n "$OVERRIDE" ]; then
+            versions="$OVERRIDE"
+          else
+            dir=$(dirname "${SOLUTION:-./x}")
+            files=()
+            while IFS= read -r -d '' f; do files+=("$f"); done < <(
+              find "$dir" \( -name bin -o -name obj -o -name .git \) -prune -o -type f \
+                \( -name '*.csproj' -o -name '*.fsproj' -o -name '*.vbproj' -o -name '*.props' -o -name '*.targets' \) -print0)
+            up="$dir"
+            while [ "$up" != . ] && [ "$up" != / ]; do
+              up=$(dirname "$up")
+              for f in "$up"/Directory.Build.props "$up"/Directory.Build.targets; do
+                [ -f "$f" ] && files+=("$f")
+              done
+            done
+            # ponytail: a directory scan, not the solution's project graph: a stray
+            # project next to the solution only costs one extra SDK install.
+            versions=$( { [ "${#files[@]}" -eq 0 ] || cat "${files[@]}"; } | tr '\r\n' '  ' \
+              | grep -oE '<TargetFrameworks?( [^>]*)?>[^<]*</TargetFrameworks?>' \
+              | sed -E 's/<[^>]*>//g' | tr ';' '\n' \
+              | sed -nE 's/^[[:space:]]*net([0-9]+)\.[0-9]+.*/\1/p' \
+              | awk '$1 >= 5 { print $1 ".0.x" }' | sort -t. -k1,1n -u || true)
+            # setup-dotnet refuses a global.json whose sdk.version is not a full SDK
+            # version when rollForward is set ("10.0.0"): install its major instead and
+            # keep the file away from setup-dotnet; dotnet itself accepts it, and the
+            # pin step below handles a cross-major rollForward.
+            if [ -f global.json ] && g=$(jq -c . global.json 2>/dev/null); then
+              v=$(jq -r '.sdk.version // "" | tostring' <<<"$g")
+              rf=$(jq -r '.sdk.rollForward // ""' <<<"$g")
+              if [ -n "$v" ] && [ -n "$rf" ] && [[ "$v" != *-* ]] \
+                && ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[1-9][0-9]{2,}$ ]]; then
+                echo "::notice::global.json sdk.version '$v' is not a full SDK version: installing ${v%%.*}.0.x instead of passing global.json to setup-dotnet"
+                global_json=false
+                versions=$(printf '%s\n%s\n' "$versions" "${v%%.*}.0.x" | sed '/^$/d' | sort -t. -k1,1n -u)
+              fi
+            fi
+          fi
+          { echo 'versions<<SDK_SET_EOF'; echo "$versions"; echo 'SDK_SET_EOF'; } >> "$GITHUB_OUTPUT"
+          echo "global-json=${global_json:-true}" >> "$GITHUB_OUTPUT"
+          echo "SDKs: ${versions//$'\n'/ }"
+          # sdk-set: end
+      # setup-dotnet's inputs, the SDKs from nora raw instead of builds.dotnet.microsoft.com
+      # (dotnet-nora, README; issues-maestra#1649).
+      - if: ${{ inputs.docker-test-target == '' && (inputs.test-command == '' || (inputs.test-image == '' && hashFiles('**/*.csproj') != '')) }}
+        uses: maestra-io/github-actions/dotnet-nora@8ebf680b9d3977cae5fab267f84d90a13b99c4c5 # v1.100.0
         with:
-          dotnet-version: ${{ steps.sdk.outputs.version }}
-          global-json-file: ${{ steps.sdk.outputs.file }}
+          dotnet-version: |
+            ${{ steps.sdk.outputs.version }}
+            ${{ steps.sdk-set.outputs.versions }}
+          # Only a global.json that exists: a test-command repo may have none.
+          global-json-file: ${{ steps.sdk.outputs.file != '' && hashFiles('global.json') != '' && 'global.json' || '' }}
+      - name: pin the build SDK
+        id: pin
+        if: ${{ inputs.docker-test-target == '' && (inputs.test-command == '' || (inputs.test-image == '' && hashFiles('**/*.csproj') != '')) }}
+        env:
+          VERSIONS: ${{ steps.sdk-set.outputs.versions }}
+          BACKUP: ${{ runner.temp }}/global.json.repo
+        run: |
+          # a subshell: the program's `exit 0` must not skip the SDK line below
+          (
+          # sdk-pin: begin
+          # Any setup-dotnet form (10, 10.x, 10.0, 10.0.x, 10.0.4xx, 10.0.404) names its major.
+          major=$(printf '%s\n' "$VERSIONS" | sed -nE 's/^[[:space:]]*([0-9]+)([.][0-9x]+)*[[:space:]]*$/\1/p' | sort -n | tail -1)
+          if [ -z "$major" ]; then
+            echo "no netN.M target framework: build SDK left to global.json / the newest installed"; exit 0
+          fi
+          base='{}'
+          if [ -f global.json ]; then
+            if ! base=$(jq -c . global.json 2>/dev/null); then
+              echo "::warning::global.json is not plain JSON (comments?); build SDK not pinned"; exit 0
+            fi
+            roll=$(jq -r '.sdk.rollForward // "latestPatch"' <<<"$base")
+            if jq -e '.sdk.version' <<<"$base" >/dev/null && [ "$roll" != latestMajor ] && [ "$roll" != major ]; then
+              echo "global.json pins the SDK (rollForward $roll): left as is"; exit 0
+            fi
+            # Its sdk.version stays the floor: a repo asking for >= 10 keeps 10.
+            want=$(jq -r '.sdk.version // "0" | split(".")[0]' <<<"$base")
+            [ "$want" -gt "$major" ] 2>/dev/null && major=$want
+          fi
+          sdk=$(dotnet --list-sdks | awk -v m="$major" '{ split($1, v, "."); if (v[1] == m) print $1 }' \
+            | sort -t. -k2,2n -k3,3n | tail -1)
+          if [ -z "$sdk" ]; then
+            echo "::warning::no .NET SDK $major installed; build SDK not pinned"; exit 0
+          fi
+          [ ! -f global.json ] || cp global.json "$BACKUP"
+          jq --arg v "$sdk" '.sdk = ((.sdk // {}) + {version: $v, rollForward: "latestFeature"})' <<<"$base" > global.json
+          echo "pinned=true" >> "$GITHUB_OUTPUT"
+          echo "build SDK pinned to $sdk (target framework / global.json major $major)"
+          # sdk-pin: end
+          )
+          echo "build SDK: $(dotnet --version)"
+      # ── test-command ───────────────────────────────────────────────────
+      # After the SDK steps: on the runner in a .NET repo it builds with the pinned SDK
+      # (processing-orders' run-tests.sh built on the image's SDK 11, issues-maestra#1649).
+      - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' }}
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+          TEST_IMAGE: ${{ inputs.test-image }}
+          PACKAGES_TOKEN: ${{ steps.token.outputs.token }}
+          PACKAGES_URL: ${{ inputs.packages-url }}
+        run: |
+          if [ -n "$TEST_IMAGE" ]; then
+            docker run --rm --env-file "$RUNNER_TEMP/test.env" -e PACKAGES_TOKEN -e PACKAGES_URL \
+              -v "$PWD:/src" -w /src "$TEST_IMAGE" sh -ec "$TEST_COMMAND"
+          else
+            bash -eo pipefail -c "$TEST_COMMAND"
+          fi
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command == '' }}
         env:
           TOKEN: ${{ steps.token.outputs.token }}
@@ -1017,6 +1124,12 @@ jobs:
           VSTestLogger=trx VSTestResultsDirectory="$RUNNER_TEMP/test-results" \
             dotnet test --no-restore "${sln[@]}" --configuration Release "${filter[@]}" "${wae[@]}"
           # <<< dotnet-test
+      - name: put the repo's global.json back
+        if: ${{ always() && steps.pin.outputs.pinned == 'true' }}
+        env:
+          BACKUP: ${{ runner.temp }}/global.json.repo
+        run: |
+          if [ -f "$BACKUP" ]; then mv "$BACKUP" global.json; else rm -f global.json; fi
 
       # Where the test containers came from (issues-maestra#1649): Testcontainers' Docker Hub
       # images show as packages.maestra.io/docker-hub/…
@@ -1034,7 +1147,7 @@ jobs:
       - name: upload test results
         if: ${{ always() }}
         continue-on-error: true # telemetry never fails the build
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-results-${{ github.job }}-${{ github.run_attempt }}-${{ steps.test-results-id.outputs.id }}
           path: ${{ runner.temp }}/test-results
@@ -1046,7 +1159,7 @@ jobs:
       - name: ingest test results
         if: ${{ always() }}
         continue-on-error: true
-        uses: maestra-io/github-actions/test-results-ingest@4810e33793d010b8ff485d52a0798d48fc7df5a6 # v1.46.1
+        uses: maestra-io/github-actions/test-results-ingest@2450cdaaf4688887cb65579fc45ab5304cb81967 # v1.46.2
 
       # ── base-image: built once here into the cache, the `images` legs reuse it ──
       - if: ${{ needs.version.outputs.base-name != '' && (github.event_name != 'pull_request' || inputs.pr-images) }}
@@ -1450,7 +1563,7 @@ jobs:
           # <<< token-files
       # graphql-schemas: the files `test` downloaded, unpacked at the repo root before any build.
       - if: ${{ inputs.graphql-schemas && needs.test.outputs.graphql-schemas-artifact != '' }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.test.outputs.graphql-schemas-artifact }}
           path: ${{ runner.temp }}
@@ -1602,7 +1715,7 @@ jobs:
       - name: ecr login
         id: ecr
         if: ${{ needs.version.outputs.publish == 'true' }}
-        uses: maestra-io/github-actions/push-to-aws-ecr-repository@4810e33793d010b8ff485d52a0798d48fc7df5a6 # v1.46.1
+        uses: maestra-io/github-actions/push-to-aws-ecr-repository@2450cdaaf4688887cb65579fc45ab5304cb81967 # v1.46.2
         with:
           awsRegion: us-west-2
           repositories: ${{ matrix.image }}
@@ -1777,6 +1890,147 @@ jobs:
           tag: ${{ needs.version.outputs.release }}
           bake-path: ${{ matrix.bake-path }}
           teleport-token: ${{ needs.version.outputs.teleport-token }}
+
+  # Resolved NuGet graph -> GitHub dependency graph (issues-maestra#1649). With Central Package
+  # Management the static graph records every package as `>= 0` (the version lives in
+  # Directory.Packages.props), so Dependabot raised no alert for them. This job restores the
+  # solution and submits obj/project.assets.json of every CPM project as a dependency snapshot:
+  # one manifest per Directory.Packages.props (one alert per package and advisory, where the fix
+  # goes), direct/indirect from the assets file, scope development for test projects and
+  # PrivateAssets=all references. Non-CPM projects keep the static graph (no duplicate manifests).
+  # Default branch only (Dependabot alerts on it), dry runs (push: false) included: the snapshot
+  # describes the commit, not a release. Never fails the run: a failure is a warning.
+  dependency-graph:
+    if: ${{ github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch }}
+    runs-on: runs-on=${{ github.run_id }}-dependency-graph/pool=small
+    timeout-minutes: 20
+    continue-on-error: true
+    permissions:
+      contents: write # POST /repos/{owner}/{repo}/dependency-graph/snapshots
+      id-token: write # nora OIDC token for the restore
+      packages: read  # only for a private-packages-token: GITHUB_TOKEN override (GitHub Packages)
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: cpm
+        run: |
+          props=$(git ls-files -- 'Directory.Packages.props' '*/Directory.Packages.props' | jq -Rnc '[inputs]')
+          echo "props=$props" >> "$GITHUB_OUTPUT"
+          echo "Directory.Packages.props: $props"
+      - name: packages token override
+        id: override
+        if: ${{ steps.cpm.outputs.props != '[]' }}
+        env:
+          OVERRIDE: ${{ secrets.private-packages-token }}
+        run: echo "set=${OVERRIDE:+true}" >> "$GITHUB_OUTPUT"
+      - name: nora session token
+        id: session
+        if: ${{ steps.cpm.outputs.props != '[]' && steps.override.outputs.set != 'true' }}
+        uses: maestra-io/github-actions/nora-session@1b6e07a656e9eb1045ba563d4b9394631ecaa640 # v1.74.0
+        with:
+          url: ${{ inputs.packages-url }}
+          audience: ${{ inputs.packages-audience }}
+      - if: ${{ steps.cpm.outputs.props != '[]' }}
+        id: sdk
+        env:
+          DOTNET_VERSION: ${{ inputs.dotnet-version }}
+        run: |
+          # >>> sdk-version (scripts/test-dotnet-service-build.sh runs this block)
+          version="$DOTNET_VERSION"; file=""
+          if [ -z "$version" ]; then
+            file=global.json
+            # Same test as setup-dotnet; a global.json jq cannot read (comments) is passed as is.
+            v=$(jq -r '.sdk.version // empty' global.json 2>/dev/null) || v=""
+            rf=$(jq -r '.sdk.rollForward // empty' global.json 2>/dev/null) || rf=""
+            if [ -n "$rf" ] && ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[1-9][0-9]{2,}$ ]] && [[ "$v" =~ ^([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
+              version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.x"; file=""
+              echo "global.json sdk.version $v with rollForward $rf: setup-dotnet gets $version"
+            fi
+          fi
+          { echo "version=$version"; echo "file=$file"; } >> "$GITHUB_OUTPUT"
+          # <<< sdk-version
+      # No dotnet-version and no global.json: the runner image's SDK.
+      - if: ${{ steps.cpm.outputs.props != '[]' && (steps.sdk.outputs.version != '' || hashFiles('global.json') != '') }}
+        uses: maestra-io/github-actions/dotnet-nora@8ebf680b9d3977cae5fab267f84d90a13b99c4c5 # v1.100.0
+        with:
+          dotnet-version: ${{ steps.sdk.outputs.version }}
+          global-json-file: ${{ steps.sdk.outputs.file }}
+      # Same key as `test`: either job's save serves the other.
+      - if: ${{ steps.cpm.outputs.props != '[]' }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/*.props', '**/packages.lock.json', '**/nuget.config', 'global.json') }}
+          restore-keys: nuget-${{ runner.os }}-
+      - name: restore
+        if: ${{ steps.cpm.outputs.props != '[]' }}
+        env:
+          OVERRIDE: ${{ secrets.private-packages-token }}
+          SESSION: ${{ steps.session.outputs.token }}
+          SOURCE: ${{ inputs.nuget-source-name }}
+          SOLUTION: ${{ inputs.solution-file }}
+        run: |
+          # NuGet reads the source credential from this variable (no token in a file).
+          export "NuGetPackageSourceCredentials_${SOURCE}=Username=ci;Password=${OVERRIDE:-$SESSION}"
+          # The solution of `test`, else every solution in the repo (docker-test-target repos
+          # never restore on the runner and may keep theirs in a subdirectory).
+          targets=()
+          if [ -n "$SOLUTION" ]; then targets=("$SOLUTION")
+          else while IFS= read -r s; do targets+=("$s"); done < <(git ls-files -- '*.sln' '*.slnx')
+          fi
+          [ "${#targets[@]}" -gt 0 ] || targets=("")
+          for t in "${targets[@]}"; do
+            dotnet restore ${t:+"$t"} || echo "::warning::dependency graph: restore of '${t:-.}' failed, its projects are not submitted"
+          done
+      - name: submit snapshot
+        if: ${{ steps.cpm.outputs.props != '[]' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROPS: ${{ steps.cpm.outputs.props }}
+          CORRELATOR: dotnet-service-build ${{ github.workflow }} ${{ inputs.solution-file }}
+        run: |
+          files=()
+          while IFS= read -r f; do files+=("$f"); done < <(find . -name project.assets.json -not -path './.git/*')
+          [ "${#files[@]}" -gt 0 ] || { echo "::warning::dependency graph: no project.assets.json after restore"; exit 0; }
+          # >>> dependency-snapshot (scripts/test-dotnet-service-build.sh runs this block)
+          # project.assets.json files -> manifests keyed by the Directory.Packages.props that
+          # governs each CPM project (deepest one above it). A package is direct and runtime
+          # when it is so in any project of that manifest.
+          manifests=$(jq -n --arg ws "$GITHUB_WORKSPACE/" --argjson props "$PROPS" '
+            reduce (inputs | select(.project.restore.centralPackageVersionsManagementEnabled == true)) as $a ({};
+              ($a.project.restore.projectPath | ltrimstr($ws)) as $p
+              | ([$props[] | select(rtrimstr("Directory.Packages.props") as $d | $p | startswith($d))]
+                 | max_by(length)) as $m
+              | if $m == null then . else
+                ([$a.project.frameworks[]?.dependencies // {} | to_entries[]
+                  | {key: (.key | ascii_downcase), value: ((.value.suppressParent // "") == "All")}]
+                 | from_entries) as $direct
+                | ($direct | has("microsoft.net.test.sdk")) as $test
+                | reduce ($a.libraries // {} | to_entries[] | select(.value.type == "package") | .key) as $k (.;
+                    ($k | split("/")) as [$n, $v]
+                    | ($n | ascii_downcase) as $l
+                    | "pkg:nuget/\($n)@\($v)" as $u
+                    | (.[$m].resolved[$u] // {package_url: $u, relationship: "indirect", scope: "development"}) as $o
+                    | .[$m] |= {name: $m, file: {source_location: $m}, resolved: ((.resolved // {}) + {($u): {
+                        package_url: $u,
+                        relationship: (if $o.relationship == "direct" or ($direct | has($l)) then "direct" else "indirect" end),
+                        scope: (if $o.scope == "runtime" or (($test | not) and ($direct[$l] // false | not)) then "runtime" else "development" end)}})})
+              end)' "${files[@]}")
+          # <<< dependency-snapshot
+          n=$(jq '[.[].resolved | length] | add // 0' <<<"$manifests")
+          echo "manifests: $(jq -c 'keys' <<<"$manifests"), $n packages"
+          [ "$n" -gt 0 ] || { echo "::warning::dependency graph: no CPM package resolved, nothing submitted"; exit 0; }
+          jq -n --argjson m "$manifests" --arg sha "$GITHUB_SHA" --arg ref "$GITHUB_REF" \
+            --arg corr "$CORRELATOR" --arg id "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --arg url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            '{version: 0, sha: $sha, ref: $ref, job: {correlator: $corr, id: $id, html_url: $url},
+              detector: {name: "maestra-io dotnet-service-build", version: "1", url: "https://github.com/maestra-io/github-actions"},
+              scanned: (now | todate), manifests: $m}' > "$RUNNER_TEMP/snapshot.json"
+          gh api "repos/$GITHUB_REPOSITORY/dependency-graph/snapshots" --input "$RUNNER_TEMP/snapshot.json" \
+            --jq '"snapshot \(.id): \(.result) \(.message)"' \
+            || echo "::warning::dependency graph: snapshot submission failed (Dependabot keeps the previous snapshot)"
 
   # Pull requests only: the shared PR checks (check-encoding, kustomize build of a
   # changed overlays tree), then one verdict.

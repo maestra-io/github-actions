@@ -108,6 +108,33 @@ fails to boot once waits **forever** in the GRUB menu (`GRUB_TIMEOUT=0` +
 `GRUB_TIMEOUT_STYLE=hidden` and no recordfail timeout is the current state of these boxes),
 turning a recoverable failed reboot into a Proxmox-console rescue.
 
+### The `/boot` guard and the kernel GC
+
+A full `/boot` fails the kernel unpack **after** the drain, so a host is refused before
+anything is touched unless `/boot` has room for one more kernel: the largest kernel already
+there times `os_update_boot_free_factor` (2), floor `os_update_boot_free_floor_mb` (150).
+The guard is `boot_guard.yml`, run right after the plan and before preflight and the drain.
+
+A host that collected one superseded kernel cannot meet it, and the post-reboot GC that
+would remove that kernel runs only after the upgrade. So when the guard cannot be met it
+simulates the GC (`apt-get -s autoremove --purge`, the same selection `kernel_gc.yml` uses):
+
+* **`mode=plan`** passes when the GC would make room and prints one line:
+  `<host>: /boot tight, kernel GC makes room: free_mb=141 wanted_mb=200
+  gc_removes=6.8.0-137-generic free_after_mb=232`. It fails only when the GC would not make
+  enough room, with the old message plus what the GC would have removed and left.
+* **`mode=apply`** runs that GC before the drain (`kernel_gc.yml`, phase `pre-apply`),
+  re-measures `/boot` and applies the guard to the measured value. A host with nothing to
+  upgrade and no reboot pending is left alone.
+
+The GC is refused, and the guard fails, when the simulation would remove a pinned package,
+the running kernel or the newest installed one, or would leave fewer than two kernels.
+Packages on hold are skipped by apt itself. `autoremove --purge` also removes non-kernel
+packages apt already marks as no longer needed, exactly as the post-reboot GC does.
+
+The post-reboot GC is unchanged: after a successful reboot, only when `/boot` has less than
+`os_update_boot_free_gc_threshold_mb` free.
+
 ## `mode: stage` — install now, activate at somebody else's reboot
 
 `stage` runs the upgrade (kernel included) and stops: **no cordon, no drain, no
@@ -201,8 +228,8 @@ marker meanwhile, and the one-at-a-time guard holds the next host.
 
 What it skips, and why:
 
-* **`plan.yml`** — everything it produces is the apt/kernel decision, and its `/boot`
-  guard would refuse a run that unpacks no kernel. The farm-wide **plan job** is skipped
+* **`plan.yml`, `boot_guard.yml`** — everything the plan produces is the apt/kernel
+  decision, and the `/boot` guard would refuse a run that unpacks no kernel. The farm-wide **plan job** is skipped
   for the same reason (plus ~2.7 min of a ≤10 min budget); the peer gates still run,
   in-band, as the role's **preflight**, immediately before the drain — the only moment
   their answer is still true.
@@ -230,6 +257,32 @@ Opting in is having the file; opting out is not having it. The pet-VM consumers
 (`maestra-nat-gateway`, `vpn-maestra`, `haproxy-maestra`) have no `reboot.yml`,
 so their behaviour is byte-identical to before — and reverting a handoff is
 deleting one file.
+
+## After an apply: SOC re-scan and break-glass re-probe
+
+The `soc-rescan` job runs after `mode: apply`, on success and on a failed apply
+(not on a cancelled run). It dispatches two workflows in `maestra-io/soc` for the
+hosts of the run, with one Vault-minted token (`actions: write` on `soc` only):
+
+* `vuln-scan.yaml`, so the host CVE board shows the patched state.
+* `breakglass-verify.yaml` with `contour=<environment>` and `hosts=<the run's hosts>`.
+  A reboot that overlaps the 4-hourly break-glass probe pushes one false
+  `breakglass_ssh_probe_success 0`, and `BreakglassSshProbeFailing` would stay up
+  until the next scheduled probe. The re-probe replaces that sample. It is
+  dispatched once, at the end of the run, so in a multi-host run the false sample
+  of an early host lives until the run ends. Only `us` / `omicron` and `omega` are
+  covered by the verifier. Any other contour (`iota`) is skipped with a log line.
+
+A failed token mint never fails the run: both steps warn and print their manual
+command in the job summary. The two dispatches differ after that. A failed
+`vuln-scan.yaml` dispatch fails its step and the job. A failed
+`breakglass-verify.yaml` dispatch is a warning plus the manual command in the job
+summary, and the step stays green. The re-probe step runs in both cases:
+
+```bash
+gh workflow run breakglass-verify.yaml --repo maestra-io/soc \
+  -f contour=omega -f hosts=us-omega-lw-kube-common-worker10
+```
 
 ## Silences: maintenance, tail, none
 

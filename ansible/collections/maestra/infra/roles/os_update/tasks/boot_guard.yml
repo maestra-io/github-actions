@@ -1,0 +1,149 @@
+---
+# The /boot guard: a full /boot fails AFTER the drain, so a host without room to
+# unpack one more kernel is refused before anything is touched.
+#
+# A host that collected one superseded kernel used to be refused forever: the
+# kernel GC ran only after the upgrade and the reboot, the guard before them
+# (us-omega-lw-kube-common-worker35, 17.11.2026: 141 MB free, 200 wanted, one
+# removable 91 MB kernel). So when the guard cannot be met, the GC is simulated:
+#   plan  — the host passes if the GC would make room, and says so in one line.
+#   apply — the GC runs here, before the drain, and the guard is then applied to
+#           the measured value.
+# The selection is the package manager's own (`autoremove --purge`, the same
+# call kernel_gc.yml makes). It is refused when the simulation touches a pinned
+# package, the running kernel or the newest one, or leaves fewer than two
+# kernels. Packages on hold are skipped by apt itself.
+
+- name: What a kernel GC would reclaim (only when the guard cannot be met)
+  when: (os_update_boot_free_mb | int) < (os_update_boot_free_needed_mb | int)
+  block:
+    - name: Simulate the kernel GC
+      ansible.builtin.command:
+        argv: [apt-get, -s, autoremove, --purge]
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+      register: os_update_gc_sim
+      changed_when: false
+      check_mode: false
+
+    - name: Kernels in /boot
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -o pipefail
+          ls -1 /boot/vmlinuz-* 2>/dev/null | sed 's|.*/vmlinuz-||' | sort -V
+      register: os_update_boot_kernels_cmd
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Kernels the GC would remove
+      ansible.builtin.set_fact:
+        # Intersected with /boot: a meta package (`linux-image-generic`) is not a
+        # release and must not be sized as one.
+        os_update_gc_kernels: >-
+          {{ os_update_gc_sim.stdout_lines
+             | select('match', '^(Remv|Purg) linux-image-')
+             | map('regex_replace', '^\S+ linux-image-(unsigned-)?(\S+).*$', '\2')
+             | unique
+             | intersect(os_update_boot_kernels_cmd.stdout_lines)
+             | list }}
+
+    - name: Is that GC safe
+      ansible.builtin.set_fact:
+        os_update_gc_refusal: >-
+          {{ 'it would remove a pinned package'
+             if (os_update_gc_sim.stdout_lines
+                 | select('match', '^(Remv|Purg) (' ~ ((os_update_pinned_base + os_update_pinned_extra) | unique | map('regex_escape') | join('|')) ~ ')( |$)')
+                 | list | length > 0)
+             else 'it would remove the running kernel'
+             if ansible_facts.kernel in os_update_gc_kernels
+             else 'it would remove the newest kernel'
+             if os_update_newest_kernel in os_update_gc_kernels
+             else 'it would leave no fallback kernel'
+             if (os_update_boot_kernels_cmd.stdout_lines | difference(os_update_gc_kernels) | length) < 2
+             else '' }}
+
+    - name: What those kernels occupy in /boot
+      # Same per-release sum plan.yml uses for the kernel cost.
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -o pipefail
+          freed=0
+          for rel in {{ os_update_gc_kernels | map('quote') | join(' ') }}; do
+            sz=$(du -cm /boot/*-"$rel" 2>/dev/null | awk '$2 == "total" {print $1}')
+            freed=$((freed + ${sz:-0}))
+          done
+          echo "$freed"
+      register: os_update_gc_freed_cmd
+      changed_when: false
+      check_mode: false
+
+    - name: Would the GC make room
+      ansible.builtin.set_fact:
+        os_update_gc_free_after_mb: "{{ (os_update_boot_free_mb | int) + (os_update_gc_freed_cmd.stdout | trim | int) }}"
+        os_update_gc_ok: >-
+          {{ os_update_gc_refusal == ''
+             and ((os_update_boot_free_mb | int) + (os_update_gc_freed_cmd.stdout | trim | int))
+                 >= (os_update_boot_free_needed_mb | int) }}
+
+    - name: /boot is tight, a kernel GC makes room
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: /boot tight, kernel GC makes room:
+          free_mb={{ os_update_boot_free_mb }}
+          wanted_mb={{ os_update_boot_free_needed_mb }}
+          gc_removes={{ os_update_gc_kernels | join(',') }}
+          free_after_mb={{ os_update_gc_free_after_mb }}
+          ({{ 'removed now, before the drain' if os_update_mode == 'apply' else 'mode=apply removes them before the drain' }})
+      when: os_update_gc_ok
+
+- name: Guard — /boot must have room to unpack a kernel (a full /boot fails AFTER the drain)
+  ansible.builtin.assert:
+    that: >-
+      (os_update_boot_free_mb | int) >= (os_update_boot_free_needed_mb | int)
+      or (os_update_gc_ok | default(false))
+    fail_msg: >-
+      /boot has only {{ os_update_boot_free_mb }} MB free; this host's largest
+      kernel occupies {{ os_update_kernel_cost_cmd.stdout | trim }} MB, so the
+      guard wants {{ os_update_boot_free_needed_mb }}
+      (x{{ os_update_boot_free_factor }}, floor {{ os_update_boot_free_floor_mb }}).
+      Reclaim it first — do not drain a host we then cannot upgrade.
+      A kernel GC does not fix it:
+      {{ os_update_gc_refusal | default('') or
+         ('it would remove ' ~ (os_update_gc_kernels | default([]) | join(',') or 'nothing')
+          ~ ' and leave ' ~ os_update_gc_free_after_mb | default(os_update_boot_free_mb) ~ ' MB free') }}.
+    success_msg: >-
+      /boot free {{ os_update_boot_free_mb }} MB
+      {{ '>=' if (os_update_boot_free_mb | int) >= (os_update_boot_free_needed_mb | int) else '<' }}
+      {{ os_update_boot_free_needed_mb }}
+      needed (largest kernel here is {{ os_update_kernel_cost_cmd.stdout | trim }} MB).
+
+- name: Reclaim /boot before the drain (apply, and only when the run will do something)
+  when:
+    - os_update_mode == 'apply'
+    - os_update_gc_ok | default(false)
+    - (os_update_boot_free_mb | int) < (os_update_boot_free_needed_mb | int)
+    - os_update_needed or os_update_reboot_needed or os_update_resuming
+  block:
+    - name: Purge superseded kernels
+      ansible.builtin.include_tasks: kernel_gc.yml
+      vars:
+        os_update_gc_phase: pre-apply
+
+    - name: /boot as measured after the GC
+      ansible.builtin.set_fact:
+        os_update_boot_free_mb: >-
+          {{ (os_update_boot_free_final.stdout | default(os_update_boot_free_post.stdout)) | trim | int }}
+
+    - name: The /boot guard must pass on the measured value before the drain
+      ansible.builtin.assert:
+        that: (os_update_boot_free_mb | int) >= (os_update_boot_free_needed_mb | int)
+        fail_msg: >-
+          /boot has {{ os_update_boot_free_mb }} MB free after the kernel GC; the
+          guard wants {{ os_update_boot_free_needed_mb }} MB. Nothing has been
+          drained. Reclaim space by hand.
+        success_msg: >-
+          /boot free {{ os_update_boot_free_mb }} MB >=
+          {{ os_update_boot_free_needed_mb }} needed after the kernel GC.

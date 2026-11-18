@@ -37,6 +37,7 @@ on:
       - "uv-nora/**"
       - "go-nora/**"
       - "cargo-nora/**"
+      - "dotnet-nora/**"
       - "nora-session/**"
       - "nora-service/**"
       - "check-encoding/**"
@@ -47,6 +48,8 @@ on:
       - "pr-checks/**"
       - ".github/workflows/gitleaks.yml"
       - "gitleaks/**"
+      - ".github/workflows/security-scan.yml"
+      - "security-scan/**"
 
 permissions:
   contents: read
@@ -54,6 +57,9 @@ permissions:
 jobs:
   shell:
     runs-on: runs-on=${{ github.run_id }}-shell/runner=t3a-small
+    permissions:
+      contents: read
+      id-token: write # dotnet-nora: the SDK from nora raw
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -62,6 +68,9 @@ jobs:
 
       - name: host_limit selector
         run: bash ansible/tests/test-host-limit-selector.sh
+
+      - name: break-glass re-probe step
+        run: bash ansible/tests/test-breakglass-reprobe.sh
 
       # The release tag is derived from the commit range by a shell script, and
       # a wrong bump is silent: it publishes a version that is merely the wrong
@@ -107,12 +116,24 @@ jobs:
 
       - name: cargo-nora source replacement, token-from-stdout helper, token output (stub curl)
         run: bash scripts/test-cargo-nora.sh
+      - name: dotnet-nora version specs, global.json rollForward, tampered download refused (stub curl)
+        run: bash scripts/test-dotnet-nora.sh
 
       - name: uv-nora keyring helper, UV_* env, token output (stub curl, local 401 index)
         run: bash scripts/test-uv-nora.sh
 
       - name: nora-image-prewarm image mapping, flate diff, OIDC round trip (stub)
         run: python3 nora-image-prewarm/prewarm.py --self-test
+
+      - name: security-scan trivy DBs through nora (stub curl)
+        run: bash scripts/test-security-scan-trivy-nora-env.sh
+      - name: security-scan pinned scanner fetch, runner cache hit / poisoned copy refetched (stub curl)
+        run: bash scripts/test-security-scan-fetch-pinned.sh
+      - name: security-scan reports (field allowlist, hashes, raw-secret check)
+        run: python3 security-scan/report.py --self-test
+
+      - name: security-scan PR mode, trivy base/head difference (keys, not line numbers)
+        run: python3 security-scan/pr-diff.py --self-test
 
       - name: nuget build SDK pin (highest TFM, global.json kept/restored, workflow copy)
         run: bash scripts/test-nuget-sdk-pin.sh
@@ -132,11 +153,23 @@ jobs:
       - name: pr-checks networkPolicy gate (fixture pilot tree, ECR chart pull, kubeconform, broad gate)
         run: bash scripts/test-network-policy-gate.sh
 
+      # The cache test's docker-container builders run moby/buildkit from nora
+      # (packages.maestra.io, issues-maestra#1649): the daemon pulls it with this login.
+      - name: nora session token
+        id: nora
+        uses: ./nora-session
+      - name: docker login nora
+        env:
+          NORA_TOKEN: ${{ steps.nora.outputs.token }}
+        run: printf '%s' "$NORA_TOKEN" | docker login packages.maestra.io -u token --password-stdin
       # A cached layer that holds the packages token replays it after it expired
       # (maestra-io/billing publish -r linux-x64: 401). Docker + a fake feed that
       # accepts only the current token; the GitLab-era Dockerfile must reproduce it.
       - name: dotnet-service-build packages token (layer cache, token files, expired-token e2e; workflow copy)
         run: bash scripts/test-dotnet-service-build-cache.sh
+      # The steps below ran without a nora login before: keep it that way.
+      - if: ${{ always() }}
+        run: docker logout packages.maestra.io
       - name: dotnet-service-build graphql-schemas (.graphqlrc.json discovery, hosts, build contexts, token override, OIDC/auth-jwt/401/HTML/no SDL; stub curl/dotnet; workflow copy)
         run: bash scripts/test-dotnet-service-build-graphql.sh
 
@@ -178,11 +211,15 @@ jobs:
 
       # warn-as-error must keep tests running on the Microsoft.Testing.Platform
       # runner too (a bare /warnaserror ran zero tests there, exit 5).
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      # The real SDK download from nora (sha256-checked), as the workflows install it.
+      - uses: ./dotnet-nora
         with:
           dotnet-version: 10.0.x
       - name: dotnet-service-build warn-as-error on MTP and VSTest runners (workflow copy)
         run: bash scripts/test-dotnet-service-build-mtp.sh
+      # After the dotnet-nora 10.0.x above: the image itself ships only its newest SDK.
+      - name: dotnet-service-build SDK pin on real SDKs (build SDK = pinned SDK 10, image's newest beside it)
+        run: bash scripts/test-dotnet-sdk-pin-real.sh
 
       # `mode: stage` is only safe BECAUSE it disrupts nothing — that is why it is
       # allowed to skip preflight. This checks the property structurally, so the

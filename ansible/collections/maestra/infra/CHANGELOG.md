@@ -7,7 +7,7 @@ finding, and because the `os_update` contract is shared across four repos:
 anything that changes a variable name or a hook expectation has to be findable
 from one place.
 
-## 1.4.2
+## 1.4.3
 
 - `os_update`: an `apply` run ends every touched host with one `Result` line —
   `os-update result: <host> kernel <before> -> <after>, packages <N>, rebooted
@@ -15,6 +15,20 @@ from one place.
   the job is failed. `ansible-os-update.yml` copies it (and the «already up to
   date» line of an untouched host) into the job summary. No variable or hook
   changes.
+
+## 1.4.2
+
+- `os_update`: the `/boot` guard no longer refuses a host forever when one
+  superseded kernel is what fills `/boot`. The kernel GC ran only after the
+  upgrade and reboot, the guard before them (us-omega-lw-kube-common-worker35,
+  17.11.2026: 141 MB free, 200 wanted, one removable 91 MB kernel failed the
+  plan of a 7-host batch). The guard moved from `plan.yml` to `boot_guard.yml`.
+  When it cannot be met it simulates `apt-get autoremove --purge`: `plan`
+  passes with one line (`free_mb= wanted_mb= gc_removes= free_after_mb=`) when
+  that makes room, `apply` runs the GC before the drain (`kernel_gc.yml`, phase
+  `pre-apply`) and applies the guard to the measured value. The GC is refused
+  when it would touch a pinned package, the running or the newest kernel, or
+  leave fewer than two kernels. The post-reboot GC and `stage` are unchanged.
 
 ## 1.4.1
 
