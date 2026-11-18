@@ -50,7 +50,7 @@ expect "$(newest node 24.)" node 24; expect "$(newest node 24.)" node 24.x; expe
 expect 1.12.2 terraform 1.12.2; expect 1.17.2 terraform v1.17.2; expect "$(newest terraform 1.15.)" terraform 1.15
 expect 3.18.5 helm v3.18.5; expect "$(newest helm 4.)" helm v4
 expect 0.13.6 uv 0.13.6
-expect "$(newest python 3.12.)" python 3.12; expect "$(newest python 3.8.)" python 3.8; refuse "no pinned version for '3.99'" python 3.99
+expect "$(newest python 3.12.)" python 3.12; expect "$(newest python 3.8.)" python 3.8; expect 3.10.22 python 3.10; refuse "no pinned version for '3.99'" python 3.99
 
 # install with a stub curl: a fake `helm` pinned in a copy of the actions (the archive layouts
 # are the selftest's job). The tool cache and runner temp are directories of this test.
