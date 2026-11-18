@@ -65,7 +65,7 @@ runs:
       if: ${{ steps.plan.outputs.cache-key != '' }}
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ${{ runner.temp }}/nora-tool-cache-node
+        path: ${{ runner.temp }}/nora-tool-cache/${{ steps.plan.outputs.cache-key }}
         key: ${{ steps.plan.outputs.cache-key }}
     - name: Node.js through nora
       id: install
@@ -74,13 +74,13 @@ runs:
         TOOL_VERSION: ${{ inputs.node-version }}
         NORA_URL: ${{ inputs.url }}
         NORA_AUDIENCE: ${{ inputs.audience }}
-        NORA_TOOL_CACHE_DIR: ${{ steps.plan.outputs.cache-key != '' && format('{0}/nora-tool-cache-node', runner.temp) || '' }}
+        NORA_TOOL_CACHE_DIR: ${{ steps.plan.outputs.cache-key != '' && format('{0}/nora-tool-cache/{1}', runner.temp, steps.plan.outputs.cache-key) || '' }}
       run: bash "${GITHUB_ACTION_PATH}/../nora-tool/nora-tool.sh" node install
     - name: Node.js archive into the cache
       if: ${{ steps.install.outputs.save == 'true' && steps.restore.outputs.cache-hit != 'true' }}
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ${{ runner.temp }}/nora-tool-cache-node
+        path: ${{ runner.temp }}/nora-tool-cache/${{ steps.plan.outputs.cache-key }}
         key: ${{ steps.plan.outputs.cache-key }}
     - name: npm registry
       if: ${{ inputs.registry-url != '' }}
