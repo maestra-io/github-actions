@@ -49,8 +49,8 @@ resolve_spec() {
 resolve_go_mod() {
   local f=$1 v M m p
   [ -f "$f" ] || fail "go-version-file $f not found"
-  v=$(sed -e 's|//.*||' "$f" | sed -n 's/^toolchain[[:space:]]*go\([0-9][0-9.]*\)[[:space:]]*$/\1/p' | head -1)
-  [ -n "$v" ] || v=$(sed -e 's|//.*||' "$f" | sed -n 's/^go[[:space:]]*\([0-9][0-9.]*\)[[:space:]]*$/\1/p' | head -1)
+  v=$(sed -e 's|//.*||' "$f" | sed -n 's/^[[:space:]]*toolchain[[:space:]]*go\([0-9][0-9.]*\)[[:space:]]*$/\1/p' | head -1)
+  [ -n "$v" ] || v=$(sed -e 's|//.*||' "$f" | sed -n 's/^[[:space:]]*go[[:space:]]*\([0-9][0-9.]*\)[[:space:]]*$/\1/p' | head -1)
   [[ $v =~ ^([0-9]+)\.([0-9]+)(\.([0-9]+))?$ ]] || fail "$f names no Go version"
   M=${BASH_REMATCH[1]} m=${BASH_REMATCH[2]} p=${BASH_REMATCH[4]:-0}
   v=$(listed | awk -F. -v M="$M" -v m="$m" -v p="$p" '$1 == M && $2 == m && $3 >= p' | tail -1)
@@ -83,20 +83,28 @@ case "$tool" in
 esac
 
 tc="${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}"
-if ! { mkdir -p "$tc/$name" 2>/dev/null && [ -w "$tc/$name" ]; }; then tc="${RUNNER_TEMP:-/tmp}/nora-tools"; fi
+if ! { mkdir -p "$tc/$name" 2>/dev/null && [ -w "$tc/$name" ]; }; then tc="${RUNNER_TEMP:-/tmp}/nora-tools"; mkdir -p "$tc/$name"; fi
 dir="$tc/$name/$v/$arch"
+bin=$dir
+case "$tool" in go|node|python) bin=$dir/bin ;; esac
+exe=$bin/$tool; [ "$tool" != python ] || exe=$bin/python3
+# a tool-cache entry counts only with its marker AND its executable
+installed() { [ -f "$dir.complete" ] && [ -x "$exe" ]; }
 
 if [ "$mode" = plan ]; then
   key=""
-  [ -f "$dir.complete" ] || key="nora-tool-$tool-$v-linux-$arch-${sum:0:16}"
+  installed || key="nora-tool-$tool-$v-linux-$arch-${sum:0:16}"
   { echo "version=$v"; echo "cache-key=$key"; } >> "$GITHUB_OUTPUT"
   echo "setup-$tool-nora: $tool $v, cache key '${key}'"
   exit 0
 fi
 [ "$mode" = install ] || fail "mode $mode"
 
-if [ -f "$dir.complete" ]; then
+# one cold install of a version at a time on a host (jobs sharing a tool cache)
+if command -v flock >/dev/null; then exec 9>"$tc/$name/.$v-$arch.lock"; flock 9; fi
+if installed; then
   echo "setup-$tool-nora: $tool $v already in the tool cache ($dir), nothing fetched"
+  echo "source=tool-cache" >> "$GITHUB_OUTPUT"
 else
   cache="${NORA_TOOL_CACHE_DIR:-}"
   tmp="${cache:-${RUNNER_TEMP:-/tmp}/nora-tool-$tool}"; mkdir -p "$tmp"
@@ -104,6 +112,7 @@ else
   # A cached archive is another copy of an executable: used only when its sha256 is the pin.
   if [ -n "$cache" ] && [ -s "$f" ] && [ "$(sha256sum "$f" | cut -d' ' -f1)" = "$sum" ]; then
     echo "setup-$tool-nora: $tool $v archive from the runner cache (sha256 $sum), nothing fetched from nora"
+    echo "source=runner-cache" >> "$GITHUB_OUTPUT"
   else
     # (a rejected cached archive: the fetched one is saved over it, save=true below)
     [ ! -e "$f" ] || { echo "::warning::setup-$tool-nora: cached $file is not the sha256 pin, fetching it from nora"; rm -f "$f"; }
@@ -117,10 +126,11 @@ else
     got=$(sha256sum "$f" | cut -d' ' -f1)
     [ "$got" = "$sum" ] || { rm -f "$f"; fail "$file from $url: sha256 $got, versions.txt pins $sum"; }
     echo "setup-$tool-nora: $tool $v fetched from $url (sha256 $sum)"
+    echo "source=nora" >> "$GITHUB_OUTPUT"
     [ -z "$cache" ] || echo "save=true" >> "$GITHUB_OUTPUT"
   fi
   # unpacked next to its final place, moved in whole, then marked complete
-  rm -rf "$dir" "$dir.nora"; mkdir -p "$dir.nora"
+  rm -rf "$dir" "$dir.nora" "$dir.complete"; mkdir -p "$dir.nora"
   case "$file" in
     *.zip) python3 -I -m zipfile -e "$f" "$dir.nora" && chmod +x "$dir.nora/terraform" ;;
     uv-*) tar -xzf "$f" -C "$dir.nora" --strip-components=1 ;;
@@ -132,16 +142,15 @@ else
   touch "$dir.complete"
   echo "setup-$tool-nora: $tool $v into $dir"
 fi
-
-bin=$dir
-case "$tool" in go|node|python) bin=$dir/bin ;; esac
+exec 9>&-
 echo "$bin" >> "$GITHUB_PATH"
 export PATH="$bin:$PATH"
 { echo "version=$v"; echo "dir=$dir"; echo "path=$bin/$tool"; } >> "$GITHUB_OUTPUT"
 case "$tool" in
   go) # setup-go: GOPATH/bin on PATH; the module / build cache paths for the cache step. The probes
-    # run the pinned go itself, not a toolchain a go.mod / go.work in the working directory names.
-    export GOTOOLCHAIN=local
+    # and later steps run the pinned go itself, never a toolchain a go.mod / go.work names: that one
+    # would come from proxy.golang.org (go-version-file already resolves to its toolchain line).
+    export GOTOOLCHAIN=local; echo "GOTOOLCHAIN=local" >> "$GITHUB_ENV"
     echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
     { echo "gomodcache=$(go env GOMODCACHE)"; echo "gocache=$(go env GOCACHE)"; } >> "$GITHUB_OUTPUT"
     go version ;;

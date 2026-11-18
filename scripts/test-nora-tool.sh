@@ -42,6 +42,7 @@ expect "$g26" go "" $'module x\n\ngo 1.26'
 expect 1.27.4 go "" $'module x\n\ngo 1.27.0\n\ntoolchain go1.27.4'
 expect 1.27.4 go "" $'module x\n\ngo 1.26.0 // floor\n\ntoolchain go1.27.3 // CI'  # comments ignored
 expect "$g26" go "" $'module x\n\ngo 1.26 // comment'
+expect 1.27.4 go "" $'module x\n\n  go 1.26.0\n\ttoolchain go1.27.4'  # leading whitespace
 refuse "no pinned Go 1.27.x at or above" go "" $'module x\ngo 1.27.99'
 refuse "names no Go version" go "" 'module x'
 expect 1.27.3 go 1.27.3 $'module x\ngo 1.26'                   # go-version wins over the file
@@ -112,6 +113,7 @@ run plan || fail "plan: $(cat "$root/log")"
 grep -qx "cache-key=" "$root/out" || fail "key while installed: $(cat "$root/out")"
 run install || fail "installed rerun: $(cat "$root/log")"
 grep -q "already in the tool cache" "$root/log" || fail "installed rerun not logged: $(cat "$root/log")"
+grep -qx "source=tool-cache" "$root/out" || fail "installed rerun: source output: $(cat "$root/out")"
 [ ! -e "$root/body.all" ] || fail "installed rerun called curl: $(cat "$root/body.all")"
 
 rm -rf "$dir" "$dir.complete"
@@ -119,6 +121,7 @@ run install "$root/cache" || fail "cache hit: $(cat "$root/log")"   # nora would
 [ ! -e "$root/body.all" ] || fail "cache hit called curl (nora session or fetch): $(cat "$root/body.all")"
 grep -q "from the runner cache" "$root/log" || fail "cache hit not logged: $(cat "$root/log")"
 ! grep -q "save=true" "$root/out" || fail "cache hit asked for a save"
+grep -qx "source=runner-cache" "$root/out" || fail "cache hit: source output: $(cat "$root/out")"
 [ "$("$dir/helm")" = v9.9.9 ] || fail "cache hit: not installed"
 
 rm -rf "$dir" "$dir.complete"; echo poisoned > "$root/cache/helm-v9.9.9-linux-amd64.tar.gz"; cp "$root/good" "$root/body"
@@ -126,4 +129,12 @@ run install "$root/cache" || fail "poisoned cache: $(cat "$root/log")"
 [ -s "$root/body.calls" ] || fail "poisoned cache entry was used"
 grep -q "not the sha256 pin" "$root/log" || fail "poisoned cache not reported: $(cat "$root/log")"
 cmp -s "$root/good" "$root/cache/helm-v9.9.9-linux-amd64.tar.gz" || fail "poisoned cache: fresh archive not kept"
+[ "$("$dir/helm")" = v9.9.9 ] && [ -f "$dir.complete" ] || fail "poisoned cache: not installed"
+grep -qx "save=true" "$root/out" || fail "poisoned cache: the fresh archive is not saved over the bad one"
+
+rm -f "$dir/helm"; rm -f "$root/body.calls"   # a marker without its executable is not an install
+run plan || fail "plan: $(cat "$root/log")"
+grep -qx "cache-key=$key" "$root/out" || fail "marker without executable counted as installed: $(cat "$root/out")"
+run install "$root/cache" || fail "reinstall: $(cat "$root/log")"
+[ "$("$dir/helm")" = v9.9.9 ] || fail "marker without executable: not reinstalled"
 echo "nora-tool: all checks passed"

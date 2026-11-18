@@ -1,8 +1,9 @@
 ---
 # setup-{go,node,python,uv,terraform,helm}-nora for real: each toolchain from nora with the job's
 # OIDC token, checked against its pin, on PATH for later steps with the setup action's outputs and
-# environment. A re-run of the workflow restores the archives from the runner cache (log line
-# "from the runner cache", nothing fetched from nora). The stub-curl cases are
+# environment. A re-run (run attempt > 1) must take every toolchain from the runner cache or the
+# tool cache, never from nora (the actions' tool-source output). Fork pull requests get no OIDC
+# token, so the jobs run for this repository's branches only. The stub-curl cases are
 # scripts/test-nora-tool.sh in selftest.
 name: nora-tool-selftest
 
@@ -27,6 +28,7 @@ permissions:
 
 jobs:
   go:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: runs-on=${{ github.run_id }}-nora-tool-go/runner=t3a-small
     timeout-minutes: 10
     permissions:
@@ -62,8 +64,17 @@ jobs:
           [ "$(go env GOVERSION)" = go1.27.4 ]
           printf 'package main\n\nfunc main() { println("ok") }\n' > "$RUNNER_TEMP/m.go"
           [ "$(go run "$RUNNER_TEMP/m.go" 2>&1)" = ok ]
+      - name: sources (a re-run takes nothing from nora)
+        env:
+          SRC_FILE: ${{ steps.file.outputs.tool-source }}
+          SRC_EXACT: ${{ steps.exact.outputs.tool-source }}
+        run: |
+          set -euo pipefail
+          env | grep '^SRC_' | sort
+          if [ "$GITHUB_RUN_ATTEMPT" -gt 1 ] && env | grep -q '^SRC_.*=nora$'; then echo "::error::re-run attempt $GITHUB_RUN_ATTEMPT fetched from nora"; exit 1; fi
 
   node:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: runs-on=${{ github.run_id }}-nora-tool-node/runner=t3a-small
     timeout-minutes: 10
     permissions:
@@ -88,8 +99,16 @@ jobs:
           [ "$(node --version)" = "$WANT" ]
           [ "$(npm config get registry)" = https://packages.maestra.io/npm/ ]
           grep -qxF "//packages.maestra.io/npm/:_authToken=\${NODE_AUTH_TOKEN}" "$NPM_CONFIG_USERCONFIG"
+      - name: sources (a re-run takes nothing from nora)
+        env:
+          SRC_NODE: ${{ steps.node.outputs.tool-source }}
+        run: |
+          set -euo pipefail
+          env | grep '^SRC_' | sort
+          if [ "$GITHUB_RUN_ATTEMPT" -gt 1 ] && env | grep -q '^SRC_.*=nora$'; then echo "::error::re-run attempt $GITHUB_RUN_ATTEMPT fetched from nora"; exit 1; fi
 
   uv:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: runs-on=${{ github.run_id }}-nora-tool-uv/runner=t3a-small
     timeout-minutes: 10
     permissions:
@@ -121,17 +140,35 @@ jobs:
           UV: ${{ steps.uv.outputs.uv-path }}
         run: |
           set -euo pipefail
-          [ "$(uv --version | cut -d' ' -f2)" = 0.13.6 ] && [ "$(command -v uv)" = "$UV" ]
-          [ "$VIRTUAL_ENV" = "$VENV" ] && [ "$(command -v python)" = "$VENV/bin/python" ]
+          [ "$(uv --version | cut -d' ' -f2)" = 0.13.6 ]
+          [ "$(command -v uv)" = "$UV" ]
+          [ "$VIRTUAL_ENV" = "$VENV" ]
+          [ "$(command -v python)" = "$VENV/bin/python" ]
+          touch "$VENV/sentinel"
       - name: the same venv-path again is recreated, not refused
+        id: again
         uses: ./setup-uv-nora
         with:
           version: "0.13.6"
           activate-environment: "true"
           venv-path: ${{ runner.temp }}/venv
-      - run: '[ -f "$VIRTUAL_ENV/pyvenv.cfg" ]'
+      - name: the venv was recreated
+        run: |
+          set -euo pipefail
+          [ -f "$VIRTUAL_ENV/pyvenv.cfg" ]
+          [ ! -e "$VIRTUAL_ENV/sentinel" ]
+      - name: sources (a re-run takes nothing from nora)
+        env:
+          SRC_LATEST: ${{ steps.latest.outputs.tool-source }}
+          SRC_UV: ${{ steps.uv.outputs.tool-source }}
+          SRC_AGAIN: ${{ steps.again.outputs.tool-source }}
+        run: |
+          set -euo pipefail
+          env | grep '^SRC_' | sort
+          if [ "$GITHUB_RUN_ATTEMPT" -gt 1 ] && env | grep -q '^SRC_.*=nora$'; then echo "::error::re-run attempt $GITHUB_RUN_ATTEMPT fetched from nora"; exit 1; fi
 
   terraform-helm:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: runs-on=${{ github.run_id }}-nora-tool-tf/runner=t3a-small
     timeout-minutes: 10
     permissions:
@@ -142,7 +179,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ./setup-terraform-nora
+      - id: tf
+        uses: ./setup-terraform-nora
         with:
           terraform_version: "1.14.6"
           terraform_wrapper: false
@@ -157,13 +195,27 @@ jobs:
         run: |
           set -euo pipefail
           terraform version -json | jq -e '.terraform_version == "1.14.6"'
-          [ "$(helm version --template '{{ .Version }}')" = v3.18.5 ] && [ "$(command -v helm)" = "$HELM" ]
+          [ "$(helm version --template '{{ .Version }}')" = v3.18.5 ]
+          [ "$(command -v helm)" = "$HELM" ]
+      - name: sources (a re-run takes nothing from nora)
+        env:
+          SRC_TF: ${{ steps.tf.outputs.tool-source }}
+          SRC_HELM: ${{ steps.helm.outputs.tool-source }}
+        run: |
+          set -euo pipefail
+          env | grep '^SRC_' | sort
+          if [ "$GITHUB_RUN_ATTEMPT" -gt 1 ] && env | grep -q '^SRC_.*=nora$'; then echo "::error::re-run attempt $GITHUB_RUN_ATTEMPT fetched from nora"; exit 1; fi
       - name: terraform_wrapper true is refused
         id: wrapper
         continue-on-error: true
         uses: ./setup-terraform-nora
         with:
           terraform_wrapper: true
-      - env:
+      - name: refused by its wrapper check, before anything was installed
+        env:
           OUTCOME: ${{ steps.wrapper.outcome }}
-        run: '[ "$OUTCOME" = failure ]'
+          SOURCE: ${{ steps.wrapper.outputs.tool-source }}
+        run: |
+          set -euo pipefail
+          [ "$OUTCOME" = failure ]
+          [ -z "$SOURCE" ]

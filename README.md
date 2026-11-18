@@ -603,9 +603,10 @@ action's `versions.txt`, which pins the archive's sha256; a version not listed f
 the runner tool cache (`$RUNNER_TOOL_CACHE/<tool>/<version>/<arch>`, as the setup actions lay it
 out; a version already complete there is used as it is). It is cached like `dotnet-nora`'s
 SDKs (`nora-tool-<tool>-<version>-linux-<arch>-<pin prefix>`), and a restored archive is used
-only when its sha256 is the pin (a rejected one is replaced: the fetched archive is saved over
-it, which RunsOn Magic Cache takes; on GitHub's own cache, where a key is immutable, delete the
-key). linux-x64 only; the job needs `id-token: write`.
+only when its sha256 is the pin (after a rejected one, the fetched archive is saved under
+`<key>-fixed`, which later restores prefer). linux-x64 only; the job needs `id-token: write`.
+`setup-go-nora` sets `GOTOOLCHAIN=local` for the job: later steps run the pinned go, never a
+toolchain from proxy.golang.org (`go-version-file` already resolves to the go.mod `toolchain`).
 
 `setup-terraform-nora` has no wrapper, and `hashicorp/setup-terraform` turns its wrapper on by
 default: before the swap, a step that reads `steps.<id>.outputs.stdout` / `stderr` / `exitcode`
