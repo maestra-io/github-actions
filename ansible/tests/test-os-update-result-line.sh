@@ -45,5 +45,18 @@ awk '/^    - name: Result$/{r=NR} /^    - name: Fail the job$/&&r&&!f{f=NR} END{
   && ok "Result is printed before Fail the job" \
   || bad "Result task missing or after Fail the job in $MAIN"
 
+# A consumer may replace reboot.yml (kube: reboot-deckhouse), so the line may
+# read only facts main.yml sets itself; and whoever drives the sweep greps these
+# two tokens.
+res=$(awk '/^    - name: Result$/{r=1} /^    - name: Fail the job$/{r=0} r' "$MAIN")
+if printf '%s' "$res" | grep -qE 'os_update_(booted_kernel|newest_kernel_post)'; then
+  bad "Result reads a fact only the role's own reboot.yml sets"
+else
+  ok "Result does not depend on which reboot.yml ran"
+fi
+printf '%s' "$res" | grep -q 'reboot pending ' && printf '%s' "$res" | grep -q "'FAILED'" \
+  && ok "Result keeps the reboot pending and FAILED tokens" \
+  || bad "Result lost the 'reboot pending' or 'FAILED' token"
+
 echo "$fail failure(s)"
 [ "$fail" = 0 ]

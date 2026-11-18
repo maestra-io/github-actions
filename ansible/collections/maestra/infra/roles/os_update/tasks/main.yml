@@ -290,6 +290,13 @@
       ansible.builtin.include_tasks: apt.yml
       when: os_update_needed
 
+    # The result line must not depend on which reboot.yml ran (the role's or a
+    # consumer's): these two facts bracket the include instead.
+    - name: Record that the reboot is about to start
+      ansible.builtin.set_fact:
+        os_update_reboot_started: true
+      when: os_update_reboot_needed
+
     - name: Reboot
       # The consumer may own the reboot. A kube node is not rebooted over SSH by
       # us when its platform already has a node-update machine that drains,
@@ -305,6 +312,12 @@
             - reboot.yml
           paths:
             - "{{ role_path }}/tasks"
+      when: os_update_reboot_needed
+
+    # Every reboot.yml ends by re-gathering facts and asserting the newest kernel.
+    - name: Record that the reboot ended on the newest kernel
+      ansible.builtin.set_fact:
+        os_update_reboot_done: true
       when: os_update_reboot_needed
 
     - name: Reclaim /boot if it is tight
@@ -436,10 +449,11 @@
     # One line per host for whoever drives the run: the workflow copies it into
     # the job summary (ansible-os-update.yml `summary_grep`). Every variable has a
     # default — a raise here would skip `Fail the job` below.
-    # Final kernel: facts are stale after a reboot until reboot.yml re-gathers them.
+    # Final kernel and `rebooted` are `unknown` when the reboot started and did not
+    # end cleanly: the facts may be stale and the host may or may not have gone down.
     # Packages: the planned upgrade (pending minus pinned), 0 when apt did not run,
     # `unknown` when apt failed part-way.
-    # Reboot pending clears only when reboot.yml proved the newest kernel booted.
+    # Reboot pending clears only when the reboot include returned without a failure.
     - name: Result
       vars:
         os_update_result_pinned: >-
@@ -451,15 +465,18 @@
           else (os_update_pending | default([]) | reject('match', os_update_result_pinned) | list | length)) }}
         os_update_result_kernel: >-
           {{ ansible_facts.kernel
-          if (not (os_update_rebooted | default(false)) or os_update_newest_kernel_post is defined)
+          if (not (os_update_reboot_started | default(false)) or (os_update_reboot_done | default(false)))
           else 'unknown' }}
+        os_update_result_rebooted: >-
+          {{ 'yes' if (os_update_rebooted | default(false))
+          else ('unknown' if (os_update_reboot_started | default(false)) else 'no') }}
       ansible.builtin.debug:
         msg: >-
           os-update result: {{ inventory_hostname }}
           kernel {{ os_update_kernel_before | default(ansible_facts.kernel) }} -> {{ os_update_result_kernel }},
           packages {{ os_update_result_packages }},
-          rebooted {{ 'yes' if (os_update_rebooted | default(false)) else 'no' }},
-          reboot pending {{ (os_update_reboot_needed | default(false)) and os_update_booted_kernel is not defined }},
+          rebooted {{ os_update_result_rebooted }},
+          reboot pending {{ (os_update_reboot_needed | default(false)) and not (os_update_reboot_done | default(false)) }},
           {{ 'FAILED' if ((os_update_failed | default(false)) or (os_update_undrain_failed | default(false))) else 'checks ok' }}
 
     - name: Fail the job
