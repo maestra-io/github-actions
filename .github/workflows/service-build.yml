@@ -639,11 +639,11 @@ jobs:
         with:
           python-version: ${{ inputs.python-version }}
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' && inputs.node-version != '' }}
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        uses: maestra-io/github-actions/setup-node-nora@f40b5191253ae7e28c10836989a77255666141e4 # v1.104.0
         with:
           node-version: ${{ inputs.node-version }}
       - if: ${{ inputs.docker-test-target == '' && inputs.test-command != '' && inputs.uv-version != '' }}
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: maestra-io/github-actions/setup-uv-nora@f40b5191253ae7e28c10836989a77255666141e4 # v1.104.0
         with:
           version: ${{ inputs.uv-version }}
           enable-cache: false
