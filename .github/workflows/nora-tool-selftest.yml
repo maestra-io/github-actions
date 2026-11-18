@@ -1,0 +1,221 @@
+---
+# setup-{go,node,python,uv,terraform,helm}-nora for real: each toolchain from nora with the job's
+# OIDC token, checked against its pin, on PATH for later steps with the setup action's outputs and
+# environment. A re-run (run attempt > 1) must take every toolchain from the runner cache or the
+# tool cache, never from nora (the actions' tool-source output). Fork pull requests get no OIDC
+# token, so the jobs run for this repository's branches only. The stub-curl cases are
+# scripts/test-nora-tool.sh in selftest.
+name: nora-tool-selftest
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/nora-tool-selftest.yml"
+      - "nora-tool/**"
+      - "setup-*-nora/**"
+      - "nora-session/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/nora-tool-selftest.yml"
+      - "nora-tool/**"
+      - "setup-*-nora/**"
+      - "nora-session/**"
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: runs-on=${{ github.run_id }}-nora-tool-go/runner=t3a-small
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # nora session token
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: a module asking for go 1.26.0
+        run: printf 'module example.com/x\n\ngo 1.26.0\n' > "$RUNNER_TEMP/go.mod" && cp "$RUNNER_TEMP/go.mod" go.mod
+      - id: file
+        uses: ./setup-go-nora
+        with:
+          go-version-file: go.mod
+          cache: "false"
+      - name: the newest pinned 1.26 is go on PATH
+        env:
+          WANT: ${{ steps.file.outputs.go-version }}
+        run: |
+          set -euo pipefail
+          [ "$WANT" = "$(awk '$1 ~ /^1\.26\./ { print $1 }' setup-go-nora/versions.txt | sort -V | tail -1)" ]
+          [ "$(go env GOVERSION)" = "go$WANT" ]
+          case "$(command -v go)" in "$RUNNER_TOOL_CACHE"/go/*) ;; *) echo "go is $(command -v go)"; exit 1 ;; esac
+      - id: exact
+        uses: ./setup-go-nora
+        with:
+          go-version: "1.27.4"
+      - name: go 1.27.4 builds
+        run: |
+          set -euo pipefail
+          [ "$(go env GOVERSION)" = go1.27.4 ]
+          printf 'package main\n\nfunc main() { println("ok") }\n' > "$RUNNER_TEMP/m.go"
+          [ "$(go run "$RUNNER_TEMP/m.go" 2>&1)" = ok ]
+      - name: sources (a re-run takes nothing from nora)
+        env:
+          SRC_FILE: ${{ steps.file.outputs.tool-source }}
+          SRC_EXACT: ${{ steps.exact.outputs.tool-source }}
+        run: |
+          set -euo pipefail
+          env | grep '^SRC_' | sort
+          if [ "$GITHUB_RUN_ATTEMPT" -gt 1 ] && env | grep -q '^SRC_.*=nora$'; then echo "::error::re-run attempt $GITHUB_RUN_ATTEMPT fetched from nora"; exit 1; fi
+
+  node:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: runs-on=${{ github.run_id }}-nora-tool-node/runner=t3a-small
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # nora session token
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: node
+        uses: ./setup-node-nora
+        with:
+          node-version: 22
+          registry-url: https://packages.maestra.io/npm/
+      - name: the newest pinned 22 is node on PATH, npm reads the job's .npmrc
+        env:
+          WANT: ${{ steps.node.outputs.node-version }}
+        run: |
+          set -euo pipefail
+          [ "$WANT" = "v$(awk '$1 ~ /^22\./ { print $1 }' setup-node-nora/versions.txt | sort -V | tail -1)" ]
+          [ "$(node --version)" = "$WANT" ]
+          [ "$(npm config get registry)" = https://packages.maestra.io/npm/ ]
+          grep -qxF "//packages.maestra.io/npm/:_authToken=\${NODE_AUTH_TOKEN}" "$NPM_CONFIG_USERCONFIG"
+      - name: sources (a re-run takes nothing from nora)
+        env:
+          SRC_NODE: ${{ steps.node.outputs.tool-source }}
+        run: |
+          set -euo pipefail
+          env | grep '^SRC_' | sort
+          if [ "$GITHUB_RUN_ATTEMPT" -gt 1 ] && env | grep -q '^SRC_.*=nora$'; then echo "::error::re-run attempt $GITHUB_RUN_ATTEMPT fetched from nora"; exit 1; fi
+
+  uv:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: runs-on=${{ github.run_id }}-nora-tool-uv/runner=t3a-small
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # nora session token
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: latest
+        uses: ./setup-uv-nora
+      - name: latest is the newest pin
+        env:
+          WANT: ${{ steps.latest.outputs.uv-version }}
+        run: |
+          set -euo pipefail
+          [ "$WANT" = "$(awk '$1 ~ /^[0-9]/ { print $1 }' setup-uv-nora/versions.txt | sort -V | tail -1)" ]
+          [ "$(uv --version | cut -d' ' -f2)" = "$WANT" ]
+      - id: uv
+        uses: ./setup-uv-nora
+        with:
+          version: "0.13.6"
+          activate-environment: "true"
+          venv-path: ${{ runner.temp }}/venv
+      - name: uv 0.13.6 on PATH, a venv activated
+        env:
+          VENV: ${{ steps.uv.outputs.venv }}
+          UV: ${{ steps.uv.outputs.uv-path }}
+        run: |
+          set -euo pipefail
+          [ "$(uv --version | cut -d' ' -f2)" = 0.13.6 ]
+          [ "$(command -v uv)" = "$UV" ]
+          [ "$VIRTUAL_ENV" = "$VENV" ]
+          [ "$(command -v python)" = "$VENV/bin/python" ]
+          touch "$VENV/sentinel"
+      - name: the same venv-path again is recreated, not refused
+        id: again
+        uses: ./setup-uv-nora
+        with:
+          version: "0.13.6"
+          activate-environment: "true"
+          venv-path: ${{ runner.temp }}/venv
+      - name: the venv was recreated
+        run: |
+          set -euo pipefail
+          [ -f "$VIRTUAL_ENV/pyvenv.cfg" ]
+          [ ! -e "$VIRTUAL_ENV/sentinel" ]
+      - name: sources (a re-run takes nothing from nora)
+        env:
+          SRC_LATEST: ${{ steps.latest.outputs.tool-source }}
+          SRC_UV: ${{ steps.uv.outputs.tool-source }}
+          SRC_AGAIN: ${{ steps.again.outputs.tool-source }}
+        run: |
+          set -euo pipefail
+          env | grep '^SRC_' | sort
+          if [ "$GITHUB_RUN_ATTEMPT" -gt 1 ] && env | grep -q '^SRC_.*=nora$'; then echo "::error::re-run attempt $GITHUB_RUN_ATTEMPT fetched from nora"; exit 1; fi
+
+  terraform-helm:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: runs-on=${{ github.run_id }}-nora-tool-tf/runner=t3a-small
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # nora session token
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: tf
+        uses: ./setup-terraform-nora
+        with:
+          terraform_version: "1.14.6"
+          terraform_wrapper: false
+      - id: helm
+        uses: ./setup-helm-nora
+        with:
+          version: v3.18.5
+      - name: terraform 1.14.6 and helm 3.18.5 on PATH
+        env:
+          HELM: ${{ steps.helm.outputs.helm-path }}
+          CHECKPOINT_DISABLE: "1"
+        run: |
+          set -euo pipefail
+          terraform version -json | jq -e '.terraform_version == "1.14.6"'
+          [ "$(helm version --template '{{ .Version }}')" = v3.18.5 ]
+          [ "$(command -v helm)" = "$HELM" ]
+      - name: sources (a re-run takes nothing from nora)
+        env:
+          SRC_TF: ${{ steps.tf.outputs.tool-source }}
+          SRC_HELM: ${{ steps.helm.outputs.tool-source }}
+        run: |
+          set -euo pipefail
+          env | grep '^SRC_' | sort
+          if [ "$GITHUB_RUN_ATTEMPT" -gt 1 ] && env | grep -q '^SRC_.*=nora$'; then echo "::error::re-run attempt $GITHUB_RUN_ATTEMPT fetched from nora"; exit 1; fi
+      - name: terraform_wrapper true is refused
+        id: wrapper
+        continue-on-error: true
+        uses: ./setup-terraform-nora
+        with:
+          terraform_wrapper: true
+      - name: refused by its wrapper check, before anything was installed
+        env:
+          OUTCOME: ${{ steps.wrapper.outcome }}
+          SOURCE: ${{ steps.wrapper.outputs.tool-source }}
+        run: |
+          set -euo pipefail
+          [ "$OUTCOME" = failure ]
+          [ -z "$SOURCE" ]

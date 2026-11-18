@@ -1,0 +1,141 @@
+name: "uv through nora"
+description: >-
+  astral-sh/setup-uv without releases.astral.sh / github.com: the uv named by version comes from
+  nora's GitHub Releases proxy, sha256-pinned in versions.txt, into the runner tool cache
+  (issues-maestra#1649). The archive is cached next to the runners (RunsOn Magic Cache) and used
+  from there only when its sha256 is the pin. enable-cache, python-version and
+  activate-environment work as in setup-uv. Packages still come from the project's index: add
+  uv-nora for nora's. Needs `permissions: id-token: write`; linux-x64 only.
+
+inputs:
+  version:
+    description: "latest (the newest pin), N.M or an exact version."
+    required: false
+    default: "latest"
+  enable-cache:
+    description: "true: cache UV_CACHE_DIR keyed by cache-dependency-glob (setup-uv's auto is off on self-hosted runners)."
+    required: false
+    default: "false"
+  cache-dependency-glob:
+    description: "Glob the cache key hashes (default **/uv.lock and **/requirements*.txt)."
+    required: false
+    default: ""
+  python-version:
+    description: "Exported as UV_PYTHON."
+    required: false
+    default: ""
+  activate-environment:
+    description: "true: uv venv at venv-path, activated for later steps."
+    required: false
+    default: "false"
+  venv-path:
+    description: "The venv activate-environment creates (default .venv)."
+    required: false
+    default: ""
+  url:
+    description: "nora base URL."
+    required: false
+    default: "https://packages.maestra.io"
+  audience:
+    description: "`aud` of the GitHub OIDC token nora accepts."
+    required: false
+    default: "packages.maestra.io"
+
+outputs:
+  uv-version:
+    description: "The uv version installed."
+    value: ${{ steps.install.outputs.version }}
+  uv-path:
+    description: "The uv executable."
+    value: ${{ steps.install.outputs.path }}
+  uvx-path:
+    description: "The uvx executable."
+    value: ${{ steps.install.outputs.uvx-path }}
+  cache-hit:
+    description: "Whether the uv cache was restored."
+    value: ${{ steps.uv-cache.outputs.cache-hit }}
+  venv:
+    description: "The activated venv (activate-environment)."
+    value: ${{ steps.venv.outputs.venv }}
+
+  tool-source:
+    description: "Where the toolchain came from: tool-cache (already installed), runner-cache (the cached archive) or nora."
+    value: ${{ steps.install.outputs.source }}
+
+runs:
+  using: composite
+  steps:
+    - name: uv cache key
+      id: plan
+      shell: bash
+      env:
+        NORA_URL: ${{ inputs.url }}
+        TOOL_VERSION: ${{ inputs.version }}
+      run: bash "${GITHUB_ACTION_PATH}/../nora-tool/nora-tool.sh" uv plan
+    - name: uv archive from the cache
+      id: restore
+      if: ${{ steps.plan.outputs.cache-key != '' }}
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/nora-tool-cache/${{ steps.plan.outputs.cache-key }}
+        # <key>-fixed: the archive saved after a restored one failed the pin (a key is immutable)
+        key: ${{ steps.plan.outputs.cache-key }}-fixed
+        restore-keys: ${{ steps.plan.outputs.cache-key }}
+    - name: uv through nora
+      id: install
+      shell: bash
+      env:
+        TOOL_VERSION: ${{ inputs.version }}
+        NORA_URL: ${{ inputs.url }}
+        NORA_AUDIENCE: ${{ inputs.audience }}
+        NORA_TOOL_CACHE_DIR: ${{ steps.plan.outputs.cache-key != '' && format('{0}/nora-tool-cache/{1}', runner.temp, steps.plan.outputs.cache-key) || '' }}
+      run: bash "${GITHUB_ACTION_PATH}/../nora-tool/nora-tool.sh" uv install
+    - name: uv archive into the cache
+      # save=true: a fetched archive (after a rejected restore: under <key>-fixed)
+      if: ${{ steps.install.outputs.save == 'true' }}
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/nora-tool-cache/${{ steps.plan.outputs.cache-key }}
+        key: ${{ steps.plan.outputs.cache-key }}${{ steps.restore.outputs.cache-matched-key != '' && '-fixed' || '' }}
+    - name: uv environment
+      id: venv
+      shell: bash
+      env:
+        PY: ${{ inputs.python-version }}
+        ENABLE_CACHE: ${{ inputs.enable-cache }}
+        GLOBS: ${{ inputs.cache-dependency-glob }}
+        ACTIVATE: ${{ inputs.activate-environment }}
+        VENV: ${{ inputs.venv-path }}
+      run: |
+        [ -z "$PY" ] || { echo "UV_PYTHON=$PY" >> "$GITHUB_ENV"; export UV_PYTHON="$PY"; }
+        # inputs are booleans as in setup-uv: true / True / TRUE
+        ENABLE_CACHE=${ENABLE_CACHE,,} ACTIVATE=${ACTIVATE,,}
+        if [ "$ENABLE_CACHE" = true ]; then
+          # hashFiles sees the workspace only: a glob outside it would never change the key
+          while IFS= read -r g; do
+            g="${g#"${g%%[![:space:]]*}"}"; g="${g#!}"
+            case "$g" in /*|"~"*) echo "::error::setup-uv-nora: cache-dependency-glob '$g' is outside the workspace; hashFiles cannot hash it, move the file into the workspace"; exit 1 ;; esac
+          done <<< "$GLOBS"
+          # the cache directory uv would use (the caller's UV_CACHE_DIR, a cache-dir in uv.toml /
+          # pyproject.toml) is kept, resolved once against the workspace; uv's own default becomes
+          # a runner temp directory, as in setup-uv
+          d=$(uv cache dir)
+          [ -n "${UV_CACHE_DIR:-}" ] || [ "$d" != "${XDG_CACHE_HOME:-$HOME/.cache}/uv" ] || d="$RUNNER_TEMP/setup-uv-cache"
+          d=$(realpath -m "$d")
+          echo "UV_CACHE_DIR=$d" >> "$GITHUB_ENV"; echo "cache-dir=$d" >> "$GITHUB_OUTPUT"
+        fi
+        if [ "$ACTIVATE" = true ]; then
+          v=${VENV:-.venv}; case "$v" in "~/"*) v="$HOME/${v#\~/}" ;; esac
+          v=$(realpath -m "$v")
+          # as setup-uv: an existing venv is recreated (--clear); any other directory there is refused
+          if [ -e "$v" ] && [ ! -f "$v/pyvenv.cfg" ]; then echo "::error::setup-uv-nora: $v exists and is not a virtual environment"; exit 1; fi
+          uv venv --clear "$v"
+          { echo "VIRTUAL_ENV=$v"; } >> "$GITHUB_ENV"; echo "$v/bin" >> "$GITHUB_PATH"; echo "venv=$v" >> "$GITHUB_OUTPUT"
+        fi
+    - name: uv cache
+      id: uv-cache
+      if: ${{ inputs.enable-cache == 'true' }}
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.venv.outputs.cache-dir }}
+        key: setup-uv-nora-${{ runner.os }}-${{ runner.arch }}-${{ inputs.python-version }}-${{ hashFiles(inputs.cache-dependency-glob || '**/uv.lock', inputs.cache-dependency-glob || '**/requirements*.txt') }}

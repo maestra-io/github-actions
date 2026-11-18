@@ -1,0 +1,5 @@
+# uv versions setup-uv-nora installs: <version> <sha256 of uv-x86_64-unknown-linux-gnu.tar.gz>
+# (the release's <asset>.sha256). Fetched through nora's GitHub Releases proxy
+# (/github/astral-sh/uv/releases/download/<version>/), which holds a release for 3 days.
+0.13.6 f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645
+0.13.8 5acfd9177cfecf0bf87578f059728215ccc884388988f55f7a65041b57387d91

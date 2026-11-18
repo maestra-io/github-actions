@@ -1,0 +1,76 @@
+name: "Terraform CLI through nora"
+description: >-
+  hashicorp/setup-terraform without releases.hashicorp.com: the Terraform CLI named by
+  terraform_version comes from nora's releases.hashicorp.com proxy, sha256-pinned in
+  versions.txt, into the runner tool cache (issues-maestra#1649). The archive is cached next to
+  the runners (RunsOn Magic Cache) and used from there only when its sha256 is the pin. No
+  wrapper: `terraform` is the binary itself (setup-terraform's terraform_wrapper: false).
+  Providers still come from the registry: run terraform-nora after it for nora's. Needs
+  `permissions: id-token: write`; linux-x64 only.
+
+inputs:
+  terraform_version:
+    description: "latest, N.M (the newest pinned patch) or an exact version."
+    required: false
+    default: ""
+  terraform_wrapper:
+    description: "Only false is served: the stdout/stderr/exitcode outputs of setup-terraform's wrapper do not exist here."
+    required: false
+    default: "false"
+  url:
+    description: "nora base URL."
+    required: false
+    default: "https://packages.maestra.io"
+  audience:
+    description: "`aud` of the GitHub OIDC token nora accepts."
+    required: false
+    default: "packages.maestra.io"
+
+outputs:
+  terraform-version:
+    description: "The Terraform version installed."
+    value: ${{ steps.install.outputs.version }}
+
+  tool-source:
+    description: "Where the toolchain came from: tool-cache (already installed), runner-cache (the cached archive) or nora."
+    value: ${{ steps.install.outputs.source }}
+
+runs:
+  using: composite
+  steps:
+    - name: terraform_wrapper
+      if: ${{ inputs.terraform_wrapper == 'true' }}
+      shell: bash
+      run: echo "::error::setup-terraform-nora has no terraform_wrapper; read the output of terraform itself" && exit 1
+    - name: Terraform cache key
+      id: plan
+      shell: bash
+      env:
+        NORA_URL: ${{ inputs.url }}
+        TOOL_VERSION: ${{ inputs.terraform_version }}
+      run: bash "${GITHUB_ACTION_PATH}/../nora-tool/nora-tool.sh" terraform plan
+    - name: Terraform archive from the cache
+      id: restore
+      if: ${{ steps.plan.outputs.cache-key != '' }}
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/nora-tool-cache/${{ steps.plan.outputs.cache-key }}
+        # <key>-fixed: the archive saved after a restored one failed the pin (a key is immutable)
+        key: ${{ steps.plan.outputs.cache-key }}-fixed
+        restore-keys: ${{ steps.plan.outputs.cache-key }}
+    - name: Terraform through nora
+      id: install
+      shell: bash
+      env:
+        TOOL_VERSION: ${{ inputs.terraform_version }}
+        NORA_URL: ${{ inputs.url }}
+        NORA_AUDIENCE: ${{ inputs.audience }}
+        NORA_TOOL_CACHE_DIR: ${{ steps.plan.outputs.cache-key != '' && format('{0}/nora-tool-cache/{1}', runner.temp, steps.plan.outputs.cache-key) || '' }}
+      run: bash "${GITHUB_ACTION_PATH}/../nora-tool/nora-tool.sh" terraform install
+    - name: Terraform archive into the cache
+      # save=true: a fetched archive (after a rejected restore: under <key>-fixed)
+      if: ${{ steps.install.outputs.save == 'true' }}
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/nora-tool-cache/${{ steps.plan.outputs.cache-key }}
+        key: ${{ steps.plan.outputs.cache-key }}${{ steps.restore.outputs.cache-matched-key != '' && '-fixed' || '' }}

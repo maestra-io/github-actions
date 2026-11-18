@@ -1,0 +1,10 @@
+# Node.js versions setup-node-nora installs: <version> <sha256 of node-v<version>-linux-x64.tar.gz>.
+# Served by nora raw at src/nodejs.org/dist/v<version>/, uploaded by maestra-io/dockerfiles
+# .github/raw-uploads/node.txt with the same sha256 (nodejs.org/dist/v<version>/SHASUMS256.txt).
+# A new version goes into both files, the dockerfiles PR first (merged = uploaded).
+20.20.2 19e56f0825510207dd904f087fe52faa0a4eb6b2aab5f0ea7a33830d04888b8b
+22.23.5 c54118104acc524633b5abe106bbf44a53126ec8b4e5fa105cb92b5d7de8a1a1
+24.15.0 44836872d9aec49f1e6b52a9a922872db9a2b02d235a616a5681b6a85fec8d89
+24.19.0 f625d97cd707df4ff96254916fbc5ff014f09c09effe5a1e0ca8f6d41a8789d4
+24.22.3 061ec3e3062115705b56b51fa9cc330ab50d34b6969387d4e4b1a50c6809acc2
+26.13.1 518674de2b621728a5e4486f5fb3b7d2900bb3cc4aa97969edaa463db99f9778

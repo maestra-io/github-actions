@@ -38,6 +38,8 @@ on:
       - "go-nora/**"
       - "cargo-nora/**"
       - "dotnet-nora/**"
+      - "nora-tool/**"
+      - "setup-*-nora/**"
       - "nora-session/**"
       - "nora-service/**"
       - "check-encoding/**"
@@ -118,6 +120,8 @@ jobs:
         run: bash scripts/test-cargo-nora.sh
       - name: dotnet-nora version specs, global.json rollForward, tampered download refused (stub curl)
         run: bash scripts/test-dotnet-nora.sh
+      - name: setup-*-nora version specs, go.mod floor, pins, tampered download and poisoned cache refused (stub curl)
+        run: bash scripts/test-nora-tool.sh
 
       - name: uv-nora keyring helper, UV_* env, token output (stub curl, local 401 index)
         run: bash scripts/test-uv-nora.sh
