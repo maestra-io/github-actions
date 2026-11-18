@@ -378,6 +378,11 @@ simulation, no `reboot-required` and the newest kernel already running is **neve
 and never rebooted — the job is green in ~60 s. So re-running after a partial sweep is safe
 and cheap.
 
+What a run did to a host is one line in the `apply (<host>)` job, in its log and in its
+job summary: `os-update result: <host> kernel <before> -> <after>, packages <N>, rebooted
+yes|no, reboot pending <bool>, checks ok|FAILED` for a host the run touched, or
+`<host>: already up to date, no reboot pending — untouched.` for one it did not.
+
 ## Not covered by this workflow
 
 - **`eu-omega-lw-*`** — out of scope for v1. The EU haproxy `kube-cdp` pair is owned by

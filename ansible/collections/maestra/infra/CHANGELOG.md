@@ -7,6 +7,15 @@ finding, and because the `os_update` contract is shared across four repos:
 anything that changes a variable name or a hook expectation has to be findable
 from one place.
 
+## 1.4.3
+
+- `os_update`: an `apply` run ends every touched host with one `Result` line —
+  `os-update result: <host> kernel <before> -> <after>, packages <N>, rebooted
+  yes|no, reboot pending <bool>, checks ok|FAILED` — printed in `always`, before
+  the job is failed. `ansible-os-update.yml` copies it (and the «already up to
+  date» line of an untouched host) into the job summary. No variable or hook
+  changes.
+
 ## 1.4.2
 
 - `os_update`: the `/boot` guard no longer refuses a host forever when one

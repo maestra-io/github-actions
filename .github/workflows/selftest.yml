@@ -235,6 +235,11 @@ jobs:
       - name: binary-update wiring (a failed host must stay drained)
         run: bash ansible/tests/test-binary-update-wiring.sh
 
+      # The per-host result line reaches the job summary only while the role's
+      # text and the workflow's `summary_grep` agree.
+      - name: os-update result line reaches the job summary
+        run: bash ansible/tests/test-os-update-result-line.sh
+
       # The os-update apply leg pins the Teleport FQDN away from the proxy on its
       # own target (us-iota: proxy hostNetwork on the nodes it reboots). The test
       # runs the workflow's own step block against stubs.
