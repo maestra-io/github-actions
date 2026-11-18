@@ -20,7 +20,7 @@ resolve() { # resolve <tool> <spec> [<go.mod content>]
 expect() { local got; got=$(resolve "${@:2}") || fail "$2 '$3': $(cat "$root/err")"; [ "$got" = "$1" ] || fail "$2 '$3': got '$got', want '$1'"; }
 refuse() { if resolve "${@:2}" >/dev/null; then fail "$2 '$3' resolved, want a refusal"; fi; grep -qF -- "$1" "$root/err" || fail "$2 '$3': no '$1' in: $(cat "$root/err")"; }
 
-for t in go node uv terraform helm; do
+for t in go node python uv terraform helm; do
   [ -s "${here}/../setup-$t-nora/versions.txt" ] || fail "no setup-$t-nora/versions.txt"
   # every pin line: version, 64-hex sha256 (python: + its release tag)
   sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "${here}/../setup-$t-nora/versions.txt" | while read -r v s tag rest; do
@@ -50,6 +50,7 @@ expect "$(newest node 24.)" node 24; expect "$(newest node 24.)" node 24.x; expe
 expect 1.12.2 terraform 1.12.2; expect 1.17.2 terraform v1.17.2; expect "$(newest terraform 1.15.)" terraform 1.15
 expect 3.18.5 helm v3.18.5; expect "$(newest helm 4.)" helm v4
 expect 0.13.6 uv 0.13.6
+expect "$(newest python 3.12.)" python 3.12; expect "$(newest python 3.8.)" python 3.8; refuse "no pinned version for '3.99'" python 3.99
 
 # install with a stub curl: a fake `helm` pinned in a copy of the actions (the archive layouts
 # are the selftest's job). The tool cache and runner temp are directories of this test.
