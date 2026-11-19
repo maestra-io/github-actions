@@ -1,0 +1,11 @@
+# kind versions setup-kind-nora installs: <version> <sha256 of kind-linux-amd64> <node image> <tree pin>.
+# Served by nora's GitHub Releases proxy (kubernetes-sigs/kind releases/download/v<version>/
+# kind-linux-amd64, 3-day hold); sha256 = the release's kind-linux-amd64.sha256sum asset.
+# Node image: the default of that kind version (pkg/apis/config/defaults/image.go at the tag),
+# pulled as packages.maestra.io/docker-hub/<image>, by the same digest.
+# Last column: the tree pin, the sha256 of what the binary installs to (nora-tool.sh tree_digest,
+# printed by `nora-tool/nora-tool.sh kind tree <binary>` on linux): a tool-cache entry runs only
+# when its tree is this pin.
+# 0.31.0: helm/kind-action v1.14.0's default (flux-operator-bootstrap, trow); 0.24.0: vault-backups-testing.
+0.24.0 b89aada5a39d620da3fcd16435b7f28d858927dd53f92cbac77686b0588b600d kindest/node:v1.31.0@sha256:53df588e04085fd41ae12de0c3fe4c72f7013bba32a20e7325357a1ac94ba865 fbd9c4f146ada47d01fdd7e135c22f7ce1147ff46aaf0252a10e576e6335434b
+0.31.0 eb244cbafcc157dff60cf68693c14c9a75c4e6e6fedaf9cd71c58117cb93e3fa kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f 57c8ea1c4f47966a91061d51ff4169a2fea254d625dec0d73ddaf58476f3ac03

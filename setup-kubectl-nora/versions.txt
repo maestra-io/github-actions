@@ -1,0 +1,9 @@
+# kubectl versions setup-kubectl-nora (and setup-kind-nora) install: <version> <sha256 of kubectl>.
+# Served by nora raw at src/dl.k8s.io/release/v<version>/bin/linux/amd64/kubectl, uploaded by
+# maestra-io/dockerfiles .github/raw-uploads/kubectl.txt with the same sha256
+# (dl.k8s.io/release/v<version>/bin/linux/amd64/kubectl.sha256). A new version goes into both
+# files, the dockerfiles PR first (merged = uploaded).
+# Last column: the tree pin (nora-tool.sh tree_digest, `nora-tool/nora-tool.sh kubectl tree <binary>`
+# on linux): a tool-cache entry runs only when its tree is this pin.
+# 1.35.0: helm/kind-action v1.14.0's default kubectl_version.
+1.35.0 a2e984a18a0c063279d692533031c1eff93a262afcc0afdc517375432d060989 733f1029d64fd47251236eaac52bfb7e16b760383a96f4516dc581d484a2e705
