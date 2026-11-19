@@ -134,7 +134,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0 # semantic-release walks the history to the last tag
       - id: node
-        uses: maestra-io/github-actions/setup-node-nora@f40b5191253ae7e28c10836989a77255666141e4 # v1.104.0
+        uses: maestra-io/github-actions/setup-node-nora@9b8a76b44a7333893fb2f995ab1afdcfb179ba59 # v1.106.5
         with:
           node-version: ${{ inputs.node-version }}
           node-version-file: ${{ inputs.node-version == '' && inputs.node-version-file || '' }}

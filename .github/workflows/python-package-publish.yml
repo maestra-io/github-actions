@@ -156,10 +156,10 @@ jobs:
           jq --arg h "$host" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
           # <<< nora-cred-helper
 
-      - uses: maestra-io/github-actions/setup-python-nora@38486b9a95224937098e20fb91a527e6103a7606 # v1.106.0
+      - uses: maestra-io/github-actions/setup-python-nora@9b8a76b44a7333893fb2f995ab1afdcfb179ba59 # v1.106.5
         with:
           python-version: ${{ inputs.python-version }}
-      - uses: maestra-io/github-actions/setup-uv-nora@f40b5191253ae7e28c10836989a77255666141e4 # v1.104.0
+      - uses: maestra-io/github-actions/setup-uv-nora@9b8a76b44a7333893fb2f995ab1afdcfb179ba59 # v1.106.5
         with:
           version: ${{ inputs.uv-version }}
           enable-cache: false

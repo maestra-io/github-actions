@@ -583,7 +583,7 @@ jobs:
             tests/node_modules
           key: mcf-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
       # Node for codegen too: on a hit as well.
-      - uses: maestra-io/github-actions/setup-node-nora@f40b5191253ae7e28c10836989a77255666141e4 # v1.104.0
+      - uses: maestra-io/github-actions/setup-node-nora@9b8a76b44a7333893fb2f995ab1afdcfb179ba59 # v1.106.5
         with:
           node-version: ${{ inputs.node-version }}
       - &write-npmrc
@@ -702,7 +702,7 @@ jobs:
           key: mcf-tests-node-modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles('tests/package-lock.json') }}
           lookup-only: true
       - if: ${{ steps.cache.outputs.cache-hit != 'true' }}
-        uses: maestra-io/github-actions/setup-node-nora@f40b5191253ae7e28c10836989a77255666141e4 # v1.104.0
+        uses: maestra-io/github-actions/setup-node-nora@9b8a76b44a7333893fb2f995ab1afdcfb179ba59 # v1.106.5
         with:
           node-version: ${{ inputs.node-version }}
       - *write-npmrc
@@ -728,7 +728,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: maestra-io/github-actions/setup-node-nora@f40b5191253ae7e28c10836989a77255666141e4 # v1.104.0
+      - uses: maestra-io/github-actions/setup-node-nora@9b8a76b44a7333893fb2f995ab1afdcfb179ba59 # v1.106.5
         with:
           node-version: ${{ inputs.node-version }}
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -818,7 +818,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: maestra-io/github-actions/setup-node-nora@f40b5191253ae7e28c10836989a77255666141e4 # v1.104.0
+      - uses: maestra-io/github-actions/setup-node-nora@9b8a76b44a7333893fb2f995ab1afdcfb179ba59 # v1.106.5
         with:
           node-version: ${{ inputs.node-version }}
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -915,7 +915,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: maestra-io/github-actions/setup-node-nora@f40b5191253ae7e28c10836989a77255666141e4 # v1.104.0
+      - uses: maestra-io/github-actions/setup-node-nora@9b8a76b44a7333893fb2f995ab1afdcfb179ba59 # v1.106.5
         with:
           node-version: ${{ inputs.node-version }}
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -981,7 +981,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: maestra-io/github-actions/setup-node-nora@f40b5191253ae7e28c10836989a77255666141e4 # v1.104.0
+      - uses: maestra-io/github-actions/setup-node-nora@9b8a76b44a7333893fb2f995ab1afdcfb179ba59 # v1.106.5
         with:
           node-version: ${{ inputs.node-version }}
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -1252,7 +1252,7 @@ jobs:
       # most of the image's HIGH findings). The type check the schema check runs must still
       # pass without them, on the same generated code as in `checks`; if it does not, the
       # image keeps the full node_modules and the run says so.
-      - uses: maestra-io/github-actions/setup-node-nora@f40b5191253ae7e28c10836989a77255666141e4 # v1.104.0
+      - uses: maestra-io/github-actions/setup-node-nora@9b8a76b44a7333893fb2f995ab1afdcfb179ba59 # v1.106.5
         with:
           node-version: ${{ inputs.node-version }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -1543,7 +1543,7 @@ jobs:
           [ -s "$cfg" ] || echo '{}' > "$cfg"
           jq --arg h "$host" '.credHelpers[$h] = "nora"' "$cfg" > "$cfg.t" && mv "$cfg.t" "$cfg"
           # <<< nora-cred-helper
-      - uses: maestra-io/github-actions/setup-node-nora@f40b5191253ae7e28c10836989a77255666141e4 # v1.104.0
+      - uses: maestra-io/github-actions/setup-node-nora@9b8a76b44a7333893fb2f995ab1afdcfb179ba59 # v1.106.5
         with:
           node-version: ${{ inputs.node-version }}
           package-manager-cache: false
@@ -1772,7 +1772,7 @@ jobs:
         with:
           name: sourcemaps
           path: ${{ runner.temp }}
-      - uses: maestra-io/github-actions/setup-node-nora@f40b5191253ae7e28c10836989a77255666141e4 # v1.104.0
+      - uses: maestra-io/github-actions/setup-node-nora@9b8a76b44a7333893fb2f995ab1afdcfb179ba59 # v1.106.5
         with:
           node-version: ${{ inputs.node-version }}
       - uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
@@ -1885,7 +1885,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: maestra-io/github-actions/setup-node-nora@f40b5191253ae7e28c10836989a77255666141e4 # v1.104.0
+      - uses: maestra-io/github-actions/setup-node-nora@9b8a76b44a7333893fb2f995ab1afdcfb179ba59 # v1.106.5
         with:
           node-version: ${{ inputs.node-version }}
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -2221,7 +2221,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: maestra-io/github-actions/setup-node-nora@f40b5191253ae7e28c10836989a77255666141e4 # v1.104.0
+      - uses: maestra-io/github-actions/setup-node-nora@9b8a76b44a7333893fb2f995ab1afdcfb179ba59 # v1.106.5
         with:
           node-version: ${{ inputs.node-version }}
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
