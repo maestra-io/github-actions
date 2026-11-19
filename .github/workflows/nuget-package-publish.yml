@@ -231,13 +231,13 @@ jobs:
           echo "SDKs: ${versions//$'\n'/ }"
           # sdk-set: end
       # setup-dotnet syntax, from nora raw instead of builds.dotnet.microsoft.com (README).
-      - uses: maestra-io/github-actions/dotnet-nora@8ebf680b9d3977cae5fab267f84d90a13b99c4c5 # v1.100.0
+      - uses: maestra-io/github-actions/dotnet-nora@d69f9e8a1ecffa04b18cf1096f88fa38f5bd4b42 # v1.106.7
         with:
           dotnet-version: ${{ steps.sdk.outputs.versions }}
           global-json-file: ${{ inputs.dotnet-version == '' && steps.sdk.outputs.global-json == 'true' && hashFiles('global.json') != '' && 'global.json' || '' }}
 
-      # The runner image ships the newest SDK and dotnet-nora only adds SDKs, so
-      # without a global.json pin (none, or rollForward latestMajor/major) the newest
+      # Several SDKs are installed (one per target framework major, plus a global.json's;
+      # dotnet-nora's root holds only those since v1.106.7), so without a global.json pin (none, or rollForward latestMajor/major) the newest
       # one builds. Its new analyzers and EOL-framework warnings then fail
       # /warnaserror where the GitLab sdk:<N> image passed (DumpTool, GraphQL,
       # PhonesDictionary, VaultSecretsLoader needed per-repo global.json, W2). So the
