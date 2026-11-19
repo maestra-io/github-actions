@@ -216,14 +216,34 @@ jobs:
       # warn-as-error must keep tests running on the Microsoft.Testing.Platform
       # runner too (a bare /warnaserror ran zero tests there, exit 5).
       # The real SDK download from nora (sha256-checked), as the workflows install it.
+      # SDK 11 stands for the newest SDK beside the pinned one (the job's root holds only the SDKs
+      # dotnet-nora installs, not the runner image's).
+      - uses: ./dotnet-nora
+        with:
+          dotnet-version: |
+            10.0.x
+            11.0.x
+      - name: dotnet-service-build warn-as-error on MTP and VSTest runners (workflow copy)
+        run: bash scripts/test-dotnet-service-build-mtp.sh
+      - name: dotnet-service-build SDK pin on real SDKs (build SDK = pinned SDK 10, SDK 11 beside it)
+        run: bash scripts/test-dotnet-sdk-pin-real.sh
+      # The tool-cache tree pin on a real SDK: a tampered `dotnet` host left in the tool cache (as an
+      # earlier job on a reused instance could) is reinstalled from the verified archive, never run.
+      - name: tamper with the SDK 10 in the tool cache (complete marker kept)
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TOOL_CACHE/dotnet-nora"; v=$(DOTNET_NOLOGO=1 dotnet --list-sdks | awk '/^10\./ { print $1 }')
+          [ -f "$d/$v.complete" ]
+          printf '#!/bin/sh\necho tampered\n' > "$d/$v/dotnet.new"; chmod +x "$d/$v/dotnet.new"; mv -f "$d/$v/dotnet.new" "$d/$v/dotnet"
       - uses: ./dotnet-nora
         with:
           dotnet-version: 10.0.x
-      - name: dotnet-service-build warn-as-error on MTP and VSTest runners (workflow copy)
-        run: bash scripts/test-dotnet-service-build-mtp.sh
-      # After the dotnet-nora 10.0.x above: the image itself ships only its newest SDK.
-      - name: dotnet-service-build SDK pin on real SDKs (build SDK = pinned SDK 10, image's newest beside it)
-        run: bash scripts/test-dotnet-sdk-pin-real.sh
+      - name: the tampered SDK was reinstalled, not run
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TOOL_CACHE/dotnet-nora"; v=$(DOTNET_NOLOGO=1 dotnet --list-sdks | awk '/^10\./ { print $1 }')
+          if grep -q tampered "$d/$v/dotnet"; then echo "::error::the tampered dotnet host is still in $d/$v"; exit 1; fi
+          [ "$(DOTNET_NOLOGO=1 dotnet --version)" = "$v" ]
 
       # `mode: stage` is only safe BECAUSE it disrupts nothing — that is why it is
       # allowed to skip preflight. This checks the property structurally, so the

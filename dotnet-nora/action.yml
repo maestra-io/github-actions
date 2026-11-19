@@ -2,8 +2,9 @@ name: ".NET SDK through nora"
 description: >-
   actions/setup-dotnet without Microsoft: the SDKs named by dotnet-version (setup-dotnet
   syntax) and by a global.json (its rollForward) come from packages.maestra.io raw,
-  sha256-pinned in sdks.txt, and are unpacked next to the runner image's SDKs
-  (issues-maestra#1649). The archives are cached by version + pin in the job's cache
+  sha256-pinned in sdks.txt, and are unpacked each into its own runner tool-cache directory,
+  whose tree is pinned in sdks.txt too and checked before an SDK already there runs; the job's
+  dotnet root holds only these SDKs (issues-maestra#1649). The archives are cached by version + pin in the job's cache
   (RunsOn Magic Cache: S3 next to the runners), so a job whose repository/branch already
   holds them fetches nothing from nora; a cached archive is used only when its sha256 is the
   pin. Needs `permissions: id-token: write`; linux-x64 only.
