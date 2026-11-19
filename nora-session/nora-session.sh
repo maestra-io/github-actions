@@ -10,23 +10,31 @@
 nora_token() ( # a subshell: tracing is off inside it whatever the caller set
   set +x
   nora="${1%/}" aud="$2"
-  jwt=$(curl -fsS --retry 3 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-    "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${aud}" | jq -r .value) || exit 1
-  [ -n "$jwt" ] && [ "$jwt" != null ] || exit 1
-  echo "::add-mask::$jwt" >&2 # stderr: stdout is the token alone
+  mint() {
+    jwt=$(curl -fsS --retry 3 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+      "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${aud}" | jq -r .value) || exit 1
+    [ -n "$jwt" ] && [ "$jwt" != null ] || exit 1
+    echo "::add-mask::$jwt" >&2 # stderr: stdout is the token alone
+  }
+  mint
   # The body goes to a file: curl truncates it before a retry, while stdout would keep a
   # failed attempt's body ("Service Unavailable") in front of the JSON (status-router#41).
   f=$(mktemp); trap 'rm -f "$f"' EXIT
-  # Backoff bounded at 180 s (1, 2, 4 … 64 s): `--retry 3` gave up after ~7 s, while
-  # the exchange answered 503 for 73 s on 16.11.2026 16:19 UTC and eu-central-1
-  # runners lose TCP to the us-iota edge for ~2-3 min at a 15-min cadence. A
-  # 10 s connect timeout makes a lost SYN a fast retry on a fresh port.
-  code=$(curl -sS --connect-timeout 10 --retry 8 --retry-max-time 180 -X POST -H "Authorization: Bearer ${jwt}" -o "$f" -w '%{http_code}' \
+  # Retries every 10 s for up to 150 s, each attempt capped at 20 s, so the whole
+  # exchange ends by ~180 s: `--retry 3` gave up after ~7 s, while the exchange
+  # answered 503 for 73 s on 16.11.2026 16:19 UTC and eu-central-1 runners lose
+  # TCP to the us-iota edge for ~2-3 min at a 15-min cadence. A 10 s connect
+  # timeout makes a lost SYN a fast retry on a fresh port.
+  start=$SECONDS
+  code=$(curl -sS --connect-timeout 10 --max-time 20 --retry 15 --retry-delay 10 --retry-max-time 150 \
+    -X POST -H "Authorization: Bearer ${jwt}" -o "$f" -w '%{http_code}' \
     "${nora}/api/oidc/session") || { echo "::error::nora session exchange at $nora failed" >&2; exit 1; }
   case "$code" in
     200) session=$(jq -r '.token // empty' "$f") ;;
     # 404: a nora without the exchange; 403: a provider that grants no session.
-    403|404) echo "::warning::nora at $nora gives no session (HTTP $code): the OIDC token (~5 min) is used" >&2
+    # After retries the first JWT may have little of its ~5 min left: mint a new one.
+    403|404) [ $((SECONDS - start)) -lt 30 ] || mint
+       echo "::warning::nora at $nora gives no session (HTTP $code): the OIDC token (~5 min) is used" >&2
        printf '%s\n' "$jwt"; exit 0 ;;
     *) echo "::error::nora session exchange at $nora answered HTTP $code" >&2; exit 1 ;;
   esac
