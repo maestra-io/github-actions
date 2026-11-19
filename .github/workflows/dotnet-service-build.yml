@@ -504,7 +504,7 @@ jobs:
       - name: nora session token
         id: session
         if: ${{ steps.override.outputs.set != 'true' }}
-        uses: maestra-io/github-actions/nora-session@2129733e1ad02d1ae178e27c0cd26d8f1b21ff21 # v1.106.2
+        uses: maestra-io/github-actions/nora-session@7373d41c69b163dae4617a59e198df8d0b1e177e # v1.107.1
         with:
           url: ${{ inputs.packages-url }}
           audience: ${{ inputs.packages-audience }}
@@ -1929,7 +1929,7 @@ jobs:
       - name: nora session token
         id: session
         if: ${{ steps.cpm.outputs.props != '[]' && steps.override.outputs.set != 'true' }}
-        uses: maestra-io/github-actions/nora-session@2129733e1ad02d1ae178e27c0cd26d8f1b21ff21 # v1.106.2
+        uses: maestra-io/github-actions/nora-session@7373d41c69b163dae4617a59e198df8d0b1e177e # v1.107.1
         with:
           url: ${{ inputs.packages-url }}
           audience: ${{ inputs.packages-audience }}
