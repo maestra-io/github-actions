@@ -681,7 +681,7 @@ a `keyring` helper on PATH that mints a fresh GitHub OIDC token whenever uv asks
 ENV UV_NO_CACHE=1 UV_PYTHON_DOWNLOADS=never UV_COMPILE_BYTECODE=1 UV_INDEX_MAESTRA_USERNAME=token \
     UV_PROJECT_ENVIRONMENT=/usr/local
 COPY pyproject.toml uv.lock ./
-RUN --mount=type=bind,from=ghcr.io/astral-sh/uv:<version>@sha256:<digest>,source=/uv,target=/usr/local/bin/uv \
+RUN --mount=type=bind,from=packages.maestra.io/ghcr/astral-sh/uv:<version>@sha256:<digest>,source=/uv,target=/usr/local/bin/uv \
     --mount=type=secret,id=PRIVATE_PACKAGES_TOKEN,required=true \
     UV_INDEX_MAESTRA_PASSWORD="$(cat /run/secrets/PRIVATE_PACKAGES_TOKEN)" \
     uv sync --locked --inexact --no-dev --no-install-project

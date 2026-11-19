@@ -29,8 +29,11 @@ what it holds and never asks the upstream, so this check never starts a digest's
 A new tag-only reference fails as not pinned when every nora reference of the base
 revision already carries a digest (the repo pins); otherwise its tag is asked.
 Our images (ECR 515260921971, public.ecr.aws/g5f9s8a4) are exempt, as in the
-Renovate externalImages preset; other registries are not pulled through nora and get
-a warning only.
+Renovate externalImages preset, and so is `local/...`, a base image the same build
+makes first (service-build `base-image`). A new image from any other registry
+(docker.io, ghcr.io, mcr, quay, ...) is not pulled through nora, so no quarantine
+covers it: it fails, naming its packages.maestra.io/<prefix>/ path. A bare name
+(`FROM upstream`) is a stage or a named build context and only warns.
 """
 import datetime as dt
 import json
@@ -44,7 +47,14 @@ import urllib.request
 
 NORA_HOST = "packages.maestra.io"
 EXEMPT = (re.compile(r"^515260921971\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/"),
-          re.compile(r"^public\.ecr\.aws/g5f9s8a4/"))
+          re.compile(r"^public\.ecr\.aws/g5f9s8a4/"), re.compile(r"^local/"))
+# upstream registry -> nora docker prefix (fluxcd iota/us-iota-lw-kube-infra/nora/helm-release.yaml
+# `docker.upstreams`; the same map as maestra-io/soc github-supply.ts DOCKER_PREFIX)
+PREFIX = {"docker.io": "docker-hub", "index.docker.io": "docker-hub", "registry-1.docker.io": "docker-hub",
+          "ghcr.io": "ghcr", "quay.io": "quay", "registry.k8s.io": "k8s", "k8s.gcr.io": "k8s", "gcr.io": "gcr",
+          "mirror.gcr.io": "mirror-gcr", "mcr.microsoft.com": "mcr", "docker.dragonflydb.io": "dragonfly",
+          "public.ecr.aws": "ecr-public", "cgr.dev": "cgr", "reg.kyverno.io": "kyverno", "xpkg.upbound.io": "upbound",
+          "xpkg.crossplane.io": "crossplane", "europe-west1-docker.pkg.dev": "gar-europe-west1"}
 DOCKERFILE = re.compile(r"(^|/)(Dockerfile[^/]*|[^/]+\.[Dd]ockerfile|Containerfile[^/]*)$")
 WORKFLOW = re.compile(r"(^\.github/workflows/[^/]+|(^|/)action)\.ya?ml$")
 PINNED = re.compile(r"packages\.maestra\.io/[A-Za-z0-9._/-]+(?::[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}")
@@ -177,6 +187,17 @@ def nora_path(ref):
     return f"{repo}/manifests/{digest or tag or 'latest'}"
 
 
+def direct_fix(ref):
+    """The packages.maestra.io reference for an image pulled straight from its registry."""
+    host, repo, tag, digest = split(ref)
+    prefix = PREFIX.get(host)
+    if not prefix:
+        return f"{NORA_HOST}/<prefix>/... (nora has no prefix for {host} yet)"
+    if prefix == "docker-hub" and "/" not in repo:
+        repo = f"library/{repo}"
+    return f"{NORA_HOST}/{prefix}/{repo}" + (f":{tag}" if tag else "") + (f"@{digest}" if digest else "")
+
+
 def ask(base, token, path, tries=3):
     """(status, headers, body) of one manifest HEAD; 0 = no answer. 5xx/no answer retried."""
     req = urllib.request.Request(f"{base}/v2/{path}", method="HEAD", headers={
@@ -253,9 +274,12 @@ def main(head, base, out=print):
             at = f"file={path},line={line}"
             if "$" in ref:
                 out(f"::warning {at}::{ref}: a build-arg the Dockerfile gives no default; not checked")
+            elif not nora_path(ref) and not re.search(r"[/:@]", ref):
+                out(f"::warning {at}::{ref}: a stage or a named build context, not checked")
             elif not nora_path(ref):
-                out(f"::warning {at}::{ref} is not pulled through {NORA_HOST}: nora's quarantine "
-                    f"does not cover it. Use {NORA_HOST}/<prefix>/... (issues-maestra#1649)")
+                failures += 1
+                out(f"::error {at},title=base image not through nora::{ref} is pulled straight from its "
+                    f"registry, around nora's 3-day quarantine: use {direct_fix(ref)} (issues-maestra#1649)")
             elif "@" not in ref and pins:
                 failures += 1
                 out(f"::error {at},title=base image not pinned::{ref} has no @sha256 digest, and every "
@@ -455,11 +479,23 @@ COPY --from=nginx:1.27 /etc/nginx /etc/nginx
     assert rc == 1 and "not pinned" in log, log
     assert run({"Dockerfile": f"FROM {n}mature:1\n"}, {"Dockerfile": f"FROM {n}mature:3\n"})[0] == 0
     assert run({"Dockerfile": f"FROM {n}mature:1\n"}, {"Dockerfile": f"FROM {n}held:3\n"})[0] == 1
-    # exempt and direct registries never ask nora; a direct one warns
+    # exempt and direct registries never ask nora; ours and local/ pass, a direct one fails
     seen.clear()
     rc, log = run(base, {"Dockerfile": "FROM 515260921971.dkr.ecr.us-west-2.amazonaws.com/x:1\n"
-                                       "FROM public.ecr.aws/g5f9s8a4/y:1\nFROM mcr.microsoft.com/dotnet/sdk:10.0\n"})
-    assert rc == 0 and not seen and log.count("::warning") == 1, log
+                                       "FROM public.ecr.aws/g5f9s8a4/y:1\nFROM local/base:latest\n"})
+    assert rc == 0 and not seen and "::" not in log, log
+    uv = "ghcr.io/astral-sh/uv:0.13.9@sha256:" + "d" * 64
+    rc, log = run(base, {"Dockerfile": f"FROM {n}mature:1{d}\nRUN --mount=type=bind,from={uv},source=/uv,target=/uv true\n"
+                                       "FROM mcr.microsoft.com/dotnet/sdk:10.0\nCOPY --from=nginx:1.27 / /\nFROM registry.example.com/x/y:1\n"})
+    assert rc == 1 and not seen and log.count("title=base image not through nora") == 4, log
+    assert "file=Dockerfile,line=2" in log and f"use {NORA_HOST}/ghcr/astral-sh/uv:0.13.9@sha256:" in log, log
+    assert f"use {NORA_HOST}/mcr/dotnet/sdk:10.0 " in log and f"use {NORA_HOST}/docker-hub/library/nginx:1.27 " in log, log
+    assert "no prefix for registry.example.com yet" in log, log
+    # a bare name is a stage or a named build context (bake `contexts`): it warns, never fails
+    rc, log = run(base, {"Dockerfile": f"FROM {n}mature:1{d}\nFROM upstream\n"})
+    assert rc == 0 and "named build context" in log, log
+    # a direct image the base already has is not new: a PR that leaves it alone passes
+    assert run({"Dockerfile": f"FROM {uv}\n"}, {"Dockerfile": f"FROM {uv}\nRUN true\n"})[0] == 0
     # a nora that ignores only-if-cached, no token: errors of the check, never a pass
     rc, log = run(base, {"Dockerfile": f"FROM packages.maestra.io/oldnora/x:1{d}\n"})
     assert rc == 1 and "ignores only-if-cached" in log, log
