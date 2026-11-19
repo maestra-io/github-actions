@@ -42,6 +42,11 @@ CHARTS = {"commons-app", "commons-app-init", "postgres"}
 CILIUM_KINDS = {"CiliumNetworkPolicy", "CiliumClusterwideNetworkPolicy"}
 SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
 HERE = os.path.dirname(os.path.abspath(__file__))
+CLUSTERS = {"iota": "us-iota-lw-kube-infra"}  # any other overlay: us-<env>-lw-kube-common
+
+
+def cluster_of(env):
+    return CLUSTERS.get(env, f"us-{env}-lw-kube-common")
 
 
 def run(cmd, **kw):
@@ -56,7 +61,7 @@ def env_of(entry_point):
 def substitute(text, env, ecr):
     for k, v in {
         "${ENV}": env,
-        "${CLUSTER_NAME}": f"us-{env}-lw-kube-common",
+        "${CLUSTER_NAME}": cluster_of(env),
         "${CONTAINER_REGISTRY}": ecr,
         "${APP_PACKAGE_VERSION_TO_BE_REPLACED}": "0.0.0",
     }.items():
@@ -193,7 +198,7 @@ class Gate:
                     self.error(file, f"{ns}/{name}: rendered policies fail the Cilium CRD schema", kc.stdout + kc.stderr)
                     return
                 gate = run([sys.executable, "-I", os.path.join(HERE, "netpol-broad-gate.py"),
-                            "--cluster", f"{env}/us-{env}-lw-kube-common",
+                            "--cluster", f"{env}/{cluster_of(env)}",
                             "--node-subnets", os.path.join(HERE, "netpol-node-subnets.txt"),
                             "--allowlist", os.devnull, rendered])
                 if gate.returncode:
@@ -218,7 +223,7 @@ class Gate:
 def main(argv=None):
     a = argparse.ArgumentParser()
     a.add_argument("--kustomize-path", default="kustomization")
-    a.add_argument("--known-envs", default="omicron,omega", help="comma-separated overlay names, for naming the files that hold the key")
+    a.add_argument("--known-envs", default="omicron,omega,iota", help="comma-separated overlay names, for naming the files that hold the key")
     a.add_argument("--ecr-registry", default="515260921971.dkr.ecr.us-west-2.amazonaws.com")
     a.add_argument("--charts-dir", default=os.path.join(tempfile.gettempdir(), "netpol-gate-charts"))
     a.add_argument("--schemas", default=os.path.join(HERE, "schemas"))
