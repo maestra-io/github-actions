@@ -2,7 +2,7 @@
 # Tests for pr-checks/check-network-policy.py on ci/fixtures/network-policy (the
 # universal-channel-http-sender pilot): the omicron block renders, passes kubeconform and the
 # broad gate; a block without ports fails with the chart's schema text; a block in
-# overlays/omega or in base renders like any other; a policy that is not allow-only is refused; no block = one line; an unpinned chart version is refused; a
+# overlays/omega, overlays/iota (cluster us-iota-lw-kube-infra) or in base renders like any other; a policy that is not allow-only is refused; no block = one line; an unpinned chart version is refused; a
 # stub helm that renders a broad / invalid policy is caught by the broad gate / kubeconform; the
 # commons-app-init hook Job policies render, fail on the chart's text, render nothing disabled.
 #
@@ -90,6 +90,12 @@ grep -q "^ok   k/overlays/omicron" "$work/out" && echo "ok   omicron still rende
 tree k
 printf '    networkPolicy:\n      enabled: false\n      egress:\n        - to: {preset: dragonfly}\n' >>"$work/k/overlays/omega/patch-app.yaml"
 check "omega block disabled: renders nothing, passes" 0 "ok   k/overlays/omega: .* 0 Cilium policies" gate k
+
+# iota is us-iota-lw-kube-infra, not us-iota-lw-kube-common: the broad gate finds its node subnets.
+tree k
+cp -r "$work/k/overlays/omicron" "$work/k/overlays/iota"
+sed -i.bak 's/^      omicron:$/      iota:/' "$work/k/overlays/iota/patch-app.yaml"
+check "iota block: renders and passes the broad gate as iota/us-iota-lw-kube-infra" 0 "ok   k/overlays/iota: .* commons-app $version: 1 Cilium policies, kubeconform ok, broad gate ok" gate k
 
 # The shared peers in base: omicron turns them on, omega (no key of its own) renders nothing.
 tree k
