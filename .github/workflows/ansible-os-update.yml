@@ -154,12 +154,12 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: maestra-io/github-actions/setup-python-nora@38486b9a95224937098e20fb91a527e6103a7606 # v1.106.0
+        uses: maestra-io/github-actions/setup-python-nora@9b8a76b44a7333893fb2f995ab1afdcfb179ba59 # v1.106.5
         with:
           python-version: "3.14"
 
       - name: Set up uv
-        uses: maestra-io/github-actions/setup-uv-nora@f40b5191253ae7e28c10836989a77255666141e4 # v1.104.0
+        uses: maestra-io/github-actions/setup-uv-nora@9b8a76b44a7333893fb2f995ab1afdcfb179ba59 # v1.106.5
         with:
           version: "0.13.6"
           enable-cache: false
