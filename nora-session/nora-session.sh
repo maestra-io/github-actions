@@ -11,10 +11,15 @@ nora_token() ( # a subshell: tracing is off inside it whatever the caller set
   set +x
   nora="${1%/}" aud="$2"
   mint() { # sets jwt only to a valid token
-    local t
-    t=$(curl -fsS --connect-timeout 10 --max-time 20 --retry 3 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-      "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${aud}" | jq -r .value) || return 1
-    [ -n "$t" ] && [ "$t" != null ] || return 1
+    local t i
+    # Retried here, not by curl: a fresh pipe per attempt, so a body cut by
+    # --max-time never sits in front of the next attempt's JSON.
+    for i in 1 2 3; do
+      t=$(curl -fsS --connect-timeout 10 --max-time 20 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+        "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${aud}" | jq -r .value 2>/dev/null) && [ -n "$t" ] && [ "$t" != null ] && break
+      t=; [ "$i" = 3 ] || sleep "$i"
+    done
+    [ -n "$t" ] || return 1
     echo "::add-mask::$t" >&2 # stderr: stdout is the token alone
     jwt=$t
   }
