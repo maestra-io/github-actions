@@ -2,9 +2,12 @@
 # Served by nora raw at src/nodejs.org/dist/v<version>/, uploaded by maestra-io/dockerfiles
 # .github/raw-uploads/node.txt with the same sha256 (nodejs.org/dist/v<version>/SHASUMS256.txt).
 # A new version goes into both files, the dockerfiles PR first (merged = uploaded).
-20.20.2 19e56f0825510207dd904f087fe52faa0a4eb6b2aab5f0ea7a33830d04888b8b
-22.23.5 c54118104acc524633b5abe106bbf44a53126ec8b4e5fa105cb92b5d7de8a1a1
-24.15.0 44836872d9aec49f1e6b52a9a922872db9a2b02d235a616a5681b6a85fec8d89
-24.19.0 f625d97cd707df4ff96254916fbc5ff014f09c09effe5a1e0ca8f6d41a8789d4
-24.22.3 061ec3e3062115705b56b51fa9cc330ab50d34b6969387d4e4b1a50c6809acc2
-26.13.1 518674de2b621728a5e4486f5fb3b7d2900bb3cc4aa97969edaa463db99f9778
+# Last column: the tree pin, the sha256 of what the archive unpacks to (nora-tool.sh tree_digest,
+# printed by `nora-tool/nora-tool.sh node tree <archive>` on linux): a tool-cache entry runs only
+# when its tree is this pin.
+20.20.2 19e56f0825510207dd904f087fe52faa0a4eb6b2aab5f0ea7a33830d04888b8b f0010fd49aba413952be4ba5a1fe9619d35a7f98e7ddb7d38983126fe190f728
+22.23.5 c54118104acc524633b5abe106bbf44a53126ec8b4e5fa105cb92b5d7de8a1a1 953901c56ef6689b5485957444c4514f1da82d1159ef3b74ac591cb8ee5348a1
+24.15.0 44836872d9aec49f1e6b52a9a922872db9a2b02d235a616a5681b6a85fec8d89 f0d2d24bc45aeb726cbd7abaaab0e87537817361b4adfcb1b47757a6c962e8b5
+24.19.0 f625d97cd707df4ff96254916fbc5ff014f09c09effe5a1e0ca8f6d41a8789d4 4e71edc1ed7dc17c3f8133be27143f1c588ce90723fef39e4a57c9b8be1fef01
+24.22.3 061ec3e3062115705b56b51fa9cc330ab50d34b6969387d4e4b1a50c6809acc2 6222d4502d8adb3af6d0e952d02da28da06da33a078f67d23974f12a7611c16e
+26.13.1 518674de2b621728a5e4486f5fb3b7d2900bb3cc4aa97969edaa463db99f9778 2db52b3af56df4d7418779f77eba33b487f6aabc5c5b662ab6a8efaccab99df9

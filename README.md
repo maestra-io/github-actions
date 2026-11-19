@@ -602,7 +602,11 @@ A spec (`latest`, `N`, `N.x`, `N.M`, `N.M.x`, exact) resolves to the newest vers
 action's `versions.txt`, which pins the archive's sha256; a version not listed fails the step
 (nothing falls back to the vendor). The archive is checked against the pin and unpacked into
 the runner tool cache (`$RUNNER_TOOL_CACHE/<tool>/<version>/<arch>`, as the setup actions lay it
-out; a version already complete there is used as it is). It is cached like `dotnet-nora`'s
+out). The unpacked tree is pinned too (the last column of `versions.txt`, printed by
+`nora-tool/nora-tool.sh <tool> tree <archive>`): a version already complete in the tool cache
+(the runner image's, an earlier job's) is used only when its tree is that pin, anything else
+(a changed or added file, a package installed into it) is reinstalled from the verified
+archive before it runs, and a fresh unpack that is not the pin fails. It is cached like `dotnet-nora`'s
 SDKs (`nora-tool-<tool>-<version>-linux-<arch>-<pin prefix>`), and a restored archive is used
 only when its sha256 is the pin (after a rejected one, the fetched archive is saved under
 `<key>-fixed`, which later restores prefer). linux-x64 only; the job needs `id-token: write`.

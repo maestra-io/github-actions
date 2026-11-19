@@ -257,6 +257,26 @@ jobs:
           set -euo pipefail
           env | grep '^SRC_' | sort
           if [ "$GITHUB_RUN_ATTEMPT" -gt 1 ] && env | grep -q '^SRC_.*=nora$'; then echo "::error::re-run attempt $GITHUB_RUN_ATTEMPT fetched from nora"; exit 1; fi
+      - name: tamper with the installed terraform (complete marker and executable bit kept)
+        run: |
+          set -euo pipefail
+          tf=$(command -v terraform)
+          [ -f "$(dirname "$tf").complete" ]
+          printf '#!/bin/sh\necho tampered\n' > "$tf"; chmod +x "$tf"
+      - id: tf-again
+        uses: ./setup-terraform-nora
+        with:
+          terraform_version: "1.14.6"
+          terraform_wrapper: false
+      - name: the tampered tool-cache entry was reinstalled, not run
+        env:
+          SOURCE: ${{ steps.tf-again.outputs.tool-source }}
+          CHECKPOINT_DISABLE: "1"
+        run: |
+          set -euo pipefail
+          echo "source=$SOURCE"
+          [ "$SOURCE" != tool-cache ]
+          terraform version -json | jq -e '.terraform_version == "1.14.6"'
       - name: terraform_wrapper true is refused
         id: wrapper
         continue-on-error: true

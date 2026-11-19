@@ -1,10 +1,13 @@
 # Terraform CLI versions setup-terraform-nora installs: <version> <sha256 of terraform_<version>_linux_amd64.zip>
 # (releases.hashicorp.com/terraform/<version>/terraform_<version>_SHA256SUMS). Fetched through nora's
 # releases.hashicorp.com proxy (/hashicorp/terraform/<version>/), which holds a release for 3 days.
-1.7.3 617042989ce46b5dd07772237b49b57b8f8e97b1604c9dbbd85ead87effb51fe
-1.12.2 1eaed12ca41fcfe094da3d76a7e9aa0639ad3409c43be0103ee9f5a1ff4b7437
-1.14.6 364c6ee08b0cb8fcbb28a115aacb2aa48e88abc56c149170bd65c2f75d98ea8d
-1.15.5 702b2136af6728c8ff037f843dd2dbce2b7ad88786b7381d1d72aefa250f601c
-1.15.6 a7150d3b0e1b5c466ad42e8c499954a3c54645f8b56b385fa025d34f7e88faa9
-1.17.1 4638628058e71a55212b1c563712eac03b902128f40740f3dc8174df12135061
-1.17.2 e6f16b2f0b137ee5729caa8c4e79a3bae4ee261acd198a1fcfa8584a6296605b
+# Last column: the tree pin, the sha256 of what the archive unpacks to (nora-tool.sh tree_digest,
+# printed by `nora-tool/nora-tool.sh terraform tree <archive>` on linux): a tool-cache entry runs only
+# when its tree is this pin.
+1.7.3 617042989ce46b5dd07772237b49b57b8f8e97b1604c9dbbd85ead87effb51fe a6f090b4a96933830c82ae87b5f047915f1a91215fb503ca45c5dca7d7cc24b6
+1.12.2 1eaed12ca41fcfe094da3d76a7e9aa0639ad3409c43be0103ee9f5a1ff4b7437 4b1e79b2d3fe2d8fdb0796e66614fa0a9e1ac19b7495fe9f82f6a41318860ff6
+1.14.6 364c6ee08b0cb8fcbb28a115aacb2aa48e88abc56c149170bd65c2f75d98ea8d d1a8a0078d21ab2f1d5e69459fc79bc525851a9634fd6ffc99a7348c76343c62
+1.15.5 702b2136af6728c8ff037f843dd2dbce2b7ad88786b7381d1d72aefa250f601c a9ae559d9a575e8410aab4c55a6822f471a468755bd3c52153caa9ab65700d7b
+1.15.6 a7150d3b0e1b5c466ad42e8c499954a3c54645f8b56b385fa025d34f7e88faa9 83da7ba4141ed9aa2a19bab376f70b5d2ed92ac80c44a610ac0a1331741fcb57
+1.17.1 4638628058e71a55212b1c563712eac03b902128f40740f3dc8174df12135061 c56fee7d3262a55264a9165e3244bfebca685d175aa91745f7bfffd4edc224f2
+1.17.2 e6f16b2f0b137ee5729caa8c4e79a3bae4ee261acd198a1fcfa8584a6296605b eabd0ca030f07bca0b909085bab97f56c6c038d9ea42ba45452f90cbc7d80ba4

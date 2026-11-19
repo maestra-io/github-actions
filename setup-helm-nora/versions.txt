@@ -2,7 +2,10 @@
 # Served by nora raw at src/get.helm.sh/, uploaded by maestra-io/dockerfiles
 # .github/raw-uploads/helm.txt with the same sha256 (get.helm.sh/<file>.sha256sum). A new
 # version goes into both files, the dockerfiles PR first (merged = uploaded).
-3.18.5 9879bf9c471cdecbbee5ee17cf1de1849b0ffd12871ea01f17ede6861d7134f5
-3.22.0 1e4ab49e429626cf6c6958d914248b78c9730803c2751b87627e171dc800e7bb
-3.22.1 896cf63684a42a723d61c980369d6e588330927deb13676ca0d85006dd6da0ea
-4.3.2 d1c0278d46beab79582d7e50f5b3dc206944ba8e577cde618513fd07daa53983
+# Last column: the tree pin, the sha256 of what the archive unpacks to (nora-tool.sh tree_digest,
+# printed by `nora-tool/nora-tool.sh helm tree <archive>` on linux): a tool-cache entry runs only
+# when its tree is this pin.
+3.18.5 9879bf9c471cdecbbee5ee17cf1de1849b0ffd12871ea01f17ede6861d7134f5 514c2cd0a276eaf88188182d9f30d34f623932334bf91105fa30db10f99ea29e
+3.22.0 1e4ab49e429626cf6c6958d914248b78c9730803c2751b87627e171dc800e7bb 6c24c4e30cf3083c30c1f3bfa3c5aabff337b6125f800f5043b92a964f02e909
+3.22.1 896cf63684a42a723d61c980369d6e588330927deb13676ca0d85006dd6da0ea 03dbf50ba9de5b04e5975da0a6bd6a6a4cf21915c3aa33f3dac471f088e01fea
+4.3.2 d1c0278d46beab79582d7e50f5b3dc206944ba8e577cde618513fd07daa53983 b09f3544698387b80044849a2cff390a6a2ec71e5ce42eed06304f1cb62fd1b0
