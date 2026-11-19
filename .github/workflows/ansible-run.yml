@@ -203,6 +203,16 @@ on:
         required: false
         type: string
         default: "runs-on=${{ github.run_id }}/runner=t3a-small"
+      timeout_minutes:
+        description: >-
+          Job timeout. Without one a wedged job holds its concurrency group for
+          GitHub's 6 h (asbo Deploy 44524806886 hung 50 min). Default 60: the
+          longest of 180 green jobs of this workflow in the callers since
+          20.10.2026 took 34.4 min (mssql-maestra OS Update; p95 24.2 min).
+          A caller that knows its play is short passes a tighter bound.
+        required: false
+        type: number
+        default: 60
       vault_export_token:
         description: "Also export the Vault token of the primary fetch as VAULT_TOKEN (and vault_addr as VAULT_ADDR) to the Execute step, for plays that write to Vault themselves (active-directory-maestra kerberos auth config, issues-maestra#1432). The token lives as long as the role's token_ttl; size that in vault-server values."
         required: false
@@ -296,6 +306,7 @@ permissions:
 jobs:
   ansible:
     runs-on: ${{ inputs.runs_on }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
     environment: ${{ inputs.gh_environment }}
     concurrency:
       # Two classes, deliberately NOT one group.
@@ -518,6 +529,14 @@ jobs:
           proxy: ${{ inputs.teleport_fqdn }}
           token: ${{ inputs.teleport_join_token }}
           certificate-ttl: ${{ inputs.certificate_ttl }}
+
+      # The retry right after a failure lands in the same loss window: eu-central-1
+      # runners lose TCP to the us-iota proxy for ~2-3 min at a 15-min cadence
+      # (:01/:16/:31/:46 and :12/:27/:42/:57 UTC); us-west-2 runners do not. A
+      # retry 1 s later failed the same way (asbo 44544069208 attempt 2, 14:46-14:47).
+      - name: Teleport auth (SSH) — wait out the path loss window
+        if: steps.teleport-auth.outcome == 'failure'
+        run: sleep 120
 
       - name: Teleport auth (SSH) — retry
         id: teleport-auth-retry
@@ -978,7 +997,29 @@ jobs:
           [ "${CHECK_MODE_INPUT}" = "true" ] && RUN_ARGS+=(--check --diff)
 
           set -o pipefail
-          ansible-playbook "$PLAYBOOK_INPUT" "${RUN_ARGS[@]}" 2>&1 | tee -a "$LOG_FILE"
+          ATTEMPT_LOG=$(mktemp)
+          rc=0
+          ansible-playbook "$PLAYBOOK_INPUT" "${RUN_ARGS[@]}" 2>&1 | tee "$ATTEMPT_LOG" | tee -a "$LOG_FILE" || rc=$?
+          # >>> unreachable-retry (ansible/tests/test-unreachable-retry.sh runs this block)
+          # One rerun when the play never reached any host: rc 4 (unreachable, no
+          # failed task) AND every PLAY RECAP row is ok=0 changed=0 failed=0, so no
+          # task ran anywhere and a rerun repeats nothing. That is the first SSH dial
+          # through the Teleport proxy lost on the eu-central-1 -> us-iota path, which
+          # drops connections for ~2-3 min at a 15-min cadence (asbo 44544069208,
+          # 14:43:35-14:44:05 UTC). Mitogen has no SSH connect retry of its own.
+          nothing_ran() {
+            local recap
+            recap=$(sed "s/$(printf '\033')\[[0-9;]*m//g" "$1" | grep -E '^[^ ]+ +: ok=[0-9]+ +changed=[0-9]+ +unreachable=[0-9]+ +failed=[0-9]+') || return 1
+            ! grep -vqE ': ok=0 +changed=0 +unreachable=[0-9]+ +failed=0 ' <<< "$recap"
+          }
+          # <<< unreachable-retry
+          if [ "$rc" = 4 ] && nothing_ran "$ATTEMPT_LOG"; then
+            echo "::warning::no host was reached and no task ran; one rerun in 120 s (Teleport path loss window)"
+            sleep 120
+            rc=0
+            ansible-playbook "$PLAYBOOK_INPUT" "${RUN_ARGS[@]}" 2>&1 | tee -a "$LOG_FILE" || rc=$?
+          fi
+          exit "$rc"
 
       # --- Vault tunnel teardown -----------------------------------------
       - name: Stop Vault tunnel

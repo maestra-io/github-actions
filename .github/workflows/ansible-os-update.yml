@@ -231,6 +231,12 @@ jobs:
           token: github-actions-infra-deploy
           certificate-ttl: 30m
 
+      # Same wait as ansible-run.yml: an immediate retry lands in the same
+      # eu-central-1 -> us-iota loss window (~2-3 min, 15-min cadence).
+      - name: Teleport auth — wait out the path loss window
+        if: steps.teleport-auth.outcome == 'failure'
+        run: sleep 120
+
       - name: Teleport auth — retry
         id: teleport-auth-retry
         if: steps.teleport-auth.outcome == 'failure'

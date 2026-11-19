@@ -17,7 +17,11 @@ nora_token() ( # a subshell: tracing is off inside it whatever the caller set
   # The body goes to a file: curl truncates it before a retry, while stdout would keep a
   # failed attempt's body ("Service Unavailable") in front of the JSON (status-router#41).
   f=$(mktemp); trap 'rm -f "$f"' EXIT
-  code=$(curl -sS --retry 3 -X POST -H "Authorization: Bearer ${jwt}" -o "$f" -w '%{http_code}' \
+  # Backoff bounded at 180 s (1, 2, 4 … 64 s): `--retry 3` gave up after ~7 s, while
+  # the exchange answered 503 for 73 s on 16.11.2026 16:19 UTC and eu-central-1
+  # runners lose TCP to the us-iota edge for ~2-3 min at a 15-min cadence. A
+  # 10 s connect timeout makes a lost SYN a fast retry on a fresh port.
+  code=$(curl -sS --connect-timeout 10 --retry 8 --retry-max-time 180 -X POST -H "Authorization: Bearer ${jwt}" -o "$f" -w '%{http_code}' \
     "${nora}/api/oidc/session") || { echo "::error::nora session exchange at $nora failed" >&2; exit 1; }
   case "$code" in
     200) session=$(jq -r '.token // empty' "$f") ;;

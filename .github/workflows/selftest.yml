@@ -270,6 +270,11 @@ jobs:
       - name: avoid-target-proxy pin (ansible-run.yml)
         run: bash ansible/tests/test-avoid-target-proxy.sh
 
+      # The one rerun after an unreachable-only failure must never repeat a task:
+      # it is allowed only when the PLAY RECAP shows no task ran on any host.
+      - name: unreachable-only rerun gate (ansible-run.yml)
+        run: bash ansible/tests/test-unreachable-retry.sh
+
       # The Python install of every Ansible workflow: the caller's uv.lock through
       # nora only, and no install at all without one (issues-maestra#1649).
       - name: python-deps block (uv.lock through nora only)
