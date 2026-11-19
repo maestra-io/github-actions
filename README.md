@@ -565,7 +565,17 @@ N.M.Fxx, exact; one per line) and `global-json-file` (its `rollForward`) inputs,
 the newest SDK in `dotnet-nora/sdks.txt`; each tarball comes from nora raw
 (`/raw/src/builds.dotnet.microsoft.com/dotnet/Sdk/<v>/…`, uploaded by maestra-io/dockerfiles
 `.github/raw-uploads/dotnet.txt`), is checked against the sha256 pinned in `sdks.txt` and
-unpacked next to the image's SDKs. linux-x64 only; the job needs `id-token: write`.
+unpacked whole into its own runner tool-cache directory (`dotnet-nora/<version>`). linux-x64 only;
+the job needs `id-token: write`.
+
+The unpacked tree is pinned too (the third column of `sdks.txt`). An SDK already in the tool cache
+(an earlier job's on a reused instance) runs only when its tree is that pin; a tampered or extended
+one is reinstalled from the verified archive, and a fresh unpack that is not the pin fails. The pin
+lives in this repository at the action's commit, so a job cannot rewrite it the way it could a
+manifest beside the cache. The job's dotnet root (`$RUNNER_TEMP/dotnet-nora-root`, on `PATH` and
+in `DOTNET_ROOT`) is built fresh from hard links into the verified SDKs, newest first: it holds the
+SDKs asked for and none of the runner image's, so list every SDK the job needs (a test runtime
+comes with its SDK).
 
 The tarballs are cached (`actions/cache`, on RunsOn the Magic Cache in S3 next to the
 runners) under `dotnet-nora-sdk-linux-x64-<versions>-<hash of their pins>`: a job whose
@@ -581,7 +591,8 @@ restored tarball is used only when its sha256 is the pin, else it is fetched fro
 
 A version `sdks.txt` does not hold fails the step (nothing falls back to Microsoft). A new
 SDK: the dockerfiles PR first (its merge uploads), then the line in `sdks.txt`. Test:
-`scripts/test-dotnet-nora.sh` (selftest; the selftest also installs 10.0.x through it).
+`scripts/test-dotnet-nora.sh` (selftest; the selftest also installs 10.0.x and 11.0.x through it and
+reinstalls a tampered SDK 10 from the tool cache).
 
 ## Toolchains through nora (`setup-{go,node,python,uv,terraform,helm}-nora`)
 

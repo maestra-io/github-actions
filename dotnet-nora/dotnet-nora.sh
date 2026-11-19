@@ -4,12 +4,21 @@
 # (setup-dotnet syntax, one per line: 10.0.x, 10.0, 10, 10.x, 10.0.4xx, 10.0.404) and
 # GLOBAL_JSON (a global.json: its sdk.version under its rollForward). Each is resolved to the
 # newest SDK in sdks.txt that satisfies it, fetched from nora raw with the job's OIDC session
-# token, checked against the sha256 pinned there and unpacked into $DOTNET_INSTALL_DIR
-# (default /usr/share/dotnet, as setup-dotnet; $HOME/.dotnet when that is not writable), next
-# to the SDKs already there; the directory goes on PATH and into DOTNET_ROOT. Nothing reaches
-# Microsoft: a version sdks.txt does not list fails here instead.
+# token, checked against the sha256 pinned there and unpacked whole into its own directory in
+# the runner tool cache ($RUNNER_TOOL_CACHE/dotnet-nora/<version>, with a <version>.complete
+# marker). The unpacked tree is pinned too (the third column of sdks.txt: tree_digest below). An
+# SDK already complete there (an earlier job's on a reused instance) is used, with nothing
+# fetched, only when its tree is that pin; any other tree (a tampered file, an added one) is
+# reinstalled from the verified archive, and a freshly unpacked tree that is not the pin fails the
+# step. The job's dotnet root is then built fresh in $RUNNER_TEMP/dotnet-nora-root from hard links
+# into the verified trees (copies across file systems), newest SDK first (its `dotnet` host), and
+# goes on PATH and into DOTNET_ROOT. Only the SDKs asked for are in it, never the runner image's:
+# list every SDK the job needs (a test runtime comes with its SDK). Nothing reaches Microsoft: a
+# version sdks.txt does not list fails here instead.
 # DOTNET_NORA_RESOLVE_ONLY=1 prints the resolved versions and stops (scripts/test-dotnet-nora.sh).
-# DOTNET_NORA_PLAN=1 writes cache-key (empty when every SDK is already installed) to
+# DOTNET_NORA_TREE=<archive> prints the tree pin of a verified archive (unpacked as install does;
+# GNU tools, linux) and stops: how the third column of sdks.txt is made.
+# DOTNET_NORA_PLAN=1 writes cache-key (empty when every SDK is complete in the tool cache) to
 # $GITHUB_OUTPUT and stops. DOTNET_NORA_CACHE_DIR: archives restored from the runner cache
 # (RunsOn Magic Cache, S3 next to the runners) are used from there when their sha256 is the
 # pin, anything else is deleted and fetched from nora; fetched archives are kept there for the
@@ -18,6 +27,21 @@ set -euo pipefail
 here="${GITHUB_ACTION_PATH:-$(cd "$(dirname "$0")" && pwd)}"
 list="$here/sdks.txt"
 fail() { echo "::error::dotnet-nora: $*" >&2; exit 1; }
+umask 022 # the exec bits of the unpacked tree are part of its pin
+
+# tree_digest <dir>: sha256 over every entry's type, path and symlink target, the owner-exec bit of
+# every file and the sha256 of every file's content (nora-tool/nora-tool.sh has the same function).
+# Anything added, removed, rewritten or made executable changes it; mtimes and owners do not.
+tree_digest() {
+  ( cd "$1" && LC_ALL=C find . -mindepth 1 -printf '%y %p %l\n' | LC_ALL=C sort \
+      && LC_ALL=C find . -type f -perm -u+x -printf 'x %p\n' | LC_ALL=C sort \
+      && LC_ALL=C find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum ) | sha256sum | cut -d' ' -f1
+}
+if [ -n "${DOTNET_NORA_TREE:-}" ]; then
+  t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+  tar -xzf "$DOTNET_NORA_TREE" -C "$t" || fail "$DOTNET_NORA_TREE: unpacking failed"
+  tree_digest "$t"; exit 0
+fi
 
 listed() { sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$list" | awk '{ print $1 }'; }
 newest() { sort -t. -k1,1n -k2,2n -k3,3n | tail -1; }
@@ -82,7 +106,7 @@ if [ -n "${GLOBAL_JSON:-}" ] && [ -f "$GLOBAL_JSON" ]; then
   v=$(resolve_global_json "$GLOBAL_JSON") || exit 1
   [ -z "$v" ] || versions+=("$v")
 fi
-# newest first: on an empty directory the first SDK's `dotnet` host stays (cp -n below)
+# newest first: the first SDK's `dotnet` host stays in the job's root (cp --update=none below)
 [ "${#versions[@]}" -eq 0 ] || mapfile -t versions < <(printf '%s\n' "${versions[@]}" | sort -u -t. -k1,1nr -k2,2nr -k3,3nr)
 if [ "${DOTNET_NORA_RESOLVE_ONLY:-}" = 1 ]; then
   [ "${#versions[@]}" -eq 0 ] || printf '%s\n' "${versions[@]}"
@@ -91,16 +115,16 @@ fi
 if [ "${#versions[@]}" -eq 0 ]; then echo "dotnet-nora: no dotnet-version and no global.json SDK: nothing installed"; exit 0; fi
 [ "$(uname -m)" = x86_64 ] || fail "only linux-x64 SDKs are hosted (this runner: $(uname -s) $(uname -m))"
 
-dir="${DOTNET_INSTALL_DIR:-/usr/share/dotnet}"
-if ! { [ -d "$dir" ] && [ -w "$dir" ]; } && ! { [ ! -e "$dir" ] && mkdir -p "$dir" 2>/dev/null; }; then
-  echo "dotnet-nora: $dir is not writable, installing into $HOME/.dotnet"
-  dir="$HOME/.dotnet"; mkdir -p "$dir"
-fi
+# Each SDK in its own directory of the tool cache (a cold install per version at a time on a host)
+tc="${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}/dotnet-nora"
+if ! { mkdir -p "$tc" 2>/dev/null && [ -w "$tc" ]; }; then tc="${RUNNER_TEMP:-/tmp}/dotnet-nora-sdks"; mkdir -p "$tc"; fi
+complete() { [ -f "$tc/$1.complete" ] && [ -d "$tc/$1/sdk/$1" ]; }
+pin() { sed -e 's/#.*//' "$list" | awk -v v="$1" -v c="$2" '$1 == v { print $c }'; }
 
 if [ "${DOTNET_NORA_PLAN:-}" = 1 ]; then
   # The key names the SDKs still to install and hashes their pins: a re-pinned archive
   # never matches an older entry.
-  pins=$(for v in "${versions[@]}"; do [ -d "$dir/sdk/$v" ] || awk -v v="$v" '$1 == v' "$list"; done)
+  pins=$(for v in "${versions[@]}"; do complete "$v" || awk -v v="$v" '$1 == v' "$list"; done)
   key=""
   [ -z "$pins" ] || key="dotnet-nora-sdk-linux-x64-$(awk '{ print $1 }' <<<"$pins" | paste -sd+ -)-$(sha256sum <<<"$pins" | cut -c1-16)"
   echo "cache-key=$key" >> "$GITHUB_OUTPUT"
@@ -114,47 +138,57 @@ token=""
 cache="${DOTNET_NORA_CACHE_DIR:-}"
 tmp="${cache:-${RUNNER_TEMP:-/tmp}/dotnet-nora}"; mkdir -p "$tmp"
 base="${NORA_URL%/}/raw/src/builds.dotnet.microsoft.com/dotnet/Sdk"
+# The job's own dotnet root, built fresh: nothing an earlier job left runs in it.
+root="${RUNNER_TEMP:-/tmp}/dotnet-nora-root"
+rm -rf "$root"; mkdir -p "$root"
 for v in "${versions[@]}"; do
-  if [ -d "$dir/sdk/$v" ]; then echo "dotnet-nora: SDK $v already in $dir"; continue; fi
-  sum=$(awk -v v="$v" '$1 == v { print $2 }' "$list")
-  url="$base/$v/dotnet-sdk-$v-linux-x64.tar.gz"
-  f="$tmp/dotnet-sdk-$v.tar.gz"
-  # A cached archive is another copy of an executable: used only when its sha256 is the pin
-  # in this action's sdks.txt, else dropped and fetched from nora (and checked) as on a miss.
-  if [ -n "$cache" ] && [ -s "$f" ] && [ "$(sha256sum "$f" | cut -d' ' -f1)" = "$sum" ]; then
-    echo "dotnet-nora: SDK $v archive from the runner cache (sha256 $sum), nothing fetched from nora"
+  sum=$(pin "$v" 2) tree=$(pin "$v" 3)
+  [[ $tree =~ ^[0-9a-f]{64}$ && $tree != "$sum" ]] || fail "SDK $v has no tree pin (third column) in sdks.txt"
+  d="$tc/$v"
+  # held until the SDK is linked into the root: no other job replaces it in between
+  if command -v flock >/dev/null; then exec 9>"$tc/.$v.lock"; flock 9; fi
+  got_tree=""
+  if complete "$v"; then got_tree=$(tree_digest "$d") || got_tree=unreadable; fi
+  if [ "$got_tree" = "$tree" ]; then
+    echo "dotnet-nora: SDK $v already in the tool cache ($d, tree sha256 $tree), nothing fetched"
   else
-    [ ! -e "$f" ] || { echo "::warning::dotnet-nora: cached SDK $v archive is not the sha256 pin, fetching it from nora"; rm -f "$f"; }
-    [ -n "$token" ] || token=$(nora_token "$NORA_URL" "$NORA_AUDIENCE") || fail "no nora token (the job needs permissions: id-token: write)"
-    echo "::add-mask::$token"
-    # the credential reaches curl as a config on stdin, never on its command line
-    printf 'user = "token:%s"\n' "$token" | curl -fsS --retry 3 --connect-timeout 15 -K - -o "$f" "$url" \
-      || fail "GET $url failed"
-    got=$(sha256sum "$f" | cut -d' ' -f1)
-    [ "$got" = "$sum" ] || { rm -f "$f"; fail "SDK $v from $url: sha256 $got, sdks.txt pins $sum"; }
-    echo "dotnet-nora: SDK $v archive fetched from $url"
-    [ -z "$cache" ] || echo "save=true" >> "$GITHUB_OUTPUT"
+    [ -z "$got_tree" ] || echo "::warning::dotnet-nora: $d is not the pinned tree (tree sha256 $got_tree, sdks.txt pins $tree): reinstalling it from the verified archive"
+    url="$base/$v/dotnet-sdk-$v-linux-x64.tar.gz"
+    f="$tmp/dotnet-sdk-$v.tar.gz"
+    # A cached archive is another copy of an executable: used only when its sha256 is the pin
+    # in this action's sdks.txt, else dropped and fetched from nora (and checked) as on a miss.
+    if [ -n "$cache" ] && [ -s "$f" ] && [ "$(sha256sum "$f" | cut -d' ' -f1)" = "$sum" ]; then
+      echo "dotnet-nora: SDK $v archive from the runner cache (sha256 $sum), nothing fetched from nora"
+    else
+      [ ! -e "$f" ] || { echo "::warning::dotnet-nora: cached SDK $v archive is not the sha256 pin, fetching it from nora"; rm -f "$f"; }
+      [ -n "$token" ] || token=$(nora_token "$NORA_URL" "$NORA_AUDIENCE") || fail "no nora token (the job needs permissions: id-token: write)"
+      echo "::add-mask::$token"
+      # the credential reaches curl as a config on stdin, never on its command line
+      printf 'user = "token:%s"\n' "$token" | curl -fsS --retry 3 --connect-timeout 15 -K - -o "$f" "$url" \
+        || fail "GET $url failed"
+      got=$(sha256sum "$f" | cut -d' ' -f1)
+      [ "$got" = "$sum" ] || { rm -f "$f"; fail "SDK $v from $url: sha256 $got, sdks.txt pins $sum"; }
+      echo "dotnet-nora: SDK $v archive fetched from $url"
+      [ -z "$cache" ] || echo "save=true" >> "$GITHUB_OUTPUT"
+    fi
+    # unpacked next to its final place, checked, moved in whole, then marked complete
+    rm -rf "$d" "$d.nora" "$d.complete"; mkdir -p "$d.nora"
+    tar -xzf "$f" -C "$d.nora" || { rm -rf "$d.nora"; fail "SDK $v: unpacking failed"; }
+    [ -n "$cache" ] || rm -f "$f"
+    got_tree=$(tree_digest "$d.nora")
+    [ "$got_tree" = "$tree" ] || { rm -rf "$d.nora"; fail "SDK $v unpacked to tree sha256 $got_tree, sdks.txt pins $tree"; }
+    mv "$d.nora" "$d"; touch "$d.complete"
+    echo "dotnet-nora: SDK $v (sha256 $sum, tree sha256 $tree) into $d"
   fi
-  # Staged next to $dir, then merged: versioned directories (host/fxr/<v>, shared/*/<v>,
-  # packs, templates) are overwritten, so a retry repairs an interrupted merge; top-level
-  # files (the `dotnet` host) are kept when present (the image's is newer); sdk/<v> moves
-  # in last, so its presence means a complete install.
-  stage="$dir/.dotnet-nora-$v"
-  rm -rf "$stage" "$stage.sdk"; mkdir -p "$stage"
-  tar -xzf "$f" -C "$stage" || { rm -rf "$stage"; fail "SDK $v: unpacking failed"; }
-  [ -n "$cache" ] || rm -f "$f"
-  mv "$stage/sdk/$v" "$stage.sdk"
-  # cp -R, not -a: the image's directories belong to root, and preserving their times fails
-  # (EPERM) for the runner user. `-exec … +` so a failed copy fails the step instead of
-  # being dropped by find, and sdk/<v> never marks a partial install as complete.
-  find "$stage" -mindepth 1 -maxdepth 1 -type f -exec cp --update=none -t "$dir" {} +
-  find "$stage" -mindepth 1 -maxdepth 1 -type d -exec cp -R -t "$dir" {} +
-  mkdir -p "$dir/sdk"
-  mv "$stage.sdk" "$dir/sdk/$v"
-  rm -rf "$stage"
-  echo "dotnet-nora: SDK $v (sha256 $sum) into $dir"
+  # Newest first: the first SDK's top-level files (the `dotnet` host) stay; versioned
+  # directories shared by two SDKs (host/fxr/<v>, shared/*/<v>) are the same release.
+  # A job that rewrites a linked file rewrites the tool cache's copy: the next job's tree
+  # check reinstalls it.
+  cp -al --update=none "$d/." "$root/" 2>/dev/null || cp -R --update=none "$d/." "$root/" \
+    || fail "SDK $v: linking into $root failed"
+  exec 9>&-
 done
-echo "$dir" >> "$GITHUB_PATH"
-echo "DOTNET_ROOT=$dir" >> "$GITHUB_ENV"
+echo "$root" >> "$GITHUB_PATH"
+echo "DOTNET_ROOT=$root" >> "$GITHUB_ENV"
 { echo 'versions<<DOTNET_NORA_EOF'; printf '%s\n' "${versions[@]}"; echo 'DOTNET_NORA_EOF'; } >> "$GITHUB_OUTPUT"
-PATH="$dir:$PATH" dotnet --list-sdks
+PATH="$root:$PATH" dotnet --list-sdks
