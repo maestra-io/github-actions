@@ -275,6 +275,10 @@ jobs:
       - name: unreachable-only rerun gate (ansible-run.yml)
         run: bash ansible/tests/test-unreachable-retry.sh
 
+      # Opt-in: a re-run of an old caller run must not apply its older commit.
+      - name: refuse-ancestor gate (ansible-run.yml)
+        run: bash ansible/tests/test-refuse-ancestor.sh
+
       # The Python install of every Ansible workflow: the caller's uv.lock through
       # nora only, and no install at all without one (issues-maestra#1649).
       - name: python-deps block (uv.lock through nora only)

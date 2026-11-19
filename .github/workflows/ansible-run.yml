@@ -71,6 +71,21 @@ on:
         required: false
         type: string
         default: ""
+      refuse_ancestor_of_branch_tip:
+        description: >-
+          Fail before any play when github.sha is a strict ancestor of the current
+          tip of github.ref (and when github.ref is not a branch), so a re-run of an
+          old caller run does not apply its older commit over a newer one (asbo
+          Deploy 44521282714 re-run, 19.11.2026). Uses git with contents: read only.
+          A sha equal to the tip, newer, or diverged passes. Off by default.
+        required: false
+        type: boolean
+        default: false
+      allow_rollback:
+        description: "With refuse_ancestor_of_branch_tip: run anyway (a warning instead of the failure), for a deliberate rollback."
+        required: false
+        type: boolean
+        default: false
       # --- execution mode ------------------------------------------------
       use_mitogen:
         description: "Enable Mitogen linear strategy (Linux). Set false for Windows/PowerShell-over-SSH."
@@ -343,6 +358,47 @@ jobs:
         with:
           # Empty = actions/checkout's default (the caller's commit).
           ref: ${{ inputs.checkout_ref }}
+
+      # A caller cannot add a step to this job, and reading its last successful run
+      # needs actions: read, which the callers do not grant; the branch tip needs
+      # only the clone. First, so a refused run touches nothing.
+      - name: Refuse an ancestor of the branch tip
+        if: inputs.refuse_ancestor_of_branch_tip
+        env:
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref }}
+          ALLOW_ROLLBACK: ${{ inputs.allow_rollback }}
+        run: |
+          set -uo pipefail
+          # >>> refuse-ancestor (ansible/tests/test-refuse-ancestor.sh runs this block)
+          refuse_ancestor() { # <sha> <ref> <allow_rollback>; cwd: a clone with remote origin
+            local sha=$1 ref=$2 allow=$3 branch tip rc unshallow=
+            case $ref in
+              refs/heads/*) branch=${ref#refs/heads/} ;;
+              *)
+                [ "$allow" = true ] && { echo "::warning::$ref is not a branch; running $sha anyway (allow_rollback)"; return 0; }
+                echo "::error::$ref is not a branch: no tip to compare $sha with"; return 1 ;;
+            esac
+            # The checkout is shallow; ancestry needs the history of both commits.
+            [ "$(git rev-parse --is-shallow-repository)" = true ] && unshallow=--unshallow
+            git fetch --no-tags --quiet $unshallow origin "$sha" "+refs/heads/$branch:refs/remotes/origin/$branch" ||
+              { echo "::error::could not fetch $sha and the tip of $branch"; return 1; }
+            tip=$(git rev-parse "refs/remotes/origin/$branch") || return 1
+            if [ "$sha" = "$tip" ]; then echo "$sha is the tip of $branch"; return 0; fi
+            git merge-base --is-ancestor "$sha" "$tip"; rc=$?
+            case $rc in
+              0)
+                if [ "$allow" = true ]; then
+                  echo "::warning::rolling back: $sha is older than the tip of $branch ($tip), allow_rollback=true"; return 0
+                fi
+                echo "::error::refusing to run $sha: it is older than the tip of $branch ($tip). A re-run of an old run? Start a new run from $branch, or pass allow_rollback."
+                return 1 ;;
+              1) echo "$sha is not an ancestor of the tip of $branch ($tip): newer or diverged, running it"; return 0 ;;
+              *) echo "::error::git merge-base failed ($rc) for $sha and $tip"; return 1 ;;
+            esac
+          }
+          # <<< refuse-ancestor
+          refuse_ancestor "$SHA" "$REF" "$ALLOW_ROLLBACK"
 
       - name: Set up Python
         uses: maestra-io/github-actions/setup-python-nora@9b8a76b44a7333893fb2f995ab1afdcfb179ba59 # v1.106.5
