@@ -3,7 +3,9 @@
 # go.mod resolved against each versions.txt (NORA_TOOL_RESOLVE_ONLY), the refusals, and with a
 # stub curl: a download whose sha256 is not the pin is refused and nothing unpacked; a fetch
 # keeps the archive for the cache save; a cached archive with the pin fetches nothing; a cached
-# archive that is not the pin is fetched again; a complete tool-cache directory fetches nothing.
+# archive that is not the pin is fetched again; a complete tool-cache directory fetches nothing
+# only when its tree is the tree pin (a tampered binary or an added file is reinstalled from the
+# verified archive); an unpacked tree that is not the pin fails, and so does a missing tree pin.
 # The real downloads from nora are the jobs of .github/workflows/nora-tool-selftest.yml.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,12 +24,14 @@ refuse() { if resolve "${@:2}" >/dev/null; then fail "$2 '$3' resolved, want a r
 
 for t in go node python uv terraform helm; do
   [ -s "${here}/../setup-$t-nora/versions.txt" ] || fail "no setup-$t-nora/versions.txt"
-  # every pin line: version, 64-hex sha256 (python: + its release tag)
-  sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "${here}/../setup-$t-nora/versions.txt" | while read -r v s tag rest; do
+  # every pin line: version, 64-hex archive sha256, (python: its release tag,) 64-hex tree sha256
+  sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "${here}/../setup-$t-nora/versions.txt" | while read -r v s a b rest; do
     [[ $v =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "$t pin '$v' is not X.Y.Z"
     [[ $s =~ ^[0-9a-f]{64}$ ]] || fail "$t $v sha256 '$s'"
+    if [ "$t" = python ]; then tag=$a tree=$b; else tag="" tree=$a; [ -z "$b" ] || fail "$t $v: extra columns"; fi
+    [ -z "$rest" ] || fail "$t $v: extra columns"
     [ "$t" != python ] || [[ $tag =~ ^[0-9]{8}$ ]] || fail "python $v release tag '$tag'"
-    if [ -n "$rest" ] || { [ "$t" != python ] && [ -n "$tag" ]; }; then fail "$t $v: extra columns"; fi
+    [[ $tree =~ ^[0-9a-f]{64}$ ]] && [ "$tree" != "$s" ] || fail "$t $v tree sha256 '$tree'"
   done
   expect "$(newest $t)" $t ""
   expect "$(newest $t)" $t latest
@@ -58,7 +62,8 @@ act="$root/action"; mkdir -p "$act/nora-tool" "$act/nora-session" "$act/setup-he
 cp "$script" "$act/nora-tool/"; cp "${here}/../nora-session/nora-session.sh" "$act/nora-session/"
 printf '#!/bin/sh\necho v9.9.9\n' > "$root/pkg/linux-amd64/helm"; chmod +x "$root/pkg/linux-amd64/helm"
 tar -czf "$root/good" -C "$root/pkg" linux-amd64
-printf '9.9.9 %s\n' "$(sha256sum "$root/good" | cut -d' ' -f1)" > "$act/setup-helm-nora/versions.txt"
+tree=$(bash "$script" helm tree "$root/good") && [[ $tree =~ ^[0-9a-f]{64}$ ]] || fail "tree mode: '$tree'"
+printf '9.9.9 %s %s\n' "$(sha256sum "$root/good" | cut -d' ' -f1)" "$tree" > "$act/setup-helm-nora/versions.txt"
 cat > "$root/bin/curl" <<'STUB'
 #!/usr/bin/env bash
 echo "${*: -1}" >> "$BODY.all" # every call (token exchange too): the "nothing fetched" cases need none
@@ -139,4 +144,38 @@ run plan || fail "plan: $(cat "$root/log")"
 grep -qx "cache-key=$key" "$root/out" || fail "marker without executable counted as installed: $(cat "$root/out")"
 run install "$root/cache" || fail "reinstall: $(cat "$root/log")"
 [ "$("$dir/helm")" = v9.9.9 ] || fail "marker without executable: not reinstalled"
+
+# a complete tool-cache entry whose tree is not the pin is never run: reinstalled from the verified archive
+reinstalled() { # reinstalled <case>: the entry was replaced from the runner cache, nothing from nora
+  grep -q "is not the pinned tree" "$root/log" || fail "$1: not reported: $(cat "$root/log")"
+  grep -qx "source=runner-cache" "$root/out" || fail "$1: source output: $(cat "$root/out")"
+  [ "$("$dir/helm")" = v9.9.9 ] && [ -f "$dir.complete" ] || fail "$1: not reinstalled"
+  [ ! -e "$dir/planted" ] || fail "$1: the planted file survived"
+}
+run install "$root/cache" || fail "setup: $(cat "$root/log")"
+: > "$root/body"; rm -f "$root/body.all"   # nora would serve a tampered body: only the runner cache may be used
+printf '#!/bin/sh\necho pwned\n' > "$dir/helm"; chmod +x "$dir/helm"   # same marker, same executable bit
+run install "$root/cache" || fail "tampered binary: $(cat "$root/log")"
+reinstalled "tampered binary"
+echo x > "$dir/planted"
+run install "$root/cache" || fail "added file: $(cat "$root/log")"
+reinstalled "added file"
+ln -s helm "$dir/helm2"
+run install "$root/cache" || fail "added symlink: $(cat "$root/log")"
+reinstalled "added symlink"
+[ ! -e "$dir/helm2" ] || fail "added symlink survived"
+[ ! -e "$root/body.all" ] || fail "a reinstall from the runner cache called nora: $(cat "$root/body.all")"
+
+# the tree pin is checked on a fresh unpack too, and a version without one is refused
+pinned=$(cat "$act/setup-helm-nora/versions.txt")
+printf '9.9.9 %s %s\n' "$(sha256sum "$root/good" | cut -d' ' -f1)" "$(printf '%064d' 0)" > "$act/setup-helm-nora/versions.txt"
+rm -rf "$dir" "$dir.complete"
+if run install "$root/cache"; then fail "an unpacked tree that is not the pin was accepted"; fi
+grep -qF "unpacked to tree sha256" "$root/log" || fail "no tree refusal: $(cat "$root/log")"
+[ ! -e "$dir" ] && [ ! -e "$dir.complete" ] && [ ! -e "$dir.nora" ] || fail "installed after the tree refusal"
+[ ! -s "$root/path" ] || fail "PATH exported after the tree refusal"
+printf '9.9.9 %s\n' "$(sha256sum "$root/good" | cut -d' ' -f1)" > "$act/setup-helm-nora/versions.txt"
+if run plan; then fail "a version without a tree pin was planned"; fi
+grep -qF "has no tree pin" "$root/log" || fail "no missing-tree refusal: $(cat "$root/log")"
+printf '%s\n' "$pinned" > "$act/setup-helm-nora/versions.txt"
 echo "nora-tool: all checks passed"

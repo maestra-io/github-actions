@@ -13,22 +13,57 @@
 #   terraform       nora's releases.hashicorp.com proxy
 # The archive is checked against the pin and unpacked into the runner tool cache
 # ($RUNNER_TOOL_CACHE/<name>/<version>/<arch>, as the setup actions lay it out, with the
-# <arch>.complete marker), whose bin goes on PATH. A version already complete there (the runner
-# image's, or an earlier job's on a reused instance) is used as it is and nothing is fetched.
+# <arch>.complete marker), whose bin goes on PATH. The unpacked tree is pinned too (the last column of
+# versions.txt: tree_digest below over what the pinned archive unpacks to). A version already complete
+# there (the runner image's, or an earlier job's on a reused instance) is used, with nothing fetched,
+# only when its tree is that pin; any other tree (a tampered binary, an added file, a package
+# installed into it, the runner image's own build) is reinstalled from the verified archive. A freshly
+# unpacked tree that is not the pin fails the step.
 # plan: writes version and cache-key (empty when nothing is to fetch) to $GITHUB_OUTPUT.
 # install: NORA_TOOL_CACHE_DIR = archives restored from the runner cache (RunsOn Magic Cache):
 # one is used only when its sha256 is the pin, anything else is deleted and fetched from nora;
 # a fetched archive is kept there and save=true written for the cache save.
 # NORA_TOOL_RESOLVE_ONLY=1 prints the resolved version and stops (scripts/test-nora-tool.sh).
+# tree <archive>: prints the tree pin of a verified archive (unpacked as install does; GNU tools,
+# linux): how the last column of versions.txt is made.
 set -euo pipefail
-tool=${1:?tool} mode=${2:?plan|install}
+tool=${1:?tool} mode=${2:?plan|install|tree}
 here=$(cd "$(dirname "$0")" && pwd)
 list="$here/../setup-$tool-nora/versions.txt"
 fail() { echo "::error::setup-$tool-nora: $*" >&2; exit 1; }
+umask 022 # the exec bits of the unpacked tree are part of its pin
+
+# unpack <archive> <dir>: the archive's toolchain into <dir> (created), as install lays it out
+unpack() {
+  mkdir -p "$2"
+  case "$tool" in
+    terraform) python3 -I -m zipfile -e "$1" "$2" && chmod +x "$2/terraform" ;;
+    helm) tar -xzf "$1" -C "$2" --strip-components=1 linux-amd64/helm ;;
+    *) tar -xzf "$1" -C "$2" --strip-components=1 ;;
+  esac || return 1
+  # python-build-standalone has python3 / pip3; setup-python's builds also answer to python / pip
+  if [ "$tool" = python ]; then
+    [ -e "$2/bin/python" ] || ln -s python3 "$2/bin/python"
+    [ -e "$2/bin/pip" ] || [ ! -e "$2/bin/pip3" ] || ln -s pip3 "$2/bin/pip"
+  fi
+}
+# tree_digest <dir>: sha256 over every entry's type, path and symlink target, the owner-exec bit of
+# every file and the sha256 of every file's content. Anything added, removed, rewritten or made
+# executable changes it; mtimes and owners do not.
+tree_digest() {
+  ( cd "$1" && LC_ALL=C find . -mindepth 1 -printf '%y %p %l\n' | LC_ALL=C sort \
+      && LC_ALL=C find . -type f -perm -u+x -printf 'x %p\n' | LC_ALL=C sort \
+      && LC_ALL=C find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum ) | sha256sum | cut -d' ' -f1
+}
+if [ "$mode" = tree ]; then
+  a=${3:?archive}; t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+  unpack "$a" "$t/x" || fail "$a: unpacking failed"
+  tree_digest "$t/x"; exit 0
+fi
 [ -f "$list" ] || fail "no pin file $list"
 
 listed() { sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$list" | awk '{ print $1 }' | sort -V; }
-pin() { awk -v v="$1" -v c="$2" '$1 == v { print $c }' "$list"; }
+pin() { sed -e 's/#.*//' "$list" | awk -v v="$1" -v c="$2" '$1 == v { print (c == "NF" ? $NF : $c) }'; }
 
 # setup-* version spec → one pinned version
 resolve_spec() {
@@ -47,14 +82,14 @@ resolve_spec() {
 # go.mod: `toolchain goX.Y.Z`, else `go X.Y[.Z]` (what setup-go reads; a `//` comment after either is
 # ignored) — the newest pin of X.Y at or above it
 resolve_go_mod() {
-  local f=$1 v M m p
-  [ -f "$f" ] || fail "go-version-file $f not found"
-  v=$(sed -e 's|//.*||' "$f" | sed -n 's/^[[:space:]]*toolchain[[:space:]]*go\([0-9][0-9.]*\)[[:space:]]*$/\1/p' | head -1)
-  [ -n "$v" ] || v=$(sed -e 's|//.*||' "$f" | sed -n 's/^[[:space:]]*go[[:space:]]*\([0-9][0-9.]*\)[[:space:]]*$/\1/p' | head -1)
-  [[ $v =~ ^([0-9]+)\.([0-9]+)(\.([0-9]+))?$ ]] || fail "$f names no Go version"
+  local gm=$1 v M m p
+  [ -f "$gm" ] || fail "go-version-file $f not found"
+  v=$(sed -e 's|//.*||' "$gm" | sed -n 's/^[[:space:]]*toolchain[[:space:]]*go\([0-9][0-9.]*\)[[:space:]]*$/\1/p' | head -1)
+  [ -n "$v" ] || v=$(sed -e 's|//.*||' "$gm" | sed -n 's/^[[:space:]]*go[[:space:]]*\([0-9][0-9.]*\)[[:space:]]*$/\1/p' | head -1)
+  [[ $v =~ ^([0-9]+)\.([0-9]+)(\.([0-9]+))?$ ]] || fail "$gm names no Go version"
   M=${BASH_REMATCH[1]} m=${BASH_REMATCH[2]} p=${BASH_REMATCH[4]:-0}
   v=$(listed | awk -F. -v M="$M" -v m="$m" -v p="$p" '$1 == M && $2 == m && $3 >= p' | tail -1)
-  [ -n "$v" ] || fail "no pinned Go $M.$m.x at or above $f's ${M}.${m}.${p} in setup-go-nora/versions.txt"
+  [ -n "$v" ] || fail "no pinned Go $M.$m.x at or above $gm's ${M}.${m}.${p} in setup-go-nora/versions.txt"
   echo "$v"
 }
 
@@ -66,6 +101,8 @@ fi
 if [ "${NORA_TOOL_RESOLVE_ONLY:-}" = 1 ]; then echo "$v"; exit 0; fi
 [ "$(uname -m)" = x86_64 ] || fail "only linux x64 archives are pinned (this runner: $(uname -s) $(uname -m))"
 sum=$(pin "$v" 2)
+tree=$(pin "$v" NF)
+[[ $tree =~ ^[0-9a-f]{64}$ && $tree != "$sum" ]] || fail "$v has no tree pin (last column) in versions.txt"
 base="${NORA_URL:-https://packages.maestra.io}"; base=${base%/}
 # the session exchange sends the job's OIDC token: never over plain http
 [[ $base == https://* ]] || fail "url '$base' is not https"
@@ -88,7 +125,8 @@ dir="$tc/$name/$v/$arch"
 bin=$dir
 case "$tool" in go|node|python) bin=$dir/bin ;; esac
 exe=$bin/$tool; [ "$tool" != python ] || exe=$bin/python3
-# a tool-cache entry counts only with its marker AND its executable
+# a tool-cache entry counts only with its marker AND its executable (plan: then no archive is
+# restored); install also requires its tree to be the pin before anything in it runs
 installed() { [ -f "$dir.complete" ] && [ -x "$exe" ]; }
 
 if [ "$mode" = plan ]; then
@@ -102,10 +140,13 @@ fi
 
 # one cold install of a version at a time on a host (jobs sharing a tool cache)
 if command -v flock >/dev/null; then exec 9>"$tc/$name/.$v-$arch.lock"; flock 9; fi
-if installed; then
-  echo "setup-$tool-nora: $tool $v already in the tool cache ($dir), nothing fetched"
+got_tree=""
+if installed; then got_tree=$(tree_digest "$dir") || got_tree=unreadable; fi
+if [ "$got_tree" = "$tree" ]; then
+  echo "setup-$tool-nora: $tool $v already in the tool cache ($dir, tree sha256 $tree), nothing fetched"
   echo "source=tool-cache" >> "$GITHUB_OUTPUT"
 else
+  [ -z "$got_tree" ] || echo "::warning::setup-$tool-nora: $dir is not the pinned tree (tree sha256 $got_tree, versions.txt pins $tree): reinstalling it from the verified archive"
   cache="${NORA_TOOL_CACHE_DIR:-}"
   tmp="${cache:-${RUNNER_TEMP:-/tmp}/nora-tool-$tool}"; mkdir -p "$tmp"
   f="$tmp/$file"
@@ -130,17 +171,14 @@ else
     [ -z "$cache" ] || echo "save=true" >> "$GITHUB_OUTPUT"
   fi
   # unpacked next to its final place, moved in whole, then marked complete
-  rm -rf "$dir" "$dir.nora" "$dir.complete"; mkdir -p "$dir.nora"
-  case "$file" in
-    *.zip) python3 -I -m zipfile -e "$f" "$dir.nora" && chmod +x "$dir.nora/terraform" ;;
-    uv-*) tar -xzf "$f" -C "$dir.nora" --strip-components=1 ;;
-    helm-*) tar -xzf "$f" -C "$dir.nora" --strip-components=1 linux-amd64/helm ;;
-    *) tar -xzf "$f" -C "$dir.nora" --strip-components=1 ;;
-  esac || { rm -rf "$dir.nora"; fail "$file: unpacking failed"; }
+  rm -rf "$dir" "$dir.nora" "$dir.complete"
+  unpack "$f" "$dir.nora" || { rm -rf "$dir.nora"; fail "$file: unpacking failed"; }
   [ -n "${cache:-}" ] || rm -f "$f"
+  got_tree=$(tree_digest "$dir.nora")
+  [ "$got_tree" = "$tree" ] || { rm -rf "$dir.nora"; fail "$file unpacked to tree sha256 $got_tree, versions.txt pins $tree"; }
   mv "$dir.nora" "$dir"
   touch "$dir.complete"
-  echo "setup-$tool-nora: $tool $v into $dir"
+  echo "setup-$tool-nora: $tool $v into $dir (tree sha256 $tree)"
 fi
 exec 9>&-
 echo "$bin" >> "$GITHUB_PATH"
@@ -155,9 +193,7 @@ case "$tool" in
     { echo "gomodcache=$(go env GOMODCACHE)"; echo "gocache=$(go env GOCACHE)"; } >> "$GITHUB_OUTPUT"
     go version ;;
   node) node --version ;;
-  python) # python-build-standalone has python3 / pip3; setup-python's builds also answer to python / pip
-    [ -e "$bin/python" ] || ln -s python3 "$bin/python"
-    [ -e "$bin/pip" ] || [ ! -e "$bin/pip3" ] || ln -s pip3 "$bin/pip"
+  python) # (python / pip links: unpack)
     { echo "pythonLocation=$dir"; echo "Python_ROOT_DIR=$dir"; echo "Python2_ROOT_DIR=$dir"; echo "Python3_ROOT_DIR=$dir"
       echo "PKG_CONFIG_PATH=$dir/lib/pkgconfig"; echo "LD_LIBRARY_PATH=$dir/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"; } >> "$GITHUB_ENV"
     "$bin/python" --version ;;

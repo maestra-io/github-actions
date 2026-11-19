@@ -59,7 +59,7 @@ outputs:
     value: ${{ steps.venv.outputs.venv }}
 
   tool-source:
-    description: "Where the toolchain came from: tool-cache (already installed), runner-cache (the cached archive) or nora."
+    description: "Where the toolchain came from: tool-cache (already installed, its tree the pin in versions.txt), runner-cache (the cached archive) or nora."
     value: ${{ steps.install.outputs.source }}
 
 runs:

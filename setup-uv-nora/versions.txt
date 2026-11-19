@@ -1,5 +1,8 @@
 # uv versions setup-uv-nora installs: <version> <sha256 of uv-x86_64-unknown-linux-gnu.tar.gz>
 # (the release's <asset>.sha256). Fetched through nora's GitHub Releases proxy
 # (/github/astral-sh/uv/releases/download/<version>/), which holds a release for 3 days.
-0.13.6 f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645
-0.13.8 5acfd9177cfecf0bf87578f059728215ccc884388988f55f7a65041b57387d91
+# Last column: the tree pin, the sha256 of what the archive unpacks to (nora-tool.sh tree_digest,
+# printed by `nora-tool/nora-tool.sh uv tree <archive>` on linux): a tool-cache entry runs only
+# when its tree is this pin.
+0.13.6 f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645 ea6d97ae35fa82ad09e88fcb1efa59e53e996b0eb379c7345b3d40133466a5df
+0.13.8 5acfd9177cfecf0bf87578f059728215ccc884388988f55f7a65041b57387d91 d2b4f96915ca2aa21e8d1cc28274542f6b6ca498282698501c37c521145ba715
