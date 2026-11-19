@@ -1016,6 +1016,8 @@ jobs:
             log=$(sed "s/$(printf '\033')\[[0-9;]*m//g" "$1")
             # no -q: an early exit would SIGPIPE the first grep and, under pipefail, pass
             grep -E 'TASK \[' <<< "$log" | grep -vF 'TASK [Gathering Facts]' > /dev/null && return 1
+            # fact gathering never loops: an item result is a user task (even one named so)
+            grep -qF '(item=' <<< "$log" && return 1
             recap=$(grep -E '^[^ ]+ +: ok=[0-9]+ +changed=[0-9]+ +unreachable=[0-9]+ +failed=[0-9]+' <<< "$log") || return 1
             ! grep -vqE ': ok=0 +changed=0 +unreachable=[0-9]+ +failed=0 +skipped=[0-9]+ +rescued=0 ' <<< "$recap"
           }

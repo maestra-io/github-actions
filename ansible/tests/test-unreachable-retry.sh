@@ -46,6 +46,8 @@ nothing_ran "$T/midplay" && bad "unreachable mid-play must block the rerun" || o
 # the recap totals are all zero, the TASK header gives it away.
 play 'TASK [write config] ****' 'changed: [h1] => (item=a)' "$UNR" -- "$(row h1 0 0 1 0 0)" > "$T/loop"
 nothing_ran "$T/loop" && bad "a user task started must block the rerun" || ok "user task started (zero totals): no rerun"
+play "$GF" 'changed: [h1] => (item=a)' "$UNR" -- "$(row h1 0 0 1 0 0)" > "$T/loopgf"
+nothing_ran "$T/loopgf" && bad "a loop task named Gathering Facts must block the rerun" || ok "loop task named Gathering Facts: no rerun"
 
 play "$GF" "$UNR" -- "$(row h1 0 0 1 0 1)" > "$T/rescued"
 nothing_ran "$T/rescued" && bad "rescued=1 must block the rerun" || ok "rescued task: no rerun"
