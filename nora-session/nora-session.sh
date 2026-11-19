@@ -10,13 +10,15 @@
 nora_token() ( # a subshell: tracing is off inside it whatever the caller set
   set +x
   nora="${1%/}" aud="$2"
-  mint() {
-    jwt=$(curl -fsS --retry 3 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-      "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${aud}" | jq -r .value) || exit 1
-    [ -n "$jwt" ] && [ "$jwt" != null ] || exit 1
-    echo "::add-mask::$jwt" >&2 # stderr: stdout is the token alone
+  mint() { # sets jwt only to a valid token
+    local t
+    t=$(curl -fsS --retry 3 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+      "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${aud}" | jq -r .value) || return 1
+    [ -n "$t" ] && [ "$t" != null ] || return 1
+    echo "::add-mask::$t" >&2 # stderr: stdout is the token alone
+    jwt=$t
   }
-  mint
+  mint || exit 1
   # The body goes to a file: curl truncates it before a retry, while stdout would keep a
   # failed attempt's body ("Service Unavailable") in front of the JSON (status-router#41).
   f=$(mktemp); trap 'rm -f "$f"' EXIT
@@ -33,7 +35,7 @@ nora_token() ( # a subshell: tracing is off inside it whatever the caller set
     200) session=$(jq -r '.token // empty' "$f") ;;
     # 404: a nora without the exchange; 403: a provider that grants no session.
     # After retries the first JWT may have little of its ~5 min left: mint a new one.
-    403|404) [ $((SECONDS - start)) -lt 30 ] || mint
+    403|404) [ $((SECONDS - start)) -lt 30 ] || mint || true # a failed refresh keeps the first
        echo "::warning::nora at $nora gives no session (HTTP $code): the OIDC token (~5 min) is used" >&2
        printf '%s\n' "$jwt"; exit 0 ;;
     *) echo "::error::nora session exchange at $nora answered HTTP $code" >&2; exit 1 ;;
