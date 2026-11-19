@@ -975,7 +975,8 @@ jobs:
           { echo "version=$version"; echo "file=$file"; } >> "$GITHUB_OUTPUT"
           # <<< sdk-version
       # The runner image ships only the newest SDK (RunsOn ubuntu24-full of 17.11.2026:
-      # 11.0.100 alone) and setup-dotnet / dotnet-nora only add SDKs: a global.json with rollForward
+      # 11.0.100 alone) and setup-dotnet added SDKs beside it (dotnet-nora's root holds only the
+      # SDKs it installs since v1.106.7): a global.json with rollForward
       # latestMajor/major, or none, built with SDK 11 and its new analyzers, failing
       # warn-as-error (event-logs CA1860, 17.11.2026). dotnet-nora now also installs
       # <N>.0.x per target framework major (the SDK and the test runtime), and the
@@ -1036,7 +1037,7 @@ jobs:
       # setup-dotnet's inputs, the SDKs from nora raw instead of builds.dotnet.microsoft.com
       # (dotnet-nora, README; issues-maestra#1649).
       - if: ${{ inputs.docker-test-target == '' && (inputs.test-command == '' || (inputs.test-image == '' && hashFiles('**/*.csproj') != '')) }}
-        uses: maestra-io/github-actions/dotnet-nora@8ebf680b9d3977cae5fab267f84d90a13b99c4c5 # v1.100.0
+        uses: maestra-io/github-actions/dotnet-nora@d69f9e8a1ecffa04b18cf1096f88fa38f5bd4b42 # v1.106.7
         with:
           dotnet-version: |
             ${{ steps.sdk.outputs.version }}
@@ -1953,7 +1954,7 @@ jobs:
           # <<< sdk-version
       # No dotnet-version and no global.json: the runner image's SDK.
       - if: ${{ steps.cpm.outputs.props != '[]' && (steps.sdk.outputs.version != '' || hashFiles('global.json') != '') }}
-        uses: maestra-io/github-actions/dotnet-nora@8ebf680b9d3977cae5fab267f84d90a13b99c4c5 # v1.100.0
+        uses: maestra-io/github-actions/dotnet-nora@d69f9e8a1ecffa04b18cf1096f88fa38f5bd4b42 # v1.106.7
         with:
           dotnet-version: ${{ steps.sdk.outputs.version }}
           global-json-file: ${{ steps.sdk.outputs.file }}
