@@ -1010,7 +1010,9 @@ jobs:
           # nothing. That is the first SSH dial through the Teleport proxy lost on the
           # eu-central-1 -> us-iota path, which drops connections for ~2-3 min at a
           # 15-min cadence (asbo 44544069208, 14:43:35-14:44:05 UTC). Mitogen has no
-          # SSH connect retry of its own. A play with gather_facts: false never reruns.
+          # SSH connect retry of its own. A play with gather_facts: false never reruns,
+          # unless a user task is itself named `Gathering Facts` (the banner is all the
+          # default callback prints; no such task in maestra-io on 19.11.2026).
           nothing_ran() {
             local log recap
             log=$(sed "s/$(printf '\033')\[[0-9;]*m//g" "$1")
