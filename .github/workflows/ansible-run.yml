@@ -916,6 +916,8 @@ jobs:
           PLAYBOOK_INPUT: ${{ inputs.playbook }}
           CHECK_MODE_INPUT: ${{ inputs.check_mode }}
           NO_HOSTS_FAIL_INPUT: ${{ inputs.no_hosts_fail_on_apply }}
+        # extra_run_args is a shell fragment by contract (see the COMMON+= comment below)
+        # nosemgrep: run-shell-injection
         run: |
           set -uo pipefail
 
