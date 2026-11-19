@@ -12,6 +12,8 @@ cat > "$root/bin/curl" <<'STUB'
 #!/usr/bin/env bash
 if [[ "${*: -1}" == https://packages.maestra.io/api/oidc/session ]]; then
   [[ " $* " == *" -X POST -H Authorization: Bearer eyJ.stub.jwt "* ]] || { echo "bad exchange: $*" >&2; exit 22; }
+  # retries that outlast a 73 s 503 burst inside a ~180 s deadline, fast retry on a lost SYN
+  [[ " $* " == *" --connect-timeout 10 --max-time 20 --retry 15 --retry-delay 10 --retry-max-time 150 "* ]] || { echo "no bounded retry: $*" >&2; exit 22; }
   # Real curl: -o FILE is truncated before a retry, stdout keeps every attempt's body.
   o=; prev=; for a in "$@"; do [ "$prev" = -o ] && o=$a; prev=$a; done
   [ -n "$o" ] || { echo "body not written to a file: $*" >&2; exit 22; }
