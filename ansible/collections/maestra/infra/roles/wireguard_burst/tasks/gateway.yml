@@ -48,7 +48,7 @@
     dest: /etc/netplan/60-wireguard-burst.yaml
     owner: root
     group: root
-    mode: "0600"
+    mode: "{{ wireguard_burst_netplan_mode }}"
   register: wireguard_burst_netplan
   when: wireguard_burst_wan_address | length > 0 or (wireguard_burst_lan_mtu | int) > 0
 

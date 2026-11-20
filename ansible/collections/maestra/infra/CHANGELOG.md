@@ -7,6 +7,13 @@ finding, and because the `os_update` contract is shared across four repos:
 anything that changes a variable name or a hook expectation has to be findable
 from one place.
 
+## 1.4.5
+
+- `wireguard_burst`: works under an unprivileged `--check` login (no become).
+  When the private key is unreadable, `Derive the public key` reads the `.pub`
+  kept beside it. New `wireguard_burst_netplan_mode` (default `0600`, as
+  before) lets a consumer make the netplan file group-readable for that login.
+
 ## 1.4.4
 
 - `os_update`: the `Result` line of 1.4.3 read two facts that only the role's

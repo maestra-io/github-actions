@@ -38,9 +38,14 @@
     mode: "0640"
   when: wireguard_burst_key_stat.stat.exists
 
+# An unprivileged check login (no become) cannot read the private key: it
+# reads the public key kept beside it instead. Only the deploy (root) can
+# notice a .pub that drifted from the key.
 - name: Derive the public key from the key file
   ansible.builtin.shell:
-    cmd: set -o pipefail; wg pubkey < /etc/wireguard/{{ wireguard_burst_interface }}.key
+    cmd: >-
+      set -o pipefail;
+      {% if wireguard_burst_key_stat.stat.readable | default(true) %}wg pubkey < /etc/wireguard/{{ wireguard_burst_interface }}.key{% else %}cat /etc/wireguard/{{ wireguard_burst_interface }}.pub{% endif %}
     executable: /bin/bash
   register: wireguard_burst_pubkey
   changed_when: false
