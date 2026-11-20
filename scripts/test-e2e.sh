@@ -220,15 +220,19 @@ has "$e2e" "          ADMINSITE_USERNAME: \${{ steps.vault.outputs.ADMINSITE_USE
 if grep -nE '(echo|printf|tee|cat|::add-mask::|set -x).*ADMINSITE_' "$wf"; then echo "FAIL a step prints the credentials"; exit 1; fi
 echo "e2e credentials: ok"
 
-eq "$(job e2e-image needs)" "[version, install, tests-install, image]" "e2e-image needs"
+eq "$(job e2e-image needs)" "[version, install, tests-install, checks, test, build, tests-checks, functional]" "e2e-image needs"
 # shellcheck disable=SC2016 # the expressions are matched literally
 {
   e2e_image_if=$(job e2e-image if)
-  for c in '!cancelled()' "needs.version.outputs.publish == 'true'" "needs.version.outputs.e2e == 'true'" \
-    "needs.install.result == 'success'" "(needs.tests-install.result == 'success' || needs.tests-install.result == 'skipped')" \
-    "needs.image.result == 'success'"; do
+  image_if=$(job image if)
+  # image's gate verbatim first: e2e-image pushes alongside image, never before the tests pass.
+  [[ "$e2e_image_if" == "${image_if%' }}'} && "* ]] || { printf 'FAIL e2e-image if does not start with the gate of image\n  got:  %s\n' "$e2e_image_if"; exit 1; }
+  for c in "needs.version.outputs.e2e == 'true'" \
+    "needs.install.result == 'success'" "(needs.tests-install.result == 'success' || needs.tests-install.result == 'skipped')"; do
     has "$e2e_image_if" "$c" "e2e-image if"
   done
+  hasnt "$e2e_image_if" "needs.image" "e2e-image does not wait for image"
+  eq "$(job e2e-image runs-on)" "runs-on=\${{ github.run_id }}-e2e-image/pool=build" "e2e-image on pool=build (CPU-bound build and syft)"
   hasnt "$e2e_image_if" "inputs.e2e" "e2e-image does not depend on the PR e2e input"
   has "$(job release needs)" "e2e-image" "release waits for e2e-image"
   has "$(job release if)" "(needs.version.outputs.e2e != 'true' || needs.e2e-image.result == 'success')" "a skipped e2e-image holds nothing"

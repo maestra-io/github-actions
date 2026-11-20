@@ -182,6 +182,8 @@ jobs:
         run: bash scripts/test-service-build.sh
       - name: ecr-push-check (tag absent / same digest / other digest)
         run: bash scripts/test-ecr-push-check.sh
+      - name: mcf-build ecr-release-check (image, deps-image, e2e-image side by side; re-run keeps its own tag)
+        run: bash scripts/test-mcf-build-ecr-release-check.sh
       - name: github-release-create (403 after main moved with a workflow change; workflow copies)
         run: bash scripts/test-github-release-create.sh
       - name: sign-image status, background SBOM, cosign pin, no syft auth env (stub cosign/curl/docker/aws)

@@ -109,8 +109,12 @@ eq "$(job image if)" "\${{ !cancelled() && needs.version.outputs.publish == 'tru
 eq "$(job functional continue-on-error)" "\${{ !inputs.functional-required }}" "functional failure is advisory only when not required"
 grep -A2 '^      functional-required:$' "$wf" | grep -qx '        default: true' \
   || { echo "FAIL functional-required does not default to true"; exit 1; }
-eq "$(job deps-image needs)" "[version, install, image]" "deps-image needs"
-eq "$(job deps-image if)" "\${{ !cancelled() && needs.version.outputs.publish == 'true' && needs.install.result == 'success' && needs.image.result == 'success' }}" "deps-image follows image: an unreleased tag is never pushed"
+# deps-image and e2e-image push alongside image, behind the same gate: its `if` verbatim, so no
+# tag is pushed before checks and tests pass (ECR tags are immutable; ecr-release-check keeps a
+# re-run's own tag). e2e-image's copy is checked in scripts/test-e2e.sh.
+image_if=$(job image if); image_gate=${image_if%' }}'}
+eq "$(job deps-image needs)" "[version, install, checks, test, build, tests-checks, functional]" "deps-image needs the jobs of image's gate"
+eq "$(job deps-image if)" "$image_gate && needs.install.result == 'success' }}" "deps-image behind image's gate: an untested tag is never pushed"
 eq "$(job release if)" "\${{ !cancelled() && needs.image.result == 'success' && needs.deps-image.result == 'success' && (needs.version.outputs.e2e != 'true' || needs.e2e-image.result == 'success') }}" "release follows image, deps-image and e2e-image with tests/e2e/, not success() of skipped jobs"
 eq "$(job sourcemaps if)" "\${{ !cancelled() && needs.release.result == 'success' }}" "sourcemaps follows release"
 eq "$(job bake if)" "\${{ !cancelled() && needs.release.result == 'success' && needs.version.outputs.bake == 'true' }}" "bake follows release"
