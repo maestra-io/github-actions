@@ -964,10 +964,12 @@ jobs:
                 "sleep infinity" &
             else
               # github-actions-infra-plan-pve: forward-only login pve-plan with a
-              # nologin shell, so no remote command.
-              echo "  as pve-plan (proxmox_tunnel_join_token)"
+              # nologin shell, so no remote command. Remote 8007 is pve-plan-api
+              # (maestra-io/proxmox), the GET-only front of pveproxy that also
+              # lists snippets, which PVEAuditor cannot (Datastore.Allocate).
+              echo "  as pve-plan (proxmox_tunnel_join_token) -> pve-plan-api :8007"
               tsh ssh --no-resume -N -i "$PVE_TUNNEL_IDENTITY" \
-                -L "${API_PORT}:localhost:8006" \
+                -L "${API_PORT}:127.0.0.1:8007" \
                 "pve-plan@${HOST}" &
             fi
           fi

@@ -44,7 +44,9 @@ Ordering contract (fixed, do not reorder):
    `infrastructure/proxmox/ci-plan/<environment>` (written by the proxmox deploy
    of main) and the API tunnel is `tsh ssh -N` as `pve-plan` on that separate
    bot (Teleport ANDs port forwarding over an identity's roles, and the plan
-   bot's node-ansible-check forbids it).
+   bot's node-ansible-check forbids it), to remote 8007: maestra-io/proxmox
+   `pve-plan-api`, a GET-only front of pveproxy that also answers the snippets
+   listing PVEAuditor cannot see, so cloud-init snippets refresh as before.
 5. AWS state creds via Teleport Workload Identity (`terraform-state-s3` →
    `AWS_WEB_IDENTITY_TOKEN_FILE` + role `teleport-terraform-state`), then
    optional extra WI legs (`extra_workload_identities`, multiline
