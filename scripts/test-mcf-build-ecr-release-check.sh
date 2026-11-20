@@ -91,3 +91,22 @@ for spec in "image|" "deps-image|-with-deps" "e2e-image|-e2e"; do
   }
 done
 echo "ecr-release-check wiring: ok"
+
+# deps-image and e2e-image (both with a gha layer cache) export the pushed image as an OCI tar
+# too, and sign-image reads that very tar: a path that differs would quietly fall back to
+# pulling the image back from ECR across the Atlantic.
+for spec in "deps-image|with-deps" "e2e-image|e2e"; do
+  job=${spec%%|*} name=${spec#*|}
+  t=$(jobtext "$job")
+  # shellcheck disable=SC2016 # the expressions are matched literally
+  {
+    grep -qxF "          outputs: type=oci,dest=\${{ runner.temp }}/$name.oci.tar,tar=true" <<<"$t" \
+      || { echo "FAIL $job: no OCI tar exporter next to the push"; exit 1; }
+    grep -qxF "          oci-archive: \${{ runner.temp }}/$name.oci.tar" <<<"$t" \
+      || { echo "FAIL $job: sign-image does not read the exported tar"; exit 1; }
+    grep -qxF '          push: true' <<<"$t" || { echo "FAIL $job: the push is no longer push: true"; exit 1; }
+  }
+done
+hasnt_image=$(jobtext image)
+if grep -q 'oci-archive:' <<<"$hasnt_image"; then echo "FAIL image: no layer cache, its tar would pull the base from ECR anyway"; exit 1; fi
+echo "SBOM from the OCI tar: ok"
