@@ -3,8 +3,8 @@
 # (issues-maestra#1571). The static files reach the buckets at promotion, by the
 # upload Job of the MCF's own kustomization/, not from here.
 #
-#   version, install (+ codegen) ─► checks, test, build ─► image ─► deps-image, e2e-image ─► release ─► bake
-#                                                    │                                              └─► sourcemaps
+#   version, install (+ codegen) ─► checks, test, build ─► image, deps-image, e2e-image ─► release ─► bake
+#                                                    │                                            └─► sourcemaps
 #                                                    ├─► hot-test (pull_request)
 #                                                    ├─► e2e-stand (pull_request, tests/e2e/) ─► e2e (input e2e)
 #                                                    └─► functional (tests/functional/)
@@ -122,14 +122,15 @@
 #             when check-types fails without it) + the sources -> ECR <image>-with-deps:<release> (uid 10001, no .git);
 #             chart mcf-schema-check runs its schema check from this image at promotion. Pushed from
 #             BuildKit with a gha layer cache (scope mcf-deps-<image>): the node_modules layer is reused
-#             while package-lock.json is unchanged, a release uploads the sources layer. After image: ECR tags are immutable,
-#             so a push before checks and tests pass breaks "Re-run all jobs". release waits for it.
+#             while package-lock.json is unchanged, a release uploads the sources layer. Behind the gate of image, alongside
+#             it: ECR tags are immutable, so a push before checks and tests pass breaks "Re-run all jobs"; a tag an
+#             earlier attempt pushed from this commit is kept (ecr-release-check, all three jobs). release waits for it.
 #   e2e-image  tests/ with tests/node_modules (a root workspace's hoisted packages copied in) ->
 #             ECR <image>-e2e:<release> on PLAYWRIGHT_IMAGE:v<@playwright/test>-noble@<digest>, user
 #             pwuser, CMD npm run e2e:ci, the base's global npm replaced by DEPS_BASE's (an older
 #             Playwright image ships an npm whose bundled tar has a CRITICAL CVE); chart mcf-e2e
 #             runs it against ci-gate after the upload at promotion. Only with tests/e2e/,
-#             alongside deps-image (gha cache scope mcf-e2e-<image>);
+#             alongside image and deps-image on pool=build (gha cache scope mcf-e2e-<image>);
 #             release waits for it, a skipped one (no tests/e2e/) holds nothing.
 #   release   git tag + GitHub Release <release>; a PR labelled `hotfix` also gets
 #             the marker tag hotfix/<release>.
@@ -389,8 +390,8 @@ jobs:
             tests/functional/playwright.config.ts
             tests/e2e/playwright.config.ts
           sparse-checkout-cone-mode: false
-      # Here, not in deps-image: that job runs after `image` pushed its immutable tag, and
-      # never on a pull request. node_modules are installed by node-version and run on DEPS_BASE.
+      # Here, not in deps-image: that job pushes an immutable tag once the tests pass, and
+      # never runs on a pull request. node_modules are installed by node-version and run on DEPS_BASE.
       - name: node-version and DEPS_BASE have the same major
         env:
           NODE_VERSION: ${{ inputs.node-version }}
@@ -898,7 +899,7 @@ jobs:
       - name: ingest test results
         if: ${{ always() }}
         continue-on-error: true
-        uses: maestra-io/github-actions/test-results-ingest@2450cdaaf4688887cb65579fc45ab5304cb81967 # v1.46.2
+        uses: maestra-io/github-actions/test-results-ingest@191ca31e3e6f3250188aa56979defe3d0a008381 # v1.108.2
         with:
           path: reports
 
@@ -1159,8 +1160,45 @@ jobs:
           path: ${{ runner.temp }}/nora-images
           key: ${{ steps.nora-images-1-pack.outputs.key }}
       # <<< nora-image-cache save
+      - name: ${{ needs.version.outputs.image }}:${{ needs.version.outputs.release }} already in ECR?
+        id: existing
+        env:
+          REPO: ${{ needs.version.outputs.image }}
+          RELEASE: ${{ needs.version.outputs.release }}
+          AWS_REGION: us-west-2
+        run: |
+          # >>> ecr-release-check (scripts/test-mcf-build-ecr-release-check.sh runs this block; all copies equal)
+          # image, deps-image and e2e-image push side by side once the tests pass, ECR tags are
+          # immutable and "Re-run all jobs" keeps the release number: one of them may have pushed
+          # in an attempt where another failed. Its tag built from this commit (config label
+          # org.opencontainers.image.revision = GITHUB_SHA) = skip the build, keep that digest;
+          # no tag = build and push; a tag from another commit = fail, a new run takes a new number.
+          if ! out=$(aws ecr describe-images --repository-name "$REPO" --image-ids imageTag="$RELEASE" --output json 2>&1); then
+            if grep -qE 'ImageNotFoundException|RepositoryNotFoundException' <<<"$out"; then echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+            echo "::error::cannot read ${REPO}:${RELEASE} from ECR: $out"; exit 1
+          fi
+          existing=$(jq -r '.imageDetails[0].imageDigest // empty' <<<"$out")
+          revision=""
+          if [ -n "$existing" ] \
+            && manifest=$(aws ecr batch-get-image --repository-name "$REPO" --image-ids imageDigest="$existing" \
+                 --accepted-media-types application/vnd.oci.image.manifest.v1+json application/vnd.docker.distribution.manifest.v2+json \
+                 --query 'images[0].imageManifest' --output text) \
+            && config=$(jq -er '.config.digest' <<<"$manifest") \
+            && url=$(aws ecr get-download-url-for-layer --repository-name "$REPO" --layer-digest "$config" --query downloadUrl --output text) \
+            && blob=$(curl -sfL --connect-timeout 10 --max-time 60 --retry 3 "$url"); then
+            revision=$(jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' <<<"$blob" || true)
+          fi
+          if [ -n "$GITHUB_SHA" ] && [ "$revision" = "$GITHUB_SHA" ]; then
+            echo "${REPO}:${RELEASE} is already in ECR (${existing}), built from this commit ${GITHUB_SHA} by an earlier attempt: build and push skipped"
+            printf 'skip=true\ndigest=%s\n' "$existing" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::${REPO}:${RELEASE} already exists in ECR (${existing:-<none>}, revision ${revision:-unknown}) and was not built from this commit ${GITHUB_SHA}; tags are immutable. A new run of the release workflow takes the next release number."
+            exit 1
+          fi
+          # <<< ecr-release-check
       - name: build and push ${{ needs.version.outputs.image }}:${{ needs.version.outputs.release }}
         id: push
+        if: ${{ steps.existing.outputs.skip != 'true' }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ${{ runner.temp }}/image
@@ -1181,11 +1219,13 @@ jobs:
         uses: maestra-io/github-actions/sign-image@2e631204b1f1d565e2cbbd4f280f3068fbeabfc7 # v1.65.0
         with:
           image: ${{ steps.ecr.outputs.registry }}/${{ needs.version.outputs.image }}
-          digest: ${{ steps.push.outputs.digest }}
+          digest: ${{ steps.push.outputs.digest || steps.existing.outputs.digest }}
 
+  # image, deps-image and e2e-image push side by side, each behind the gate of image (copied
+  # verbatim, scripts/test-functional.sh): no tag is pushed before checks and tests pass.
   deps-image:
-    needs: [version, install, image]
-    if: ${{ !cancelled() && needs.version.outputs.publish == 'true' && needs.install.result == 'success' && needs.image.result == 'success' }}
+    needs: [version, install, checks, test, build, tests-checks, functional]
+    if: ${{ !cancelled() && needs.version.outputs.publish == 'true' && needs.checks.result == 'success' && needs.test.result == 'success' && needs.build.result == 'success' && (needs.version.outputs.tests != 'true' || needs.tests-checks.result == 'success') && (!inputs.functional-required || needs.version.outputs.functional != 'true' || needs.functional.result == 'success') && needs.install.result == 'success' }}
     runs-on: runs-on=${{ github.run_id }}-deps-image/pool=small
     timeout-minutes: 25
     permissions:
@@ -1456,8 +1496,45 @@ jobs:
           path: ${{ runner.temp }}/nora-images
           key: ${{ steps.nora-images-2-pack.outputs.key }}
       # <<< nora-image-cache save
+      - name: ${{ needs.version.outputs.image }}-with-deps:${{ needs.version.outputs.release }} already in ECR?
+        id: existing
+        env:
+          REPO: ${{ needs.version.outputs.image }}-with-deps
+          RELEASE: ${{ needs.version.outputs.release }}
+          AWS_REGION: us-west-2
+        run: |
+          # >>> ecr-release-check (scripts/test-mcf-build-ecr-release-check.sh runs this block; all copies equal)
+          # image, deps-image and e2e-image push side by side once the tests pass, ECR tags are
+          # immutable and "Re-run all jobs" keeps the release number: one of them may have pushed
+          # in an attempt where another failed. Its tag built from this commit (config label
+          # org.opencontainers.image.revision = GITHUB_SHA) = skip the build, keep that digest;
+          # no tag = build and push; a tag from another commit = fail, a new run takes a new number.
+          if ! out=$(aws ecr describe-images --repository-name "$REPO" --image-ids imageTag="$RELEASE" --output json 2>&1); then
+            if grep -qE 'ImageNotFoundException|RepositoryNotFoundException' <<<"$out"; then echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+            echo "::error::cannot read ${REPO}:${RELEASE} from ECR: $out"; exit 1
+          fi
+          existing=$(jq -r '.imageDetails[0].imageDigest // empty' <<<"$out")
+          revision=""
+          if [ -n "$existing" ] \
+            && manifest=$(aws ecr batch-get-image --repository-name "$REPO" --image-ids imageDigest="$existing" \
+                 --accepted-media-types application/vnd.oci.image.manifest.v1+json application/vnd.docker.distribution.manifest.v2+json \
+                 --query 'images[0].imageManifest' --output text) \
+            && config=$(jq -er '.config.digest' <<<"$manifest") \
+            && url=$(aws ecr get-download-url-for-layer --repository-name "$REPO" --layer-digest "$config" --query downloadUrl --output text) \
+            && blob=$(curl -sfL --connect-timeout 10 --max-time 60 --retry 3 "$url"); then
+            revision=$(jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' <<<"$blob" || true)
+          fi
+          if [ -n "$GITHUB_SHA" ] && [ "$revision" = "$GITHUB_SHA" ]; then
+            echo "${REPO}:${RELEASE} is already in ECR (${existing}), built from this commit ${GITHUB_SHA} by an earlier attempt: build and push skipped"
+            printf 'skip=true\ndigest=%s\n' "$existing" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::${REPO}:${RELEASE} already exists in ECR (${existing:-<none>}, revision ${revision:-unknown}) and was not built from this commit ${GITHUB_SHA}; tags are immutable. A new run of the release workflow takes the next release number."
+            exit 1
+          fi
+          # <<< ecr-release-check
       - name: build and push ${{ needs.version.outputs.image }}-with-deps:${{ needs.version.outputs.release }}
         id: push
+        if: ${{ steps.existing.outputs.skip != 'true' }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -1482,12 +1559,15 @@ jobs:
         uses: maestra-io/github-actions/sign-image@2e631204b1f1d565e2cbbd4f280f3068fbeabfc7 # v1.65.0
         with:
           image: ${{ steps.ecr.outputs.registry }}/${{ needs.version.outputs.image }}-with-deps
-          digest: ${{ steps.push.outputs.digest }}
+          digest: ${{ steps.push.outputs.digest || steps.existing.outputs.digest }}
 
   e2e-image:
-    needs: [version, install, tests-install, image]
-    if: ${{ !cancelled() && needs.version.outputs.publish == 'true' && needs.version.outputs.e2e == 'true' && needs.install.result == 'success' && (needs.tests-install.result == 'success' || needs.tests-install.result == 'skipped') && needs.image.result == 'success' }}
-    runs-on: runs-on=${{ github.run_id }}-e2e-image/pool=small
+    needs: [version, install, tests-install, checks, test, build, tests-checks, functional]
+    if: ${{ !cancelled() && needs.version.outputs.publish == 'true' && needs.checks.result == 'success' && needs.test.result == 'success' && needs.build.result == 'success' && (needs.version.outputs.tests != 'true' || needs.tests-checks.result == 'success') && (!inputs.functional-required || needs.version.outputs.functional != 'true' || needs.functional.result == 'success') && needs.version.outputs.e2e == 'true' && needs.install.result == 'success' && (needs.tests-install.result == 'success' || needs.tests-install.result == 'skipped') }}
+    # pool=build (8 vCPU): with the whole node_modules of a root workspace in the context
+    # (~780 MB, ~26k packages) the build is CPU-bound on pool=small's 2 vCPU (load 5.7), and
+    # syft catalogs with NumCPU x 4 workers (SBOM ~120 s of the job's ~6 min, p50).
+    runs-on: runs-on=${{ github.run_id }}-e2e-image/pool=build
     timeout-minutes: 25
     permissions:
       contents: read
@@ -1687,8 +1767,45 @@ jobs:
             const t = await core.getIDToken(process.env.AUDIENCE);
             core.setSecret(t);
             core.setOutput('token', t);
+      - name: ${{ needs.version.outputs.image }}-e2e:${{ needs.version.outputs.release }} already in ECR?
+        id: existing
+        env:
+          REPO: ${{ needs.version.outputs.image }}-e2e
+          RELEASE: ${{ needs.version.outputs.release }}
+          AWS_REGION: us-west-2
+        run: |
+          # >>> ecr-release-check (scripts/test-mcf-build-ecr-release-check.sh runs this block; all copies equal)
+          # image, deps-image and e2e-image push side by side once the tests pass, ECR tags are
+          # immutable and "Re-run all jobs" keeps the release number: one of them may have pushed
+          # in an attempt where another failed. Its tag built from this commit (config label
+          # org.opencontainers.image.revision = GITHUB_SHA) = skip the build, keep that digest;
+          # no tag = build and push; a tag from another commit = fail, a new run takes a new number.
+          if ! out=$(aws ecr describe-images --repository-name "$REPO" --image-ids imageTag="$RELEASE" --output json 2>&1); then
+            if grep -qE 'ImageNotFoundException|RepositoryNotFoundException' <<<"$out"; then echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+            echo "::error::cannot read ${REPO}:${RELEASE} from ECR: $out"; exit 1
+          fi
+          existing=$(jq -r '.imageDetails[0].imageDigest // empty' <<<"$out")
+          revision=""
+          if [ -n "$existing" ] \
+            && manifest=$(aws ecr batch-get-image --repository-name "$REPO" --image-ids imageDigest="$existing" \
+                 --accepted-media-types application/vnd.oci.image.manifest.v1+json application/vnd.docker.distribution.manifest.v2+json \
+                 --query 'images[0].imageManifest' --output text) \
+            && config=$(jq -er '.config.digest' <<<"$manifest") \
+            && url=$(aws ecr get-download-url-for-layer --repository-name "$REPO" --layer-digest "$config" --query downloadUrl --output text) \
+            && blob=$(curl -sfL --connect-timeout 10 --max-time 60 --retry 3 "$url"); then
+            revision=$(jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' <<<"$blob" || true)
+          fi
+          if [ -n "$GITHUB_SHA" ] && [ "$revision" = "$GITHUB_SHA" ]; then
+            echo "${REPO}:${RELEASE} is already in ECR (${existing}), built from this commit ${GITHUB_SHA} by an earlier attempt: build and push skipped"
+            printf 'skip=true\ndigest=%s\n' "$existing" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::${REPO}:${RELEASE} already exists in ECR (${existing:-<none>}, revision ${revision:-unknown}) and was not built from this commit ${GITHUB_SHA}; tags are immutable. A new run of the release workflow takes the next release number."
+            exit 1
+          fi
+          # <<< ecr-release-check
       - name: build and push ${{ needs.version.outputs.image }}-e2e:${{ needs.version.outputs.release }}
         id: push
+        if: ${{ steps.existing.outputs.skip != 'true' }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: tests
@@ -1710,7 +1827,7 @@ jobs:
         uses: maestra-io/github-actions/sign-image@2e631204b1f1d565e2cbbd4f280f3068fbeabfc7 # v1.65.0
         with:
           image: ${{ steps.ecr.outputs.registry }}/${{ needs.version.outputs.image }}-e2e
-          digest: ${{ steps.push.outputs.digest }}
+          digest: ${{ steps.push.outputs.digest || steps.existing.outputs.digest }}
 
   # Git tag + GitHub Release BEFORE the bake: bake-oci-manifests checks out the release tag.
   release:
@@ -2203,7 +2320,7 @@ jobs:
       - name: ingest test results
         if: ${{ always() }}
         continue-on-error: true
-        uses: maestra-io/github-actions/test-results-ingest@2450cdaaf4688887cb65579fc45ab5304cb81967 # v1.46.2
+        uses: maestra-io/github-actions/test-results-ingest@191ca31e3e6f3250188aa56979defe3d0a008381 # v1.108.2
         with:
           path: tests/functional/test-results/results.xml
 
@@ -2470,7 +2587,7 @@ jobs:
       - name: ingest test results
         if: ${{ always() }}
         continue-on-error: true
-        uses: maestra-io/github-actions/test-results-ingest@2450cdaaf4688887cb65579fc45ab5304cb81967 # v1.46.2
+        uses: maestra-io/github-actions/test-results-ingest@191ca31e3e6f3250188aa56979defe3d0a008381 # v1.108.2
         with:
           path: tests/e2e/test-results/results.xml
 
