@@ -273,7 +273,7 @@ ctx_fails() { # ctx_fails <repo dir> <layout> <error>
 pkg() { mkdir -p "$1"; printf '{"name":"%s","version":"%s"}\n' "${1##*/node_modules/}" "$2" > "$1/package.json"; }
 want=$(printf '%s\n' 'FROM node:24-slim@sha256:0 AS npm' 'FROM packages.maestra.io/mcr/playwright:v1.56.1-noble@sha256:abc' \
   'ARG BASE_REFRESH' \
-  'RUN --mount=type=secret,id=PRIVATE_PACKAGES_TOKEN,required=true --mount=type=bind,from=public.ecr.aws/g5f9s8a4/nora-apt:1.0.0,target=/nora-apt,rw . /nora-apt/env.sh && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y && rm -rf /var/lib/apt/lists/*' \
+  'RUN --mount=type=secret,id=PRIVATE_PACKAGES_TOKEN,required=true --mount=type=bind,from=packages.maestra.io/ecr-public/g5f9s8a4/nora-apt:1.0.0@sha256:cd5fcec38f8b7c4fdd283d41f49ac656751d4deed168111f89f44976a43a8178,target=/nora-apt,rw . /nora-apt/env.sh && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y && rm -rf /var/lib/apt/lists/*' \
   'RUN rm -rf /usr/lib/node_modules/npm' 'COPY --from=npm /usr/local/lib/node_modules/npm /usr/lib/node_modules/npm' \
   'WORKDIR /tests' 'RUN chown pwuser:pwuser /tests' \
   'COPY --chown=pwuser:pwuser node_modules node_modules' 'COPY --chown=pwuser:pwuser --exclude=node_modules . .' \
