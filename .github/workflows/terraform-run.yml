@@ -412,6 +412,9 @@ jobs:
           proxy: ${{ inputs.teleport_fqdn }}
           token: ${{ inputs.proxmox_tunnel_join_token }}
           certificate-ttl: 30m
+          # Only the tunnel uses it (PVE_TUNNEL_IDENTITY); the ambient
+          # TELEPORT_IDENTITY_FILE stays the main identity.
+          disable-env-vars: true
 
       - name: Teleport auth — Proxmox API tunnel bot, wait out the path loss window
         if: steps.teleport-auth-pve.outcome == 'failure'
@@ -425,6 +428,9 @@ jobs:
           proxy: ${{ inputs.teleport_fqdn }}
           token: ${{ inputs.proxmox_tunnel_join_token }}
           certificate-ttl: 30m
+          # Only the tunnel uses it (PVE_TUNNEL_IDENTITY); the ambient
+          # TELEPORT_IDENTITY_FILE stays the main identity.
+          disable-env-vars: true
 
       # --- Vault: tunnel mode (mssql/ad omicron) ---------------------------
       - name: Start Vault tunnel via Teleport
