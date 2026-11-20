@@ -112,6 +112,7 @@ order.
 | `gh_environment` | string | `''` — **passed VERBATIM by caller; naming differs per repo (dashes `us-omega-lw` vs underscores `us_omega_lw`); central never derives** |
 | `artifact_name` | string | `''` → `tf-plan-<r>-<e>-<s>` |
 | `teleport_join_token` | string | `github-actions-infra-deploy` |
+| `state_workload_identity` / `state_role_arn` | string | `terraform-state-s3` / `…:role/teleport-terraform-state` — a PR plan on token `github-actions-infra-plan` passes `infra-plan-state` / `…:role/teleport-infra-plan-state` (read-only); terraform-pr forwards both |
 | `teleport_fqdn` | string | `teleport.maestra.io:443` |
 
 ## terraform-pr
