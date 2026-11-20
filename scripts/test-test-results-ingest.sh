@@ -26,8 +26,10 @@ root=$(mktemp -d); trap 'rm -rf "$root"' EXIT
 mkdir -p "$root/bin"
 cat > "$root/bin/curl" <<'STUB'
 #!/usr/bin/env bash
-url=${*: -1}
+# Real curl: -o FILE gets the body (truncated before each retry); the URL is the last other arg.
+o=; prev=; url=; for a in "$@"; do if [ "$prev" = -o ]; then o=$a; elif [ "$a" != -o ]; then url=$a; fi; prev=$a; done
 printf '%s\n' "$*" >> "$CALLS"
+[ -z "$o" ] || exec > "$o"
 case "$url" in
   https://idtok.example/*)
     [ "$url" = 'https://idtok.example/x?api-version=2.0&audience=https%3A%2F%2Fgithub.com%2Fmaestra-io' ] \
@@ -68,10 +70,14 @@ grep -qx 'ingested 9 rows (1 requests)' "$root/ok/log" || fail "no ingest line: 
 for t in eyJ.stub.jwt hvs.stub ingest.stub; do grep -qxF "::add-mask::$t" "$root/ok/log" || fail "$t not masked"; done
 [ "$(wc -l < "$root/ok/calls" | tr -d ' ')" = 4 ] || fail "expected oidc, login, kv, upload: $(cat "$root/ok/calls")"
 # Bounded: every Vault call connects within 5 s, every other call within 10 s, nothing unbounded.
-[ "$(grep -c -- '--connect-timeout 5 --max-time 15 --retry 2 --retry-delay 2 --retry-connrefused' "$root/ok/calls")" = 2 ] \
+[ "$(grep -c -- '--connect-timeout 5 --max-time 15 --retry 2 --retry-delay 2 --retry-max-time 20 --retry-connrefused' "$root/ok/calls")" = 2 ] \
   || fail "Vault calls not bounded: $(cat "$root/ok/calls")"
 [ "$(grep -c -- '--connect-timeout' "$root/ok/calls")" = 4 ] || fail "a call without --connect-timeout: $(cat "$root/ok/calls")"
 grep -q -- '--retry-max-time 120' "$root/ok/calls" || fail "upload retries not capped"
+# The three credential calls: a Retry-After cannot outlast the budget, and the body goes to a file,
+# parsed only after curl succeeded (a failed attempt's HTML never reaches jq).
+[ "$(grep -c -- '--retry-max-time [24]0 .* -o ' "$root/ok/calls")" = 3 ] || fail "credential calls without --retry-max-time / -o: $(cat "$root/ok/calls")"
+[ -z "$(find "$root/ok/tmp" -name 'body.*')" ] || fail "the response file outlived the step"
 
 # No results: done before any network call (no Vault login for nothing).
 ingest none "${oidc[@]}" RESULTS="$root/none/missing" || fail "no results failed: $(cat "$root/none/log")"

@@ -32,22 +32,36 @@ warn() { echo "::warning::test-results-ingest: $*; the results are not ingested 
 # Vault and the ingest endpoint sit behind the same edge: 5 s to connect (a healthy connect from
 # the runners takes well under 1 s), 3 tries. curl --retry covers connect timeouts, 408/429/5xx;
 # --retry-connrefused adds a refused connect. A 4xx (role, policy) is not retried: it will not heal.
-vault_curl=(curl -sS --fail-with-body --connect-timeout 5 --max-time 15 --retry 2 --retry-delay 2 --retry-connrefused)
+# --retry-max-time caps the retrying too: a 429/503 Retry-After replaces --retry-delay.
+vault_curl=(curl -sS --fail-with-body --connect-timeout 5 --max-time 15 --retry 2 --retry-delay 2 --retry-max-time 20 --retry-connrefused)
+
+# fetch <curl argv...>: the response body on stdout only once curl succeeded. The body goes to a
+# private file (-o, truncated before each retry), never a pipe: a failed attempt's body (an
+# edge's HTML 503) would reach jq ahead of the retry's JSON.
+body=$(mktemp "$out/body.XXXXXX")
+trap 'rm -f "$body"' EXIT
+fetch() {
+  local rc=0
+  "$@" -o "$body" || rc=$?
+  [ "$rc" = 0 ] && cat "$body"
+  : > "$body"
+  return "$rc"
+}
 
 [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] \
   || warn "no ACTIONS_ID_TOKEN_REQUEST_URL / _TOKEN: the job needs \`permissions: id-token: write\`"
 aud=$(jq -rn --arg a "$OIDC_AUDIENCE" '$a | @uri')
-jwt=$(curl -sS --fail-with-body --connect-timeout 10 --max-time 20 --retry 2 --retry-connrefused \
+jwt=$(fetch curl -sS --fail-with-body --connect-timeout 10 --max-time 20 --retry 2 --retry-max-time 40 --retry-connrefused \
   -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$aud" \
   | jq -er '.value') || warn "no GitHub OIDC token"
 echo "::add-mask::$jwt"
 
 vault_token=$(jq -cn --arg r "$VAULT_ROLE" --arg j "$jwt" '{role: $r, jwt: $j}' \
-  | "${vault_curl[@]}" -X POST -H 'Content-Type: application/json' --data-binary @- \
+  | fetch "${vault_curl[@]}" -X POST -H 'Content-Type: application/json' --data-binary @- \
     "$VAULT_URL/v1/auth/jwt-github/login" \
   | jq -er '.auth.client_token') || warn "Vault login as $VAULT_ROLE at $VAULT_URL failed"
 echo "::add-mask::$vault_token"
-CI_TEST_RESULTS_TOKEN=$("${vault_curl[@]}" -H "X-Vault-Token: $vault_token" "$VAULT_URL/v1/$VAULT_SECRET" \
+CI_TEST_RESULTS_TOKEN=$(fetch "${vault_curl[@]}" -H "X-Vault-Token: $vault_token" "$VAULT_URL/v1/$VAULT_SECRET" \
   | jq -er '.data.data.value') || warn "Vault did not return $VAULT_SECRET"
 echo "::add-mask::$CI_TEST_RESULTS_TOKEN"
 unset jwt vault_token
