@@ -9,8 +9,9 @@ from one place.
 
 ## 1.4.6
 
-- `wireguard_burst`: `Add the FRR signing key` is skipped under an unprivileged
-  `--check` (`ansible_become=false`): get_url tests the root-owned keyring for
+- `wireguard_burst`: `Add the FRR signing key` is skipped in a `--check` that
+  runs as non-root (`ansible_facts.user_uid != 0`, needs the `user` facts of
+  `gather_subset: min`; without facts it runs as before): get_url tests the root-owned keyring for
   write before it honours check mode. As root that check only ever said
   `changed`; deploys are unchanged.
 
