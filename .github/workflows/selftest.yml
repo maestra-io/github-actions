@@ -45,6 +45,7 @@ on:
       - "check-encoding/**"
       - "translation-checker/**"
       - "nora-image-prewarm/**"
+      - "test-results-ingest/**"
       - ".github/workflows/pr-checks.yml"
       - ".github/workflows/base-images.yml"
       - "pr-checks/**"
@@ -145,7 +146,7 @@ jobs:
       - name: pypi upload (skip existing, 409, pinned twine, workflow copy)
         run: bash scripts/test-pypi-upload.sh
 
-      - name: test-results-ingest converter (TRX + JUnit fixtures)
+      - name: test-results-ingest converter (TRX + JUnit fixtures), bounded Vault login and upload (stub curl)
         run: bash scripts/test-test-results-ingest.sh
 
       - name: dotnet-service-build image-targets / bakes, global.json SDK, AWS credentials wait (workflow copy)
