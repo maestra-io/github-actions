@@ -819,7 +819,10 @@ vitest preset writes to `reports/` in CI; a repo on an older preset or with its 
 `ci-test-results-ingest`, bound to the workflow files in its `job_workflow_ref`
 (fluxcd `vault-server/central-auth.yaml`; a workflow missing there gets no rows),
 so the job needs `id-token: write` and nothing else. Call it with
-`continue-on-error: true`: telemetry never fails a build. Query:
+`continue-on-error: true`: telemetry never fails a build. Nor does it hold one up: the
+Vault login and the upload are curl calls with short connect timeouts, so an unreachable
+Vault costs ~20 s instead of the kernel's ~130 s of SYN retries (`hashicorp/vault-action`
+has no connect timeout; `test-results-ingest/ingest.sh`). Query:
 datasource `victorialogs-ci-telemetry`, LogsQL
 `_time:14d | stats by (repo, sha, test_id) count_uniq(outcome) n | filter n:>1`.
 

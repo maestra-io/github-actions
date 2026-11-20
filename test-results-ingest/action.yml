@@ -4,7 +4,8 @@ description: >-
   ci-telemetry VictoriaLogs (flaky-test telemetry, maestra-io/issues-maestra#1592).
   Needs `id-token: write`; the ingest bearer comes from Vault role
   ci-test-results-ingest (bound to the reusable workflows and DirectCRM).
-  Call it with `continue-on-error: true`: telemetry never fails a build.
+  Call it with `continue-on-error: true`: telemetry never fails a build. Every
+  network call is bounded, so an unreachable Vault costs ~20 s, not minutes.
 inputs:
   path:
     description: Directory with .trx / JUnit .xml files, or one such file
@@ -15,35 +16,10 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
-      with:
-        url: https://vault.maestra.io
-        method: jwt
-        path: jwt-github
-        role: ci-test-results-ingest
-        jwtGithubAudience: https://github.com/maestra-io
-        exportToken: false
-        secrets: |
-          gitlab/data/common/CI_TEST_RESULTS_TOKEN value | CI_TEST_RESULTS_TOKEN
+    # One script (ingest.sh): convert, then the Vault bearer through curl with short connect
+    # timeouts, then the upload. Every network call is bounded; see the script's header.
     - shell: bash
       env:
         RESULTS: ${{ inputs.path }}
         TEST_RESULTS_JOB_SUFFIX: ${{ inputs.job-suffix }}
-      run: |
-        # >>> ingest (scripts/test-test-results-ingest.sh runs the converter on testdata/)
-        set -euo pipefail
-        [ -e "$RESULTS" ] || { echo "no $RESULTS: nothing to ingest"; exit 0; }
-        out="$RUNNER_TEMP/test-results-ingest"; rm -rf "$out"; mkdir -p "$out"
-        python3 -I "$GITHUB_ACTION_PATH/test-results-to-jsonl.py" "$RESULTS" > "$out/rows.jsonl"
-        [ -s "$out/rows.jsonl" ] || { echo "no test results under $RESULTS"; exit 0; }
-        # The ingress caps a body at 16 MiB: DirectCRM's shards are ~50k rows a job.
-        # gzip to a file, not a pipe: curl cannot --retry a body read from stdin.
-        split -C 4m -d "$out/rows.jsonl" "$out/chunk-"
-        for c in "$out"/chunk-*; do
-          gzip -c "$c" > "$c.gz"
-          curl -sS --fail-with-body --retry 3 --retry-all-errors -m 60 \
-            -H "Authorization: Bearer $CI_TEST_RESULTS_TOKEN" -H 'Content-Type: application/stream+json' \
-            -H 'Content-Encoding: gzip' --data-binary "@$c.gz" https://ci-telemetry.iota.maestra.io/ci/test-results
-        done
-        echo "ingested $(wc -l < "$out/rows.jsonl") rows ($(ls "$out"/chunk-*.gz | wc -l) requests)"
-        # <<< ingest
+      run: bash "$GITHUB_ACTION_PATH/ingest.sh"
