@@ -11,11 +11,12 @@
 #     hashicorp/vault-action with TF_VAR_* export names chosen by the caller.
 #   - Per-run Proxmox pveum API token `<prefix>-<run_id>-<attempt>` (fixes the
 #     static-token 401 race between concurrent runs; json-first parse with
-#     box-table fallback), removed in always() cleanup.
+#     box-table fallback), removed in always() cleanup. User ci@pve
+#     (Administrator); ci-plan@pve (PVEAuditor) on pull_request.
 #   - AWS state creds via Teleport Workload Identity (terraform-state-s3),
 #     plus optional extra WI legs (e.g. haproxy's route53/cert-manager).
 #   - Optional per-node SSH tunnels + temp root ed25519 key (bpg/proxmox
-#     native SSH transport) and the Proxmox API tunnel.
+#     native SSH transport; never on pull_request) and the Proxmox API tunnel.
 #
 # ORDERING CONTRACT (do not reorder): vault tunnel -> vault fetch -> pveum mint
 # -> workload identities -> node SSH tunnels + temp key -> API tunnel (the LAST
@@ -114,13 +115,34 @@ on:
         required: false
         type: string
         default: ""
+      proxmox_token_vault_role:
+        description: >-
+          pull_request only: vault.maestra.io jwt-github role that reads the
+          PVEAuditor token of ci-plan@pve from infrastructure/proxmox/ci-plan/<environment>
+          (minted by maestra-io/proxmox), instead of minting one with sudo pveum
+          over teleport-production. Pass proxmox-ci-plan-token with
+          teleport_join_token github-actions-infra-plan. Empty = mint.
+        required: false
+        type: string
+        default: ""
+      proxmox_tunnel_join_token:
+        description: >-
+          Teleport join token of a separate bot for the Proxmox API tunnel, which
+          then runs `tsh ssh -N` as pve-plan (fluxcd pve-plan-forward-role.yaml:
+          github-actions-infra-plan-pve, no sudo, local forward only, egress capped
+          to the PVE API on the hosts). Pass it with teleport_join_token
+          github-actions-infra-plan, whose node-ansible-check forbids forwarding.
+          Empty = the main identity as teleport-production.
+        required: false
+        type: string
+        default: ""
       api_tunnel:
         description: "Open the Proxmox API tunnel (port from nodes.json .api_tunnel_port, default 8006)"
         required: false
         type: boolean
         default: true
       node_ssh_tunnels:
-        description: "Open one SSH tunnel per nodes.json node + inject a temp root ed25519 key + ssh-agent (bpg/proxmox native SSH transport). Requires nodes.json."
+        description: "Open one SSH tunnel per nodes.json node + inject a temp root ed25519 key + ssh-agent (bpg/proxmox native SSH transport). Requires nodes.json. Ignored on pull_request: a plan reads over the API only."
         required: false
         type: boolean
         default: false
@@ -229,6 +251,16 @@ jobs:
       TF_IN_AUTOMATION: "true"
       TF_INPUT: "false"
       TELEPORT_FQDN: ${{ inputs.teleport_fqdn }}
+      # A pull_request plan is read-only on Proxmox: its token is minted on
+      # ci-plan@pve (PVEAuditor on /, maestra-io/proxmox tasks/ci_plan_user.yml)
+      # and no root key goes onto the nodes, so no node SSH tunnels either —
+      # bpg reads state over the API only (SSH is for uploads/disk imports,
+      # i.e. apply). push/dispatch runs keep ci@pve (Administrator) + the key.
+      PVE_CI_USER: ${{ github.event_name == 'pull_request' && 'ci-plan@pve' || 'ci@pve' }}
+      PVE_NODE_KEY: ${{ inputs.node_ssh_tunnels && github.event_name != 'pull_request' }}
+      # PR plan with proxmox_token_vault_role: the ci-plan@pve token comes from
+      # Vault, nothing is minted on the host.
+      PVE_VAULT_TOKEN: ${{ github.event_name == 'pull_request' && inputs.proxmox_token_vault_role != '' }}
     steps:
       # No-op off RunsOn (exits when RUNS_ON_RUNNER_NAME is unset), so ARC rows are unaffected.
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
@@ -368,6 +400,38 @@ jobs:
           echo "TBOT_DEST_DIR=${{ steps.teleport-auth.outputs.destination-dir || steps.teleport-auth-retry.outputs.destination-dir }}" >> "$GITHUB_ENV"
           echo "TELEPORT_PROXY=${TELEPORT_FQDN}" >> "$GITHUB_ENV"
 
+      # The Proxmox API tunnel's own identity (proxmox_tunnel_join_token): Teleport
+      # ANDs ssh_port_forwarding over all roles of an identity, so the forward-only
+      # role lives on its own bot. Same flaky-heartbeat retry as above.
+      - name: Teleport auth — Proxmox API tunnel bot
+        id: teleport-auth-pve
+        if: ${{ inputs.proxmox_tunnel_join_token != '' && inputs.api_tunnel }}
+        continue-on-error: true
+        uses: teleport-actions/auth@3b365df2b4f64891358392a444ff34929ba0d0b1 # v2.1.2
+        with:
+          proxy: ${{ inputs.teleport_fqdn }}
+          token: ${{ inputs.proxmox_tunnel_join_token }}
+          certificate-ttl: 30m
+          # Only the tunnel uses it (PVE_TUNNEL_IDENTITY); the ambient
+          # TELEPORT_IDENTITY_FILE stays the main identity.
+          disable-env-vars: true
+
+      - name: Teleport auth — Proxmox API tunnel bot, wait out the path loss window
+        if: steps.teleport-auth-pve.outcome == 'failure'
+        run: sleep 120
+
+      - name: Teleport auth — Proxmox API tunnel bot, retry
+        id: teleport-auth-pve-retry
+        if: steps.teleport-auth-pve.outcome == 'failure'
+        uses: teleport-actions/auth@3b365df2b4f64891358392a444ff34929ba0d0b1 # v2.1.2
+        with:
+          proxy: ${{ inputs.teleport_fqdn }}
+          token: ${{ inputs.proxmox_tunnel_join_token }}
+          certificate-ttl: 30m
+          # Only the tunnel uses it (PVE_TUNNEL_IDENTITY); the ambient
+          # TELEPORT_IDENTITY_FILE stays the main identity.
+          disable-env-vars: true
+
       # --- Vault: tunnel mode (mssql/ad omicron) ---------------------------
       - name: Start Vault tunnel via Teleport
         id: vault-tunnel
@@ -482,7 +546,6 @@ jobs:
           # Per-run token name: concurrent runs never remove each other's token
           # (the static-name scheme caused documented 401 races).
           TOKEN_NAME="${PROXMOX_TOKEN_PREFIX}-${{ github.run_id }}-${{ github.run_attempt }}"
-          echo "token_name=$TOKEN_NAME" >> "$GITHUB_OUTPUT"
 
           PROXMOX_HOST="$PROXMOX_HOST_IN"
           if [ -z "$PROXMOX_HOST" ]; then
@@ -493,8 +556,13 @@ jobs:
             fi
             PROXMOX_HOST="${HOSTS[0]}"
           fi
-          echo "Creating API token ${TOKEN_NAME} on ${PROXMOX_HOST}..."
           echo "host=$PROXMOX_HOST" >> "$GITHUB_OUTPUT"
+          if [ "$PVE_VAULT_TOKEN" = "true" ]; then
+            echo "PR plan: PVEAuditor token of ci-plan@pve from Vault, nothing minted on ${PROXMOX_HOST}"
+            exit 0
+          fi
+          echo "token_name=$TOKEN_NAME" >> "$GITHUB_OUTPUT"
+          echo "Creating API token ${TOKEN_NAME} for ${PVE_CI_USER} on ${PROXMOX_HOST}..."
 
           # `--output-format=json` keeps us out of the unicode-table parsing
           # business (the regex-on-`│` parser once extracted the literal string
@@ -504,14 +572,19 @@ jobs:
           # run that never reaches Cleanup (runner killed) cannot leave a
           # live token behind.
           TOKEN_EXPIRE=$(( $(date +%s) + 86400 ))
+          # ci-plan@pve and its ACL are owned by maestra-io/proxmox; only the
+          # apply user is still bootstrapped here.
+          USER_SETUP=""
+          if [ "$PVE_CI_USER" = "ci@pve" ]; then
+            USER_SETUP="sudo pveum user add ci@pve --comment 'Terraform CI automation' 2>/dev/null || true && \
+             sudo pveum acl modify / -user ci@pve -role Administrator 2>/dev/null || true && "
+          fi
           TOKEN_OUTPUT=$(tsh ssh "teleport-production@${PROXMOX_HOST}" -- \
-            "sudo pveum user add ci@pve --comment 'Terraform CI automation' 2>/dev/null || true && \
-             sudo pveum acl modify / -user ci@pve -role Administrator 2>/dev/null || true && \
-             sudo pveum user token list ci@pve --output-format=json 2>/dev/null \
+            "${USER_SETUP}sudo pveum user token list ${PVE_CI_USER} --output-format=json 2>/dev/null \
                | python3 -c 'import json,sys,time; [print(t[\"tokenid\"]) for t in json.load(sys.stdin) if 0 < t.get(\"expire\", 0) < time.time()]' \
-               | xargs -r -n1 sudo pveum user token remove ci@pve 2>/dev/null; \
-             sudo pveum user token remove ci@pve ${TOKEN_NAME} 2>/dev/null || true && \
-             sudo pveum user token add ci@pve ${TOKEN_NAME} --privsep=0 --expire ${TOKEN_EXPIRE} --output-format=json")
+               | xargs -r -n1 sudo pveum user token remove ${PVE_CI_USER} 2>/dev/null; \
+             sudo pveum user token remove ${PVE_CI_USER} ${TOKEN_NAME} 2>/dev/null || true && \
+             sudo pveum user token add ${PVE_CI_USER} ${TOKEN_NAME} --privsep=0 --expire ${TOKEN_EXPIRE} --output-format=json")
 
           TOKEN_VALUE=$(echo "$TOKEN_OUTPUT" | jq -er '.value // empty' 2>/dev/null || true)
           if [ -z "$TOKEN_VALUE" ]; then
@@ -526,8 +599,38 @@ jobs:
           fi
 
           echo "::add-mask::${TOKEN_VALUE}"
-          echo "PROXMOX_VE_API_TOKEN=ci@pve!${TOKEN_NAME}=${TOKEN_VALUE}" >> "$GITHUB_ENV"
+          echo "PROXMOX_VE_API_TOKEN=${PVE_CI_USER}!${TOKEN_NAME}=${TOKEN_VALUE}" >> "$GITHUB_ENV"
           echo "API token created successfully"
+
+      - name: Read the Proxmox PVEAuditor token from Vault (PR plan)
+        id: pve-plan-token
+        if: ${{ env.PVE_VAULT_TOKEN == 'true' }}
+        uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
+        with:
+          url: https://vault.maestra.io
+          method: jwt
+          path: jwt-github
+          role: ${{ inputs.proxmox_token_vault_role }}
+          jwtGithubAudience: https://github.com/maestra-io
+          exportEnv: false
+          secrets: |
+            infrastructure/data/proxmox/ci-plan/${{ inputs.environment }} token_id | PVE_TOKEN_ID ;
+            infrastructure/data/proxmox/ci-plan/${{ inputs.environment }} token_secret | PVE_TOKEN_SECRET
+
+      - name: Export the Proxmox PVEAuditor token (PR plan)
+        if: ${{ env.PVE_VAULT_TOKEN == 'true' }}
+        env:
+          PVE_TOKEN_ID: ${{ steps.pve-plan-token.outputs.PVE_TOKEN_ID }}
+          PVE_TOKEN_SECRET: ${{ steps.pve-plan-token.outputs.PVE_TOKEN_SECRET }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          case "$PVE_TOKEN_ID" in
+            ci-plan@pve!*) ;;
+            *) echo "::error::infrastructure/proxmox/ci-plan/${ENVIRONMENT} holds token_id '${PVE_TOKEN_ID}', not a ci-plan@pve token"; exit 1 ;;
+          esac
+          echo "PROXMOX_VE_API_TOKEN=${PVE_TOKEN_ID}=${PVE_TOKEN_SECRET}" >> "$GITHUB_ENV"
+          echo "Proxmox API token: ${PVE_TOKEN_ID} (PVEAuditor)"
 
       # --- AWS state creds via Teleport Workload Identity -------------------
       - name: Get AWS credentials via Teleport Workload Identity
@@ -627,7 +730,7 @@ jobs:
       # AFTER the key injection below, because it authenticates with that key.
       - name: Start per-node SSH tunnels to Proxmox
         id: ssh-tunnel
-        if: ${{ inputs.node_ssh_tunnels && !inputs.node_ssh_direct && steps.nodes.outputs.has_nodes_json == 'true' }}
+        if: ${{ env.PVE_NODE_KEY == 'true' && !inputs.node_ssh_direct && steps.nodes.outputs.has_nodes_json == 'true' }}
         env:
           TELEPORT_HOSTS: ${{ steps.nodes.outputs.teleport_hosts }}
           SSH_PORTS: ${{ steps.nodes.outputs.ssh_ports }}
@@ -695,7 +798,7 @@ jobs:
           echo "All SSH tunnels up (PIDs:${TUNNEL_PIDS})"
 
       - name: Setup temporary SSH key for Proxmox provider
-        if: ${{ inputs.node_ssh_tunnels && steps.nodes.outputs.has_nodes_json == 'true' }}
+        if: ${{ env.PVE_NODE_KEY == 'true' && steps.nodes.outputs.has_nodes_json == 'true' }}
         env:
           TELEPORT_HOSTS: ${{ steps.nodes.outputs.teleport_hosts }}
         run: |
@@ -750,7 +853,7 @@ jobs:
       # authenticated fine.
       - name: Start per-node direct SSH forwarders
         id: ssh-direct
-        if: ${{ inputs.node_ssh_tunnels && inputs.node_ssh_direct && steps.nodes.outputs.has_nodes_json == 'true' }}
+        if: ${{ env.PVE_NODE_KEY == 'true' && inputs.node_ssh_direct && steps.nodes.outputs.has_nodes_json == 'true' }}
         env:
           NODE_NAMES: ${{ steps.nodes.outputs.node_names }}
           NODE_ADDRESSES: ${{ steps.nodes.outputs.node_addresses }}
@@ -811,7 +914,8 @@ jobs:
           NODE_ADDRESSES: ${{ steps.nodes.outputs.node_addresses }}
           HAS_NODES_JSON: ${{ steps.nodes.outputs.has_nodes_json }}
           NODE_SSH_DIRECT: ${{ inputs.node_ssh_direct }}
-          NODE_SSH_TUNNELS: ${{ inputs.node_ssh_tunnels }}
+          NODE_SSH_TUNNELS: ${{ env.PVE_NODE_KEY }}
+          PVE_TUNNEL_IDENTITY: ${{ steps.teleport-auth-pve.outputs.identity-file || steps.teleport-auth-pve-retry.outputs.identity-file }}
         run: |
           # Local port comes from nodes.json .api_tunnel_port; the REMOTE side
           # is FIXED at 8006 — Proxmox always listens on 8006. This removes the
@@ -820,9 +924,10 @@ jobs:
 
           # Direct mode carries the API forward the same way as the node
           # forwards above — plain ssh to the host's nodes.json address, using
-          # the temp key. Gated on node_ssh_tunnels too: the key only exists
-          # when that is on, so an env with node_ssh_tunnels=false (mssql, AD)
-          # keeps the tsh tunnel regardless of node_ssh_direct.
+          # the temp key. Gated on PVE_NODE_KEY: the key only exists when
+          # node_ssh_tunnels is on and the run is not a pull_request, so mssql/AD
+          # (node_ssh_tunnels=false) and every PR plan keep the tsh tunnel
+          # regardless of node_ssh_direct.
           API_ADDR=""
           if [ "$NODE_SSH_DIRECT" = "true" ] \
              && [ "$NODE_SSH_TUNNELS" = "true" ] \
@@ -852,10 +957,19 @@ jobs:
               "root@${API_ADDR}" &
           else
             echo "Starting API tunnel: localhost:${API_PORT} -> ${HOST}:8006"
-            tsh ssh --no-resume -i "$TELEPORT_IDENTITY_FILE" \
-              -L "${API_PORT}:localhost:8006" \
-              "teleport-production@${HOST}" \
-              "sleep infinity" &
+            if [ -z "$PVE_TUNNEL_IDENTITY" ]; then
+              tsh ssh --no-resume -i "$TELEPORT_IDENTITY_FILE" \
+                -L "${API_PORT}:localhost:8006" \
+                "teleport-production@${HOST}" \
+                "sleep infinity" &
+            else
+              # github-actions-infra-plan-pve: forward-only login pve-plan with a
+              # nologin shell, so no remote command.
+              echo "  as pve-plan (proxmox_tunnel_join_token)"
+              tsh ssh --no-resume -N -i "$PVE_TUNNEL_IDENTITY" \
+                -L "${API_PORT}:localhost:8006" \
+                "pve-plan@${HOST}" &
+            fi
           fi
           TUNNEL_PID=$!
           echo "tunnel_pid=$TUNNEL_PID" >> "$GITHUB_OUTPUT"
@@ -1078,7 +1192,7 @@ jobs:
           TOKEN_NAME="$TOKEN_NAME_IN"
           if [ -n "$API_HOST" ] && [ -n "$TOKEN_NAME" ]; then
             timeout 60 tsh ssh "teleport-production@${API_HOST}" -- \
-              "sudo pveum user token remove ci@pve ${TOKEN_NAME} 2>/dev/null || true" || true
+              "sudo pveum user token remove ${PVE_CI_USER} ${TOKEN_NAME} 2>/dev/null || true" || true
             echo "API token cleaned up"
           fi
 
