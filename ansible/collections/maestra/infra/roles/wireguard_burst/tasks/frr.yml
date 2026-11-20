@@ -8,6 +8,11 @@
     owner: root
     group: root
     mode: "0644"
+  # get_url probes dest for write before its check-mode exit, so a --check that
+  # runs as non-root (the play's user facts: uid != 0, however become was turned
+  # off) fails here. As root its check result is a
+  # constant "changed" (check mode does not download): skipping hides nothing.
+  when: not (ansible_check_mode and (ansible_facts.user_uid | default(0) | int) != 0)
 
 - name: Add the FRR apt repository
   ansible.builtin.apt_repository:
