@@ -752,22 +752,44 @@ jobs:
             PAIRS="${PAIRS} ${app}:${port}"
           done <<< "${TBOT_TUNNELS}"
 
-          tbot start -c /tmp/tbot-apps.yaml &
-          echo "pid=$!" >> "$GITHUB_OUTPUT"
+          # Two attempts, 120 s apart: the first tbot join can land in the
+          # eu-central-1 -> us-iota loss window (see the Teleport auth steps;
+          # maestra-nat-gateway 44496178532, 09:27:53-09:28:32 UTC). In the step,
+          # like the Vault tunnel: the first tbot has to be reaped before a second
+          # one can bind the ports.
+          pid=""
+          for attempt in 1 2; do
+            tbot start -c /tmp/tbot-apps.yaml &
+            pid=$!
+            missing=""
+            for pair in ${PAIRS}; do
+              app="${pair%%:*}"; port="${pair##*:}"
+              opened=0
+              for _ in $(seq 1 30); do
+                if (exec 3<>/dev/tcp/127.0.0.1/"${port}") 2>/dev/null; then opened=1; break; fi
+                sleep 1
+              done
+              if [ "${opened}" != 1 ]; then missing="${app} on 127.0.0.1:${port}"; break; fi
+            done
+            [ -z "${missing}" ] && break
+            kill "${pid}" 2>/dev/null || true
+            wait "${pid}" 2>/dev/null || true
+            pid=""
+            if [ "${attempt}" = 1 ]; then
+              echo "::warning::tbot tunnel for app ${missing} did not open in 30 s; one more attempt in 120 s"
+              sleep 120
+            fi
+          done
+          # FAIL CLOSED. No tunnel -> no silences -> we would page Rootly for every
+          # host we reboot, and the "is anyone else drained" interlock would be blind.
+          if [ -z "${pid}" ]; then
+            echo "::error::tbot tunnel for app ${missing} never opened, twice"
+            exit 1
+          fi
+          echo "pid=${pid}" >> "$GITHUB_OUTPUT"
 
           for pair in ${PAIRS}; do
             app="${pair%%:*}"; port="${pair##*:}"
-            opened=0
-            for _ in $(seq 1 30); do
-              if (exec 3<>/dev/tcp/127.0.0.1/"${port}") 2>/dev/null; then opened=1; break; fi
-              sleep 1
-            done
-            # FAIL CLOSED. No tunnel -> no silences -> we would page Rootly for every
-            # host we reboot, and the "is anyone else drained" interlock would be blind.
-            if [ "${opened}" != 1 ]; then
-              echo "::error::tbot tunnel for app '${app}' never opened on 127.0.0.1:${port}"
-              exit 1
-            fi
             slug="$(printf '%s' "${app}" | tr 'a-z-' 'A-Z_')"
             echo "TUNNEL_${slug}=http://127.0.0.1:${port}" >> "$GITHUB_ENV"
             echo "tunnel for ${app} is up on 127.0.0.1:${port}"
@@ -821,7 +843,13 @@ jobs:
             echo "      path: /tmp/tbot-wi"
           } > /tmp/tbot-wi.yaml
 
-          tbot start -c /tmp/tbot-wi.yaml --oneshot
+          # One more attempt past the eu-central-1 -> us-iota loss window (see the
+          # Teleport auth steps).
+          tbot start -c /tmp/tbot-wi.yaml --oneshot || {
+            echo "::warning::tbot minted no JWT SVID; one more attempt in 120 s"
+            sleep 120
+            tbot start -c /tmp/tbot-wi.yaml --oneshot
+          }
 
           # FAIL CLOSED, like the tunnel step: a play that believes it has AWS creds
           # and does not would drain a host and then fail to withdraw it from DNS.
