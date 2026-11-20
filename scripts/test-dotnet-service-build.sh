@@ -159,6 +159,12 @@ eq "$(get "$n/py" | jq -r '.Secret|test("^nrs_")')" true "index URL with a path:
 eq "$(stat -c %a "$n/ok/tmp/nora-bin/oidc.env" 2>/dev/null || stat -f %Lp "$n/ok/tmp/nora-bin/oidc.env")" 600 "oidc.env mode"
 install "$n/bad" wrong
 if get "$n/bad" >/dev/null 2>&1; then echo "FAIL nora helper: empty token accepted"; exit 1; fi
+# Testcontainers for Node runs `list` and calls `get` only for a registry the answer names
+# (shopify-app#520: "Unexpected response from Docker credential provider LIST command").
+list() { env -i PATH="$n/bin:$PATH" "$(cat "$1/path")/docker-credential-nora" list; }
+eq "$(list "$n/ok")" '{"packages.maestra.io":"token"}' "nora helper list names nora"
+eq "$(list "$n/py")" '{"packages.maestra.io":"token"}' "nora helper list, index URL with a path: the host"
+eq "$(env -i PATH="$PATH" "$(cat "$n/ok/path")/docker-credential-nora" store </dev/null; echo "rc=$?")" "rc=0" "nora helper store: a no-op"
 echo "dotnet-service-build nora-cred-helper: OK"
 
 # ── setup-buildx: moby/buildkit through nora, pinned by digest (issues-maestra#1649) ──
