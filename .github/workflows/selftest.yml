@@ -67,6 +67,42 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 2 # the PR merge commit and its first parent (the base): the selector's diff
+
+      # The two heavy blocks below, the docker cache e2e (~4 min) and the real SDKs (~2.5 min),
+      # run on a PR only when it changes what they read; every push to main and every PR that
+      # changes this file runs them. The selector fails open: no diff -> both run. Tested by
+      # scripts/test-selftest-changes.sh, which also checks that every file the heavy tests read
+      # turns their block on.
+      - name: heavy blocks this change can affect
+        id: changes
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          # >>> selftest-changes
+          set -euo pipefail
+          docker_cache=true; dotnet_sdk=true
+          if [ "$EVENT" = pull_request ] && files=$(git diff --name-only HEAD^1 HEAD 2>/dev/null) && [ -n "$files" ]; then
+            docker_cache=false; dotnet_sdk=false
+            while IFS= read -r f; do
+              case "$f" in
+                .github/workflows/selftest.yml | .github/workflows/dotnet-service-build.yml)
+                  docker_cache=true; dotnet_sdk=true ;;
+                .github/workflows/service-build.yml | scripts/nuget-secret-mount-fix.sh | \
+                scripts/test-dotnet-service-build-cache.sh | ci/fixtures/nuget-token-cache/* | nora-session/*)
+                  docker_cache=true ;;
+                dotnet-nora/* | scripts/test-dotnet-service-build-mtp.sh | scripts/test-dotnet-sdk-pin-real.sh | \
+                ci/fixtures/dotnet-test/*)
+                  dotnet_sdk=true ;;
+              esac
+            done <<< "$files"
+          fi
+          printf 'docker_cache=%s\ndotnet_sdk=%s\n' "$docker_cache" "$dotnet_sdk" >> "$GITHUB_OUTPUT"
+          printf 'heavy blocks: docker cache e2e=%s, real SDKs=%s\n' "$docker_cache" "$dotnet_sdk" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          # <<< selftest-changes
+
+      - name: selftest-changes selector (file lists, every heavy test's input turns its block on)
+        run: bash scripts/test-selftest-changes.sh
 
       - name: host_limit selector
         run: bash ansible/tests/test-host-limit-selector.sh
@@ -161,8 +197,10 @@ jobs:
       # (packages.maestra.io, issues-maestra#1649): the daemon pulls it with this login.
       - name: nora session token
         id: nora
+        if: steps.changes.outputs.docker_cache == 'true'
         uses: ./nora-session
       - name: docker login nora
+        if: steps.changes.outputs.docker_cache == 'true'
         env:
           NORA_TOKEN: ${{ steps.nora.outputs.token }}
         run: printf '%s' "$NORA_TOKEN" | docker login packages.maestra.io -u token --password-stdin
@@ -170,6 +208,7 @@ jobs:
       # (maestra-io/billing publish -r linux-x64: 401). Docker + a fake feed that
       # accepts only the current token; the GitLab-era Dockerfile must reproduce it.
       - name: dotnet-service-build packages token (layer cache, token files, expired-token e2e; workflow copy)
+        if: steps.changes.outputs.docker_cache == 'true'
         run: bash scripts/test-dotnet-service-build-cache.sh
       # The steps below ran without a nora login before: keep it that way.
       - if: ${{ always() }}
@@ -219,26 +258,32 @@ jobs:
       # SDK 11 stands for the newest SDK beside the pinned one (the job's root holds only the SDKs
       # dotnet-nora installs, not the runner image's).
       - uses: ./dotnet-nora
+        if: steps.changes.outputs.dotnet_sdk == 'true'
         with:
           dotnet-version: |
             10.0.x
             11.0.x
       - name: dotnet-service-build warn-as-error on MTP and VSTest runners (workflow copy)
+        if: steps.changes.outputs.dotnet_sdk == 'true'
         run: bash scripts/test-dotnet-service-build-mtp.sh
       - name: dotnet-service-build SDK pin on real SDKs (build SDK = pinned SDK 10, SDK 11 beside it)
+        if: steps.changes.outputs.dotnet_sdk == 'true'
         run: bash scripts/test-dotnet-sdk-pin-real.sh
       # The tool-cache tree pin on a real SDK: a tampered `dotnet` host left in the tool cache (as an
       # earlier job on a reused instance could) is reinstalled from the verified archive, never run.
       - name: tamper with the SDK 10 in the tool cache (complete marker kept)
+        if: steps.changes.outputs.dotnet_sdk == 'true'
         run: |
           set -euo pipefail
           d="$RUNNER_TOOL_CACHE/dotnet-nora"; v=$(DOTNET_NOLOGO=1 dotnet --list-sdks | awk '/^10\./ { print $1 }')
           [ -f "$d/$v.complete" ]
           printf '#!/bin/sh\necho tampered\n' > "$d/$v/dotnet.new"; chmod +x "$d/$v/dotnet.new"; mv -f "$d/$v/dotnet.new" "$d/$v/dotnet"
       - uses: ./dotnet-nora
+        if: steps.changes.outputs.dotnet_sdk == 'true'
         with:
           dotnet-version: 10.0.x
       - name: the tampered SDK was reinstalled, not run
+        if: steps.changes.outputs.dotnet_sdk == 'true'
         run: |
           set -euo pipefail
           d="$RUNNER_TOOL_CACHE/dotnet-nora"; v=$(DOTNET_NOLOGO=1 dotnet --list-sdks | awk '/^10\./ { print $1 }')
