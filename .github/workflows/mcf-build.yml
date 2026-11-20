@@ -899,7 +899,7 @@ jobs:
       - name: ingest test results
         if: ${{ always() }}
         continue-on-error: true
-        uses: maestra-io/github-actions/test-results-ingest@2450cdaaf4688887cb65579fc45ab5304cb81967 # v1.46.2
+        uses: maestra-io/github-actions/test-results-ingest@191ca31e3e6f3250188aa56979defe3d0a008381 # v1.108.2
         with:
           path: reports
 
@@ -2320,7 +2320,7 @@ jobs:
       - name: ingest test results
         if: ${{ always() }}
         continue-on-error: true
-        uses: maestra-io/github-actions/test-results-ingest@2450cdaaf4688887cb65579fc45ab5304cb81967 # v1.46.2
+        uses: maestra-io/github-actions/test-results-ingest@191ca31e3e6f3250188aa56979defe3d0a008381 # v1.108.2
         with:
           path: tests/functional/test-results/results.xml
 
@@ -2587,7 +2587,7 @@ jobs:
       - name: ingest test results
         if: ${{ always() }}
         continue-on-error: true
-        uses: maestra-io/github-actions/test-results-ingest@2450cdaaf4688887cb65579fc45ab5304cb81967 # v1.46.2
+        uses: maestra-io/github-actions/test-results-ingest@191ca31e3e6f3250188aa56979defe3d0a008381 # v1.108.2
         with:
           path: tests/e2e/test-results/results.xml
 

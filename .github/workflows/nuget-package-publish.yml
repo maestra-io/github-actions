@@ -391,7 +391,7 @@ jobs:
       - name: ingest test results
         if: ${{ always() && inputs.run-tests }}
         continue-on-error: true
-        uses: maestra-io/github-actions/test-results-ingest@2450cdaaf4688887cb65579fc45ab5304cb81967 # v1.46.2
+        uses: maestra-io/github-actions/test-results-ingest@191ca31e3e6f3250188aa56979defe3d0a008381 # v1.108.2
 
       # Never leave the temporary pin behind (nothing here commits, but the
       # workspace is the caller's checkout).
