@@ -55,6 +55,10 @@ wireguard_burst_wan_gateway: ""
 # (an SR-IOV VF: {macaddress: "02:..."}); empty = the interface is matched by name.
 wireguard_burst_wan_match: {}
 wireguard_burst_wan_table: 100
+# Mode of /etc/netplan/60-wireguard-burst.yaml (no secret in it: the key is a
+# PrivateKeyFile reference). A consumer whose unprivileged --check login reads
+# it through a group ACL sets 0640: an ACL entry never reads past the group bits.
+wireguard_burst_netplan_mode: "0600"
 # LAN MTU (0 = leave it). Set it to the LAN's MTU: a jumbo LAN frame for a
 # burst node must reach this host whole, so that the tunnel's MTU (not a
 # silent drop on the LAN NIC) is what answers with "fragmentation needed".
