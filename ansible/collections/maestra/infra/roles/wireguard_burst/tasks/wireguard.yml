@@ -45,7 +45,8 @@
   ansible.builtin.shell:
     cmd: >-
       set -o pipefail;
-      {% if wireguard_burst_key_stat.stat.readable | default(true) %}wg pubkey < /etc/wireguard/{{ wireguard_burst_interface }}.key{% else %}cat /etc/wireguard/{{ wireguard_burst_interface }}.pub{% endif %}
+      {{ 'wg pubkey <' if wireguard_burst_key_stat.stat.readable | default(true) else 'cat' }}
+      /etc/wireguard/{{ wireguard_burst_interface }}.{{ 'key' if wireguard_burst_key_stat.stat.readable | default(true) else 'pub' }}
     executable: /bin/bash
   register: wireguard_burst_pubkey
   changed_when: false
