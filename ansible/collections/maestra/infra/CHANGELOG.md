@@ -11,8 +11,13 @@ from one place.
 
 - `wireguard_burst`: works under an unprivileged `--check` login (no become).
   When the private key is unreadable, `Derive the public key` reads the `.pub`
-  kept beside it. New `wireguard_burst_netplan_mode` (default `0600`, as
-  before) lets a consumer make the netplan file group-readable for that login.
+  kept beside it, and a debug line says the private key itself was not
+  verified (a stale `.pub` would pass; the root deploy checks the key). New
+  `wireguard_burst_netplan_mode` (default `0600`, as before) lets a consumer
+  make the netplan file group-readable for that login.
+- Prerequisite for such a login, provisioned by the consumer, never by this
+  role: traverse (`x`, no read) on `/etc/wireguard` (`0750 root:systemd-network`),
+  e.g. a group ACL. Without it the key stat sees nothing. Never read on the key.
 
 ## 1.4.4
 

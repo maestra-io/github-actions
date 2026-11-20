@@ -102,6 +102,16 @@
     - wireguard_burst_key_stat.stat.exists
     - inventory_hostname in wireguard_burst_gateway_pubkeys
 
+- name: Say the key itself was not verified (unprivileged check login)
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}: {{ wireguard_burst_interface }}.key is unreadable for this login, so the
+      assertion above compared {{ wireguard_burst_interface }}.pub, not the private key. A .pub left over
+      from a key rotation would pass here; the deploy (root) verifies the key itself.
+  when:
+    - wireguard_burst_key_stat.stat.exists
+    - not (wireguard_burst_key_stat.stat.readable | default(true))
+
 - name: Render the interface for systemd-networkd
   ansible.builtin.template:
     src: "{{ item }}.j2"
