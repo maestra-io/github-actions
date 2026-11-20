@@ -225,7 +225,7 @@ jobs:
         run: bash scripts/test-mcf-build-ecr-release-check.sh
       - name: github-release-create (403 after main moved with a workflow change; workflow copies)
         run: bash scripts/test-github-release-create.sh
-      - name: sign-image status, background SBOM, cosign pin, no syft auth env (stub cosign/curl/docker/aws)
+      - name: sign-image status, background SBOM, cosign pin, no syft auth env, SBOM from a local OCI archive (stub cosign/curl/docker/aws)
         run: bash scripts/test-sign-image.sh
 
       - name: hot-test-publish stand names, manifest override, route wait, release bucket check, summary (workflow copy)

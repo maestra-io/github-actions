@@ -15,6 +15,7 @@ exit 0
 SH
 stub aws <<'SH'
 #!/usr/bin/env bash
+echo "aws $*" >> "$FAKE_LOG"
 echo fake-ecr-password
 SH
 # the "downloaded" binary is the fake cosign itself: the script puts it first on PATH
@@ -94,4 +95,34 @@ has "$b: signature" "$tmp/stdout" "second ref is signature only"
 
 check "1 " "malformed ref fails" SIGN_REFS=not-a-digest SBOM=true
 check "1 " "no ref fails" SIGN_REFS= SBOM=true
+# OCI_ARCHIVE: a local tar of OCI_ARCHIVE_REF is scanned instead of the registry (no ECR auth),
+# with the registry scan's subject; a tar of another digest, or none, falls back to the registry.
+oci_tar() { # <file> <digest>: a minimal OCI layout tar whose index.json lists <digest>
+  local d; d=$(mktemp -d "$tmp/layout.XXXXXX")
+  printf '{"schemaVersion":2,"manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"%s","size":1}]}\n' "$2" > "$d/index.json"
+  echo '{"imageLayoutVersion":"1.0.0"}' > "$d/oci-layout"
+  tar -cf "$1" -C "$d" index.json oci-layout
+}
+da=${a#*@} img=${a%@*}
+oci_tar "$tmp/a.tar" "$da"
+oci_tar "$tmp/other.tar" "sha256:$(printf '9%.0s' {1..64})"
+check "0 status=sbom+signature" "archive of the ref" SIGN_REFS="$a" SBOM=true OCI_ARCHIVE="$tmp/a.tar" OCI_ARCHIVE_REF="$a"
+has "-v $tmp/a.tar:/in/image.tar:ro syft oci-archive:/in/image.tar --source-name $img --source-version $da -q -o cyclonedx-json" "$tmp/log" "syft reads the archive with the registry scan's subject"
+hasnt "registry:" "$tmp/log" "no pull back from the registry"
+hasnt "aws ecr get-login-password" "$tmp/log" "no ECR auth for a local scan"
+has "SBOM 1 components" "$tmp/stdout" "SBOM line"
+has "from the local OCI archive" "$tmp/stdout" "the SBOM line says where it came from"
+
+check "0 status=sbom+signature" "archive of another digest" SIGN_REFS="$a" SBOM=true OCI_ARCHIVE="$tmp/other.tar" OCI_ARCHIVE_REF="$a"
+has "registry:$a" "$tmp/log" "another digest's archive: SBOM from the registry"
+hasnt "oci-archive:" "$tmp/log" "another digest's archive is not scanned"
+has "does not hold $da: SBOM from the registry" "$tmp/stdout" "the fallback says why"
+
+check "0 status=sbom+signature" "archive missing" SIGN_REFS="$a" SBOM=true OCI_ARCHIVE="$tmp/missing.tar" OCI_ARCHIVE_REF="$a"
+has "registry:$a" "$tmp/log" "no archive file: SBOM from the registry"
+
+check "0 status=sbom+signature" "archive of one of two refs" SIGN_REFS="$a $b" SBOM=true OCI_ARCHIVE="$tmp/a.tar" OCI_ARCHIVE_REF="$a"
+has "oci-archive:/in/image.tar --source-name $img" "$tmp/log" "the archive's ref from the archive"
+has "registry:$b" "$tmp/log" "the other ref from the registry"
+hasnt "registry:$a" "$tmp/log" "the archive's ref is not pulled"
 echo "ok: sign-image"
