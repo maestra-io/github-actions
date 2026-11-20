@@ -34,7 +34,9 @@ Ordering contract (fixed, do not reorder):
 4. Proxmox pveum token mint — **always per-run**:
    `<proxmox_token_prefix>-<run_id>-<attempt>`, json-first parse
    (`--output-format=json | jq -er .value`) with box-table fallback. Fixes
-   the static-token 401 race between concurrent runs.
+   the static-token 401 race between concurrent runs. User: `ci@pve`
+   (Administrator) on push/dispatch; `ci-plan@pve` (PVEAuditor, owned by
+   maestra-io/proxmox `tasks/ci_plan_user.yml`) on `pull_request`.
 5. AWS state creds via Teleport Workload Identity (`terraform-state-s3` →
    `AWS_WEB_IDENTITY_TOKEN_FILE` + role `teleport-terraform-state`), then
    optional extra WI legs (`extra_workload_identities`, multiline
@@ -44,7 +46,9 @@ Ordering contract (fixed, do not reorder):
    SSH transport (snippets / disk imports). With `node_ssh_direct: true`
    the forward is opened AFTER the key injection, by a plain `ssh -L` to
    the node's internal `address`, and Teleport is left with the auth
-   bootstrap only (pveum mint + key injection).
+   bootstrap only (pveum mint + key injection). Never on `pull_request`:
+   a plan refreshes over the API only, so no key lands on the nodes and the
+   API tunnel is the tsh one.
 7. Proxmox API tunnel — **the LAST `tsh ssh` before terraform**, with
    `--no-resume` (additional tsh connections can kill a resumable
    background tunnel). Forward is `-L <local>:localhost:8006`: LOCAL port =
