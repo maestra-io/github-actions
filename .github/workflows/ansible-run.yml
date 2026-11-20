@@ -5,7 +5,8 @@
 #   - Mitogen (Linux) OR linear/no-mitogen (Windows-over-SSH)
 #   - Vault: none | public (vault.maestra.io direct, JWT) | tunnel (tbot app-tunnel -> 127.0.0.1:8200)
 #   - Generic Vault secret map (multiline, passed straight to vault-action's `secrets:`)
-#   - Optional proxmox pveum API-token mint/cleanup (input-gated; inert for the other 6 repos)
+#   - Optional proxmox pveum API-token mint/cleanup (input-gated; inert for the other 6 repos);
+#     on pull_request the PVEAuditor ci-plan@pve token is read from Vault instead
 #   - No-hosts graceful-skip guard (sentinel log), log capture, artifact upload, step summary
 #
 # Path convention: `playbook` and `inventory` are relative to `working_directory`
@@ -201,10 +202,22 @@ on:
         default: ""
       # --- proxmox-only optional pre-step (divergence class 1) -----------
       mint_proxmox_token:
-        description: "Mint a per-run Proxmox pveum API token via tsh ssh (proxmox repo only)."
+        description: >-
+          Proxmox API token for the play (proxmox repo only). push/dispatch: a
+          per-run ansible-ci@pve (Administrator) token minted with sudo pveum.
+          pull_request: nothing is minted; the PVEAuditor token of ci-plan@pve
+          is read from Vault (proxmox_token_vault_role).
         required: false
         type: boolean
         default: false
+      proxmox_token_vault_role:
+        description: >-
+          jwt-github role that reads infrastructure/proxmox/ci-plan/<environment>
+          (ci-plan@pve PVEAuditor token, minted by maestra-io/proxmox) on
+          pull_request when mint_proxmox_token is set.
+        required: false
+        type: string
+        default: proxmox-ci-plan-token
       # --- misc ----------------------------------------------------------
       runs_on:
         description: >-
@@ -902,9 +915,48 @@ jobs:
           secrets: ${{ inputs.vault2_secrets }}
 
       # --- Proxmox pveum token (divergence class 1, input-gated) ---------
+      # pull_request runs a play from the PR branch: it never gets the
+      # Administrator mint (sudo pveum over teleport-production), only the
+      # PVEAuditor token below. Its API tasks are uri / proxmox_firewall, which
+      # do not run in check mode anyway.
+      - name: Read the Proxmox PVEAuditor token from Vault (pull_request)
+        id: pve-plan-token
+        if: ${{ inputs.mint_proxmox_token && github.event_name == 'pull_request' }}
+        uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
+        with:
+          url: https://vault.maestra.io
+          method: jwt
+          path: jwt-github
+          role: ${{ inputs.proxmox_token_vault_role }}
+          jwtGithubAudience: https://github.com/maestra-io
+          exportEnv: false
+          secrets: |
+            infrastructure/data/proxmox/ci-plan/${{ inputs.environment }} token_id | PVE_TOKEN_ID ;
+            infrastructure/data/proxmox/ci-plan/${{ inputs.environment }} token_secret | PVE_TOKEN_SECRET
+
+      - name: Export the Proxmox PVEAuditor token (pull_request)
+        if: ${{ inputs.mint_proxmox_token && github.event_name == 'pull_request' }}
+        env:
+          PVE_TOKEN_ID: ${{ steps.pve-plan-token.outputs.PVE_TOKEN_ID }}
+          PVE_TOKEN_SECRET: ${{ steps.pve-plan-token.outputs.PVE_TOKEN_SECRET }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          case "$PVE_TOKEN_ID" in
+            ci-plan@pve!?*) ;;
+            *) echo "::error::infrastructure/proxmox/ci-plan/${ENVIRONMENT} holds token_id '${PVE_TOKEN_ID}', not a ci-plan@pve token"; exit 1 ;;
+          esac
+          echo "::add-mask::$PVE_TOKEN_SECRET"
+          {
+            echo "PROXMOX_API_USER=ci-plan@pve"
+            echo "PROXMOX_API_TOKEN_NAME=${PVE_TOKEN_ID#ci-plan@pve!}"
+            echo "PROXMOX_API_TOKEN_SECRET=$PVE_TOKEN_SECRET"
+          } >> "$GITHUB_ENV"
+          echo "Proxmox API token: ${PVE_TOKEN_ID} (PVEAuditor), nothing minted"
+
       - name: Mint Proxmox API token
         id: mint-proxmox
-        if: ${{ inputs.mint_proxmox_token }}
+        if: ${{ inputs.mint_proxmox_token && github.event_name != 'pull_request' }}
         env:
           TELEPORT_IDENTITY_FILE: ${{ steps.teleport-auth.outputs.identity-file || steps.teleport-auth-retry.outputs.identity-file }}
           TELEPORT_PROXY: ${{ inputs.teleport_fqdn }}
