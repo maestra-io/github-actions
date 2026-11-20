@@ -7,6 +7,13 @@ finding, and because the `os_update` contract is shared across four repos:
 anything that changes a variable name or a hook expectation has to be findable
 from one place.
 
+## 1.4.6
+
+- `wireguard_burst`: `Add the FRR signing key` is skipped under an unprivileged
+  `--check` (`ansible_become=false`): get_url tests the root-owned keyring for
+  write before it honours check mode. As root that check only ever said
+  `changed`; deploys are unchanged.
+
 ## 1.4.5
 
 - `wireguard_burst`: works under an unprivileged `--check` login (no become).
