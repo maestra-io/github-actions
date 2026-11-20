@@ -186,6 +186,16 @@ on:
         required: false
         type: string
         default: "github-actions-infra-deploy"
+      state_workload_identity:
+        description: "Teleport WI that mints the state bucket's AWS JWT. A PR plan on github-actions-infra-plan passes infra-plan-state (read-only), with state_role_arn to match."
+        required: false
+        type: string
+        default: "terraform-state-s3"
+      state_role_arn:
+        description: "IAM role the state WI JWT assumes (AWS_ROLE_ARN)"
+        required: false
+        type: string
+        default: "arn:aws:iam::515260921971:role/teleport-terraform-state"
       teleport_fqdn:
         required: false
         type: string
@@ -523,6 +533,8 @@ jobs:
       - name: Get AWS credentials via Teleport Workload Identity
         env:
           TELEPORT_JOIN_TOKEN: ${{ inputs.teleport_join_token }}
+          STATE_WORKLOAD_IDENTITY: ${{ inputs.state_workload_identity }}
+          STATE_ROLE_ARN: ${{ inputs.state_role_arn }}
         run: |
           set -euo pipefail
           mkdir -p /tmp/tbot-aws
@@ -542,7 +554,7 @@ jobs:
                 type: directory
                 path: /tmp/tbot-aws
               selector:
-                name: terraform-state-s3
+                name: ${STATE_WORKLOAD_IDENTITY}
               audiences:
                 - sts.amazonaws.com
           EOF
@@ -555,7 +567,7 @@ jobs:
           fi
 
           echo "AWS_WEB_IDENTITY_TOKEN_FILE=/tmp/tbot-aws/jwt_svid" >> "$GITHUB_ENV"
-          echo "AWS_ROLE_ARN=arn:aws:iam::515260921971:role/teleport-terraform-state" >> "$GITHUB_ENV"
+          echo "AWS_ROLE_ARN=${STATE_ROLE_ARN}" >> "$GITHUB_ENV"
           echo "AWS credentials configured via Teleport Workload Identity"
 
       # --- Extra WI legs (e.g. haproxy route53 via cert-manager) ------------

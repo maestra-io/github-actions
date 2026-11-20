@@ -90,6 +90,16 @@ on:
         required: false
         type: string
         default: "github-actions-infra-deploy"
+      state_workload_identity:
+        description: "State WI for terraform-run; a caller on token github-actions-infra-plan passes infra-plan-state"
+        required: false
+        type: string
+        default: "terraform-state-s3"
+      state_role_arn:
+        description: "IAM role for the state WI JWT (terraform-run)"
+        required: false
+        type: string
+        default: "arn:aws:iam::515260921971:role/teleport-terraform-state"
       teleport_fqdn:
         required: false
         type: string
@@ -160,6 +170,8 @@ jobs:
       extra_workload_identities: ${{ matrix.env.extra_workload_identities || inputs.extra_workload_identities }}
       extra_env: ${{ matrix.env.extra_env || inputs.extra_env }}
       teleport_join_token: ${{ inputs.teleport_join_token }}
+      state_workload_identity: ${{ inputs.state_workload_identity }}
+      state_role_arn: ${{ inputs.state_role_arn }}
       teleport_fqdn: ${{ inputs.teleport_fqdn }}
       artifact_name: tf-plan-${{ matrix.env.region }}-${{ matrix.env.environment }}-${{ matrix.env.site }}
 
