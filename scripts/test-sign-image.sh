@@ -113,6 +113,10 @@ hasnt "aws ecr get-login-password" "$tmp/log" "no ECR auth for a local scan"
 has "SBOM 1 components" "$tmp/stdout" "SBOM line"
 has "from the local OCI archive" "$tmp/stdout" "the SBOM line says where it came from"
 
+# a relative path is bound by its absolute one (a bare name would be a Docker named volume)
+(cd "$tmp" && check "0 status=sbom+signature" "relative archive path" SIGN_REFS="$a" SBOM=true OCI_ARCHIVE=a.tar OCI_ARCHIVE_REF="$a")
+has "-v $(cd "$tmp" && pwd)/a.tar:/in/image.tar:ro syft oci-archive:" "$tmp/log" "a relative archive is bound by its absolute path"
+
 check "0 status=sbom+signature" "archive of another digest" SIGN_REFS="$a" SBOM=true OCI_ARCHIVE="$tmp/other.tar" OCI_ARCHIVE_REF="$a"
 has "registry:$a" "$tmp/log" "another digest's archive: SBOM from the registry"
 hasnt "oci-archive:" "$tmp/log" "another digest's archive is not scanned"

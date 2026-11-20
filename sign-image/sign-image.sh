@@ -65,7 +65,9 @@ sbom_of() { # <ref> <out file>: syft from its OCI image, ECR auth from the job's
   if [ -n "${OCI_ARCHIVE:-}" ] && [ "$ref" = "${OCI_ARCHIVE_REF:-}" ]; then
     if archive_holds "$OCI_ARCHIVE" "${ref#*@}"; then
       from="local OCI archive"
-      run=(-v "$OCI_ARCHIVE:/in/image.tar:ro")
+      # absolute: `-v image.tar:…` would name a Docker volume, not bind the file checked above
+      local archive; archive="$(cd "$(dirname "$OCI_ARCHIVE")" && pwd)/$(basename "$OCI_ARCHIVE")"
+      run=(-v "$archive:/in/image.tar:ro")
       src=(oci-archive:/in/image.tar --source-name "${ref%@*}" --source-version "${ref#*@}")
     else
       echo "$ref: $OCI_ARCHIVE does not hold ${ref#*@}: SBOM from the registry"
