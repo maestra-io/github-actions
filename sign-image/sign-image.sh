@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # sign-image.sh: cosign keyless sign + CycloneDX attest each REF (<image>@sha256:<64 hex>).
-# Env: SIGN_REFS (newline/space separated), SBOM (true|false), SYFT_IMAGE. Best-effort per ref:
+# Env: SIGN_REFS (newline/space separated), SBOM (true|false), SYFT_IMAGE; optional OCI_ARCHIVE
+# with OCI_ARCHIVE_REF (<image>@sha256:<digest>): a local OCI image tar of that ref (buildx
+# `--output type=oci,dest=…,tar=true` of the same build), scanned instead of pulling the image
+# back from the registry. Best-effort per ref:
 # prints `status=<sbom+signature|signature|none>` (the weakest over all refs) to $GITHUB_OUTPUT
 # and a ::warning:: for every ref that got less than asked; exits 0 unless REFS is malformed.
 # The SBOMs are made in the background while cosign installs and signs: the scan (image
@@ -44,24 +47,46 @@ install_cosign() { # pinned binary from the GitHub release, sha256-checked; one 
   return 1
 }
 
+# archive_holds <tar> <digest>: the OCI layout's index.json lists exactly this manifest digest.
+archive_holds() {
+  [ -s "$1" ] && tar -xOf "$1" index.json 2>/dev/null | jq -e --arg d "$2" 'any(.manifests[]?; .digest == $d)' >/dev/null
+}
+
 sbom_of() { # <ref> <out file>: syft from its OCI image, ECR auth from the job's AWS credentials.
   # The auth goes in through a throwaway docker config, not SYFT_REGISTRY_AUTH_*: syft redacts
   # every configured auth value from its output, so the username "AWS" became "*******" in the
   # package descriptions and authors of the SBOM (AWS SDK packages, code-intelligence image).
-  local ref=$1 out=$2 registry region pass cfg="$dir/docker-${2##*/}" start=$SECONDS
-  registry=${ref%%/*}
-  region=$(cut -d. -f4 <<<"$registry")
-  pass=$(aws ecr get-login-password --region "$region") || return 1
-  mkdir -p "$cfg"
-  (umask 077; printf '{"auths":{"%s":{"auth":"%s"}}}' "$registry" "$(printf 'AWS:%s' "$pass" | base64 -w0)" >"$cfg/config.json")
+  # With OCI_ARCHIVE of this very ref, syft reads the local tar instead: the runners sit in
+  # eu-central-1 and ECR in us-west-2, so the pull back was most of syft's time (e2e image
+  # ~110 s). --source-name/--source-version keep the SBOM's subject the registry scan's
+  # (image, digest): same document apart from serialNumber and timestamp (checked 2026-11-20).
+  local ref=$1 out=$2 registry region pass cfg="$dir/docker-${2##*/}" start=$SECONDS from=registry
+  local -a run=(-v "$cfg:/docker-config:ro" -e DOCKER_CONFIG=/docker-config) src=("registry:$ref")
+  if [ -n "${OCI_ARCHIVE:-}" ] && [ "$ref" = "${OCI_ARCHIVE_REF:-}" ]; then
+    if archive_holds "$OCI_ARCHIVE" "${ref#*@}"; then
+      from="local OCI archive"
+      # absolute: `-v image.tar:…` would name a Docker volume, not bind the file checked above
+      local archive; archive="$(cd "$(dirname "$OCI_ARCHIVE")" && pwd)/$(basename "$OCI_ARCHIVE")"
+      run=(-v "$archive:/in/image.tar:ro")
+      src=(oci-archive:/in/image.tar --source-name "${ref%@*}" --source-version "${ref#*@}")
+    else
+      echo "$ref: $OCI_ARCHIVE does not hold ${ref#*@}: SBOM from the registry"
+    fi
+  fi
+  if [ "$from" = registry ]; then
+    registry=${ref%%/*}
+    region=$(cut -d. -f4 <<<"$registry")
+    pass=$(aws ecr get-login-password --region "$region") || return 1
+    mkdir -p "$cfg"
+    (umask 077; printf '{"auths":{"%s":{"auth":"%s"}}}' "$registry" "$(printf 'AWS:%s' "$pass" | base64 -w0)" >"$cfg/config.json")
+  fi
   docker image inspect "$SYFT_IMAGE" >/dev/null 2>&1 || timeout 300 docker pull -q "$SYFT_IMAGE" >/dev/null
   local pulled=$SECONDS
-  timeout 900 docker run --rm -v "$cfg:/docker-config:ro" -e DOCKER_CONFIG=/docker-config \
-    "$SYFT_IMAGE" "registry:$ref" -q -o cyclonedx-json >"$out"
+  timeout 900 docker run --rm "${run[@]}" "$SYFT_IMAGE" "${src[@]}" -q -o cyclonedx-json >"$out"
   local rc=$?
   rm -rf "$cfg"
   [ "$rc" = 0 ] && test -s "$out" || return 1
-  echo "$ref: SBOM $(jq '.components | length' "$out") components, $(wc -c <"$out") bytes, syft $((SECONDS - pulled)) s (+$((pulled - start)) s auth and syft image)"
+  echo "$ref: SBOM $(jq '.components | length' "$out") components, $(wc -c <"$out") bytes, syft $((SECONDS - pulled)) s from the $from (+$((pulled - start)) s auth and syft image)"
 }
 
 read -r -d '' -a refs <<<"$SIGN_REFS"

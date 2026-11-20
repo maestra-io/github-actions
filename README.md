@@ -275,6 +275,14 @@ registry login above. Best-effort: a Fulcio/Rekor/syft failure is a warning and 
 
 A job that pushes several images passes `refs:` instead, one `<image>@sha256:<digest>` per line.
 
+`oci-archive:` (with `image` + `digest`) hands syft a local OCI tar of the same build instead of
+pulling the image back from ECR: the runners are in eu-central-1, ECR in us-west-2, and that pull
+was most of syft's time for a large image (`<mcf>-e2e`, ~110 s). Add a second exporter to the build
+(build-push-action `outputs: type=oci,dest=${{ runner.temp }}/image.tar,tar=true` next to
+`push: true`: one build, the pushed digest and the tar's are the same) and pass that path. The tar
+is used only when its `index.json` lists the digest, otherwise the registry is scanned as before;
+the SBOM is the registry scan's (same subject, image and digest).
+
 Verify: `cosign verify --certificate-oidc-issuer https://token.actions.githubusercontent.com
 --certificate-identity-regexp '^https://github\.com/maestra-io/' <image>@<digest>`
 (`verify-attestation --type cyclonedx` for the SBOM).

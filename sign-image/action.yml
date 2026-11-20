@@ -26,6 +26,13 @@ inputs:
     description: '`true` (default): also attest a CycloneDX SBOM; `false`: signature only.'
     required: false
     default: 'true'
+  oci-archive:
+    description: >-
+      With `image`+`digest`: a local OCI image tar of that digest (buildx `--output
+      type=oci,dest=<path>,tar=true` of the same build). syft reads it instead of pulling the
+      image back from the registry; unused (registry scan) when its index.json does not list the digest.
+    required: false
+    default: ''
 outputs:
   status:
     description: '`sbom+signature`, `signature` or `none`: the weakest of what landed over all images.'
@@ -45,9 +52,11 @@ runs:
         DIGEST: ${{ inputs.digest }}
         REFS: ${{ inputs.refs }}
         SBOM: ${{ inputs.sbom }}
+        OCI_ARCHIVE: ${{ inputs.oci-archive }}
         SYFT_IMAGE: ghcr.io/anchore/syft:v1.51.1@sha256:95fe0835e5bebc6f8b1f8acef68d47d63d594ef4c0f25c097ff853b23cbac74c
       run: |
         SIGN_REFS="$REFS"
         if [ -n "$IMAGE$DIGEST" ]; then SIGN_REFS="$SIGN_REFS"$'\n'"$IMAGE@$DIGEST"; fi
-        export SIGN_REFS
+        OCI_ARCHIVE_REF="$IMAGE@$DIGEST"
+        export SIGN_REFS OCI_ARCHIVE_REF
         bash "$GITHUB_ACTION_PATH/sign-image.sh"

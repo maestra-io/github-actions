@@ -92,6 +92,8 @@ jobs:
           provenance: false
           push: true
           tags: ${{ steps.ecr.outputs.registry }}/${{ env.REPOSITORY }}:${{ env.TAG }}
+          # a second exporter, as mcf-build: the SBOM is made from this tar, not pulled back
+          outputs: type=oci,dest=${{ runner.temp }}/a.oci.tar,tar=true
       - name: pushed digest = built digest, tag stored in ECR
         env:
           BUILT: ${{ steps.build.outputs.digest }}
@@ -110,6 +112,7 @@ jobs:
         with:
           image: ${{ steps.ecr.outputs.registry }}/${{ env.REPOSITORY }}
           digest: ${{ steps.push.outputs.digest }}
+          oci-archive: ${{ runner.temp }}/a.oci.tar
       - name: signature and SBOM attestation verify
         env:
           STATUS: ${{ steps.sign.outputs.status }}
@@ -122,6 +125,14 @@ jobs:
           cosign verify "${id[@]}" "$REF" > /dev/null
           cosign verify-attestation "${id[@]}" --type cyclonedx "$REF" \
             | jq -se '.[0].payload | @base64d | fromjson | .predicate.bomFormat == "CycloneDX"'
+          # The SBOM came from the local OCI tar (it lists the pushed digest, so sign-image used it),
+          # and its subject is still the image and digest, as a registry scan names them.
+          tar -xOf "$RUNNER_TEMP/a.oci.tar" index.json | jq -e --arg d "$DIGEST" 'any(.manifests[]; .digest == $d)' > /dev/null \
+            || { echo "::error::the OCI tar of the push does not list $DIGEST"; exit 1; }
+          cosign verify-attestation "${id[@]}" --type cyclonedx "$REF" \
+            | jq -se --arg n "${REF%@*}" --arg v "$DIGEST" '.[0].payload | @base64d | fromjson
+                | .predicate.metadata.component | .name == $n and .version == $v' \
+            || { echo "::error::the SBOM subject is not ${REF%@*} @ $DIGEST"; exit 1; }
           # ECR's referrer annotations are what SOC reads (registry:no-provenance / no-sbom):
           # one signature and one CycloneDX attestation must be told apart there.
           types=$(aws ecr list-image-referrers --region us-west-2 --repository-name "$REPOSITORY" \
