@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # nora-tool.sh <tool> plan|install: one toolchain from nora (issues-maestra#1649) in place of the
 # vendor download of actions/setup-go, actions/setup-node, actions/setup-python, astral-sh/setup-uv,
-# hashicorp/setup-terraform and azure/setup-helm. <tool>: go | node | python | uv | terraform | helm.
+# hashicorp/setup-terraform, azure/setup-helm and helm/kind-action (kind, kubectl).
+# <tool>: go | node | python | uv | terraform | helm | kind | kubectl.
 # The archives and their sha256 are pinned in setup-<tool>-nora/versions.txt (<version> <sha256>
-# [<release tag>]); the version spec (TOOL_VERSION, the setup action's syntax: empty or latest = the
+# [<release tag> | <kind's default node image>]); the version spec (TOOL_VERSION, the setup action's syntax: empty or latest = the
 # newest pin, N / N.x, N.M / N.M.x = the newest pin of that line, N.M.P = exactly that pin; go also
 # TOOL_VERSION_FILE, a go.mod whose toolchain / go line is a floor within its N.M) picks one pin.
 # Where nora gets the archive:
-#   go, node, helm  raw src/<vendor host>/<path>, uploaded by maestra-io/dockerfiles
-#                   .github/raw-uploads/{go,node,helm}.txt (same sha256)
-#   python, uv      nora's GitHub Releases proxy (python-build-standalone, astral-sh/uv)
+#   go, node, helm, kubectl  raw src/<vendor host>/<path>, uploaded by maestra-io/dockerfiles
+#                   .github/raw-uploads/{go,node,helm,kubectl}.txt (same sha256)
+#   python, uv, kind  nora's GitHub Releases proxy (python-build-standalone, astral-sh/uv,
+#                   kubernetes-sigs/kind)
 #   terraform       nora's releases.hashicorp.com proxy
 # The archive is checked against the pin and unpacked into the runner tool cache
 # ($RUNNER_TOOL_CACHE/<name>/<version>/<arch>, as the setup actions lay it out, with the
@@ -39,6 +41,7 @@ unpack() {
   case "$tool" in
     terraform) python3 -I -m zipfile -e "$1" "$2" && chmod +x "$2/terraform" ;;
     helm) tar -xzf "$1" -C "$2" --strip-components=1 linux-amd64/helm ;;
+    kind|kubectl) cp "$1" "$2/$tool" && chmod 0755 "$2/$tool" ;; # a bare binary, no archive
     *) tar -xzf "$1" -C "$2" --strip-components=1 ;;
   esac || return 1
   # python-build-standalone has python3 / pip3; setup-python's builds also answer to python / pip
@@ -76,7 +79,7 @@ resolve_spec() {
        else fail "version '$1': only latest, N, N.x, N.M, N.M.x or an exact version are served"
        fi ;;
   esac
-  [ -n "$p" ] || fail "no pinned version for '$1' in setup-$tool-nora/versions.txt: add it there (and, for go / node / helm, to maestra-io/dockerfiles .github/raw-uploads/$tool.txt first)"
+  [ -n "$p" ] || fail "no pinned version for '$1' in setup-$tool-nora/versions.txt: add it there (and, for go / node / helm / kubectl, to maestra-io/dockerfiles .github/raw-uploads/$tool.txt first)"
   echo "$p"
 }
 # go.mod: `toolchain goX.Y.Z`, else `go X.Y[.Z]` (what setup-go reads; a `//` comment after either is
@@ -116,6 +119,8 @@ case "$tool" in
     url="$base/github/astral-sh/python-build-standalone/releases/download/$tag/$file" ;;
   uv) name=uv arch=x86_64; file=uv-x86_64-unknown-linux-gnu.tar.gz; url="$base/github/astral-sh/uv/releases/download/$v/$file" ;;
   terraform) name=terraform; file="terraform_${v}_linux_amd64.zip"; url="$base/hashicorp/terraform/$v/$file" ;;
+  kind) name=kind; file="kind-v$v-linux-amd64"; url="$base/github/kubernetes-sigs/kind/releases/download/v$v/kind-linux-amd64" ;;
+  kubectl) name=kubectl; file="kubectl-v$v-linux-amd64"; url="$base/raw/src/dl.k8s.io/release/v$v/bin/linux/amd64/kubectl" ;;
   *) fail "unknown tool $tool" ;;
 esac
 
@@ -200,4 +205,7 @@ case "$tool" in
   uv) echo "uvx-path=$bin/uvx" >> "$GITHUB_OUTPUT"; uv --version ;;
   terraform) CHECKPOINT_DISABLE=1 terraform version ;;
   helm) helm version --short ;;
+  kind) # the node image kind $v creates by default (kind's pkg/apis/config/defaults/image.go)
+    echo "node-image=$(pin "$v" 3)" >> "$GITHUB_OUTPUT"; kind version ;;
+  kubectl) kubectl version --client ;;
 esac

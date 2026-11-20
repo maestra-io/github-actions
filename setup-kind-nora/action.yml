@@ -1,0 +1,137 @@
+name: "kind cluster through nora"
+description: >-
+  helm/kind-action without github.com, dl.k8s.io and Docker Hub (issues-maestra#1649): kind from
+  nora's GitHub Releases proxy and kubectl from packages.maestra.io raw, each sha256-pinned in its
+  versions.txt (setup-kind-nora, setup-kubectl-nora) into the runner tool cache, and the node image
+  from nora's Docker Hub proxy by digest (kind's own default for the pinned version, or
+  `node_image`). Then `kind create cluster` with kind-action's inputs; `install_only` stops before
+  it. The node image is pulled with a nora session token in a throwaway docker config (the job's
+  docker config is left as it was) and exported as KIND_NODE_IMAGE for a later
+  `kind create cluster --image "$KIND_NODE_IMAGE"`. Needs `permissions: id-token: write`;
+  linux-x64 only.
+
+inputs:
+  version:
+    description: "kind version: latest, N.M or an exact version, with or without v (kind-action: version)."
+    required: false
+    default: "latest"
+  kubectl_version:
+    description: "kubectl version: latest, N.M or an exact version, with or without v."
+    required: false
+    default: "latest"
+  config:
+    description: "Path to a kind cluster config file."
+    required: false
+    default: ""
+  node_image:
+    description: "Node image, a packages.maestra.io/… reference (empty: the pinned kind's default, through nora, by digest)."
+    required: false
+    default: ""
+  cluster_name:
+    description: "Name of the cluster to create."
+    required: false
+    default: "chart-testing"
+  wait:
+    description: "How long kind waits for the control plane to become ready."
+    required: false
+    default: "60s"
+  install_only:
+    description: "Install kind and kubectl and pull the node image, create no cluster."
+    required: false
+    default: "false"
+  url:
+    description: "nora base URL."
+    required: false
+    default: "https://packages.maestra.io"
+  audience:
+    description: "`aud` of the GitHub OIDC token nora accepts."
+    required: false
+    default: "packages.maestra.io"
+
+outputs:
+  node-image:
+    description: "The node image reference (also KIND_NODE_IMAGE in the job's environment)."
+    value: ${{ steps.cluster.outputs.node-image }}
+  kind-source:
+    description: "Where kind came from: tool-cache, runner-cache or nora."
+    value: ${{ steps.kind.outputs.source }}
+  kubectl-source:
+    description: "Where kubectl came from: tool-cache, runner-cache or nora."
+    value: ${{ steps.kubectl.outputs.source }}
+
+runs:
+  using: composite
+  steps:
+    - name: kind cache key
+      id: kind-plan
+      shell: bash
+      env:
+        NORA_URL: ${{ inputs.url }}
+        TOOL_VERSION: ${{ inputs.version }}
+      run: bash "${GITHUB_ACTION_PATH}/../nora-tool/nora-tool.sh" kind plan
+    - name: kind binary from the cache
+      id: kind-restore
+      if: ${{ steps.kind-plan.outputs.cache-key != '' }}
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/nora-tool-cache/${{ steps.kind-plan.outputs.cache-key }}
+        key: ${{ steps.kind-plan.outputs.cache-key }}-fixed
+        restore-keys: ${{ steps.kind-plan.outputs.cache-key }}
+    - name: kind through nora
+      id: kind
+      shell: bash
+      env:
+        TOOL_VERSION: ${{ inputs.version }}
+        NORA_URL: ${{ inputs.url }}
+        NORA_AUDIENCE: ${{ inputs.audience }}
+        NORA_TOOL_CACHE_DIR: ${{ steps.kind-plan.outputs.cache-key != '' && format('{0}/nora-tool-cache/{1}', runner.temp, steps.kind-plan.outputs.cache-key) || '' }}
+      run: bash "${GITHUB_ACTION_PATH}/../nora-tool/nora-tool.sh" kind install
+    - name: kind binary into the cache
+      if: ${{ steps.kind.outputs.save == 'true' }}
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/nora-tool-cache/${{ steps.kind-plan.outputs.cache-key }}
+        key: ${{ steps.kind-plan.outputs.cache-key }}${{ steps.kind-restore.outputs.cache-matched-key != '' && '-fixed' || '' }}
+    - name: kubectl cache key
+      id: kubectl-plan
+      shell: bash
+      env:
+        NORA_URL: ${{ inputs.url }}
+        TOOL_VERSION: ${{ inputs.kubectl_version }}
+      run: bash "${GITHUB_ACTION_PATH}/../nora-tool/nora-tool.sh" kubectl plan
+    - name: kubectl binary from the cache
+      id: kubectl-restore
+      if: ${{ steps.kubectl-plan.outputs.cache-key != '' }}
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/nora-tool-cache/${{ steps.kubectl-plan.outputs.cache-key }}
+        key: ${{ steps.kubectl-plan.outputs.cache-key }}-fixed
+        restore-keys: ${{ steps.kubectl-plan.outputs.cache-key }}
+    - name: kubectl through nora
+      id: kubectl
+      shell: bash
+      env:
+        TOOL_VERSION: ${{ inputs.kubectl_version }}
+        NORA_URL: ${{ inputs.url }}
+        NORA_AUDIENCE: ${{ inputs.audience }}
+        NORA_TOOL_CACHE_DIR: ${{ steps.kubectl-plan.outputs.cache-key != '' && format('{0}/nora-tool-cache/{1}', runner.temp, steps.kubectl-plan.outputs.cache-key) || '' }}
+      run: bash "${GITHUB_ACTION_PATH}/../nora-tool/nora-tool.sh" kubectl install
+    - name: kubectl binary into the cache
+      if: ${{ steps.kubectl.outputs.save == 'true' }}
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/nora-tool-cache/${{ steps.kubectl-plan.outputs.cache-key }}
+        key: ${{ steps.kubectl-plan.outputs.cache-key }}${{ steps.kubectl-restore.outputs.cache-matched-key != '' && '-fixed' || '' }}
+    - name: node image through nora, kind cluster
+      id: cluster
+      shell: bash
+      env:
+        NORA_URL: ${{ inputs.url }}
+        NORA_AUDIENCE: ${{ inputs.audience }}
+        KIND_DEFAULT_IMAGE: ${{ steps.kind.outputs.node-image }}
+        INPUT_NODE_IMAGE: ${{ inputs.node_image }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_CLUSTER_NAME: ${{ inputs.cluster_name }}
+        INPUT_WAIT: ${{ inputs.wait }}
+        INPUT_INSTALL_ONLY: ${{ inputs.install_only }}
+      run: bash "${GITHUB_ACTION_PATH}/kind-cluster.sh"

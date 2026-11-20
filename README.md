@@ -594,10 +594,10 @@ SDK: the dockerfiles PR first (its merge uploads), then the line in `sdks.txt`. 
 `scripts/test-dotnet-nora.sh` (selftest; the selftest also installs 10.0.x and 11.0.x through it and
 reinstalls a tampered SDK 10 from the tool cache).
 
-## Toolchains through nora (`setup-{go,node,python,uv,terraform,helm}-nora`)
+## Toolchains through nora (`setup-{go,node,python,uv,terraform,helm,kubectl,kind}-nora`)
 
 In place of `actions/setup-go`, `actions/setup-node`, `actions/setup-python`, `astral-sh/setup-uv`,
-`hashicorp/setup-terraform` and `azure/setup-helm`, which download the tool from its vendor
+`hashicorp/setup-terraform`, `azure/setup-helm`, `azure/setup-kubectl` and `helm/kind-action`, which download the tool from its vendor
 (issues-maestra#1649). The swap is the `uses:` line; the inputs are the ones our workflows pass:
 
 | action | inputs | archive in nora |
@@ -608,6 +608,8 @@ In place of `actions/setup-go`, `actions/setup-node`, `actions/setup-python`, `a
 | `setup-uv-nora` | `version`, `enable-cache`, `cache-dependency-glob`, `python-version`, `activate-environment`, `venv-path` | GitHub Releases proxy |
 | `setup-terraform-nora` | `terraform_version` (no wrapper: `terraform_wrapper: true` fails) | releases.hashicorp.com proxy |
 | `setup-helm-nora` | `version` | raw `src/get.helm.sh/` |
+| `setup-kubectl-nora` | `version` | raw `src/dl.k8s.io/` |
+| `setup-kind-nora` | `version`, `kubectl_version`, `config`, `node_image`, `cluster_name`, `wait`, `install_only` (kind-action's; no `registry`, `cloud_provider`, post-job delete) | GitHub Releases proxy (kind), raw `src/dl.k8s.io/` (kubectl), Docker Hub proxy (node image) |
 
 A spec (`latest`, `N`, `N.x`, `N.M`, `N.M.x`, exact) resolves to the newest version in the
 action's `versions.txt`, which pins the archive's sha256; a version not listed fails the step
@@ -637,9 +639,17 @@ cannot see outside it; an absolute glob fails the step).
       go-version-file: go.mod
 ```
 
-A new version: for go / node / helm the maestra-io/dockerfiles `.github/raw-uploads/<tool>.txt`
-PR first (its merge uploads), then the line in `versions.txt`; for uv / terraform only
-`versions.txt` (the proxies hold a release for 3 days). One script, `nora-tool/nora-tool.sh`,
+A new version: for go / node / helm / kubectl the maestra-io/dockerfiles `.github/raw-uploads/<tool>.txt`
+PR first (its merge uploads), then the line in `versions.txt`; for uv / terraform / kind only
+`versions.txt` (the proxies hold a release for 3 days; kind's line also names its default node
+image, `pkg/apis/config/defaults/image.go` at the tag).
+
+`setup-kind-nora` pulls the node image (`node_image`, else the pinned kind's default as
+`packages.maestra.io/docker-hub/kindest/node:<tag>@sha256:…`; anything outside nora fails) with a
+nora session token in a throwaway docker config, exports it as `KIND_NODE_IMAGE` and, unless
+`install_only`, runs `kind create cluster --image "$KIND_NODE_IMAGE"`. With `install_only`, the
+job's own `kind create cluster` passes `--image "$KIND_NODE_IMAGE"`: without it kind pulls its
+default from Docker Hub. One script, `nora-tool/nora-tool.sh`,
 does all of them. Tests: `scripts/test-nora-tool.sh` (selftest) and the real installs of
 `.github/workflows/nora-tool-selftest.yml`.
 

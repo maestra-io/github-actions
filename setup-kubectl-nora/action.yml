@@ -1,0 +1,64 @@
+name: "kubectl through nora"
+description: >-
+  azure/setup-kubectl without dl.k8s.io: the kubectl named by version comes from packages.maestra.io
+  raw, sha256-pinned in versions.txt, into the runner tool cache (issues-maestra#1649). The binary
+  is cached next to the runners (RunsOn Magic Cache) and used from there only when its sha256 is
+  the pin. Needs `permissions: id-token: write`; linux-x64 only.
+
+inputs:
+  version:
+    description: "latest, N.M (the newest pinned patch) or an exact version, with or without v."
+    required: false
+    default: "latest"
+  url:
+    description: "nora base URL."
+    required: false
+    default: "https://packages.maestra.io"
+  audience:
+    description: "`aud` of the GitHub OIDC token nora accepts."
+    required: false
+    default: "packages.maestra.io"
+
+outputs:
+  kubectl-path:
+    description: "The kubectl executable."
+    value: ${{ steps.install.outputs.path }}
+  tool-source:
+    description: "Where kubectl came from: tool-cache (already installed, its tree the pin in versions.txt), runner-cache (the cached binary) or nora."
+    value: ${{ steps.install.outputs.source }}
+
+runs:
+  using: composite
+  steps:
+    - name: kubectl cache key
+      id: plan
+      shell: bash
+      env:
+        NORA_URL: ${{ inputs.url }}
+        TOOL_VERSION: ${{ inputs.version }}
+      run: bash "${GITHUB_ACTION_PATH}/../nora-tool/nora-tool.sh" kubectl plan
+    - name: kubectl binary from the cache
+      id: restore
+      if: ${{ steps.plan.outputs.cache-key != '' }}
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/nora-tool-cache/${{ steps.plan.outputs.cache-key }}
+        # <key>-fixed: the binary saved after a restored one failed the pin (a key is immutable)
+        key: ${{ steps.plan.outputs.cache-key }}-fixed
+        restore-keys: ${{ steps.plan.outputs.cache-key }}
+    - name: kubectl through nora
+      id: install
+      shell: bash
+      env:
+        TOOL_VERSION: ${{ inputs.version }}
+        NORA_URL: ${{ inputs.url }}
+        NORA_AUDIENCE: ${{ inputs.audience }}
+        NORA_TOOL_CACHE_DIR: ${{ steps.plan.outputs.cache-key != '' && format('{0}/nora-tool-cache/{1}', runner.temp, steps.plan.outputs.cache-key) || '' }}
+      run: bash "${GITHUB_ACTION_PATH}/../nora-tool/nora-tool.sh" kubectl install
+    - name: kubectl binary into the cache
+      # save=true: a fetched binary (after a rejected restore: under <key>-fixed)
+      if: ${{ steps.install.outputs.save == 'true' }}
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/nora-tool-cache/${{ steps.plan.outputs.cache-key }}
+        key: ${{ steps.plan.outputs.cache-key }}${{ steps.restore.outputs.cache-matched-key != '' && '-fixed' || '' }}

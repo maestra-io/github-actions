@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# nora-tool/nora-tool.sh (setup-{go,node,python,uv,terraform,helm}-nora): version specs and
+# nora-tool/nora-tool.sh (setup-{go,node,python,uv,terraform,helm,kind,kubectl}-nora): version specs and
 # go.mod resolved against each versions.txt (NORA_TOOL_RESOLVE_ONLY), the refusals, and with a
 # stub curl: a download whose sha256 is not the pin is refused and nothing unpacked; a fetch
 # keeps the archive for the cache save; a cached archive with the pin fetches nothing; a cached
@@ -22,15 +22,16 @@ resolve() { # resolve <tool> <spec> [<go.mod content>]
 expect() { local got; got=$(resolve "${@:2}") || fail "$2 '$3': $(cat "$root/err")"; [ "$got" = "$1" ] || fail "$2 '$3': got '$got', want '$1'"; }
 refuse() { if resolve "${@:2}" >/dev/null; then fail "$2 '$3' resolved, want a refusal"; fi; grep -qF -- "$1" "$root/err" || fail "$2 '$3': no '$1' in: $(cat "$root/err")"; }
 
-for t in go node python uv terraform helm; do
+for t in go node python uv terraform helm kind kubectl; do
   [ -s "${here}/../setup-$t-nora/versions.txt" ] || fail "no setup-$t-nora/versions.txt"
-  # every pin line: version, 64-hex archive sha256, (python: its release tag,) 64-hex tree sha256
+  # every pin line: version, 64-hex archive sha256, (python: its release tag, kind: its default node image,) 64-hex tree sha256
   sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "${here}/../setup-$t-nora/versions.txt" | while read -r v s a b rest; do
     [[ $v =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "$t pin '$v' is not X.Y.Z"
     [[ $s =~ ^[0-9a-f]{64}$ ]] || fail "$t $v sha256 '$s'"
-    if [ "$t" = python ]; then tag=$a tree=$b; else tag="" tree=$a; [ -z "$b" ] || fail "$t $v: extra columns"; fi
+    if [ "$t" = python ] || [ "$t" = kind ]; then tag=$a tree=$b; else tag="" tree=$a; [ -z "$b" ] || fail "$t $v: extra columns"; fi
     [ -z "$rest" ] || fail "$t $v: extra columns"
     [ "$t" != python ] || [[ $tag =~ ^[0-9]{8}$ ]] || fail "python $v release tag '$tag'"
+    [ "$t" != kind ] || [[ $tag =~ ^kindest/node:v[0-9]+\.[0-9]+\.[0-9]+@sha256:[0-9a-f]{64}$ ]] || fail "kind $v node image '$tag'"
     [[ $tree =~ ^[0-9a-f]{64}$ ]] && [ "$tree" != "$s" ] || fail "$t $v tree sha256 '$tree'"
   done
   expect "$(newest $t)" $t ""
@@ -54,6 +55,7 @@ expect "$(newest node 24.)" node 24; expect "$(newest node 24.)" node 24.x; expe
 expect 1.12.2 terraform 1.12.2; expect 1.17.2 terraform v1.17.2; expect "$(newest terraform 1.15.)" terraform 1.15
 expect 3.18.5 helm v3.18.5; expect "$(newest helm 4.)" helm v4
 expect 0.13.6 uv 0.13.6
+expect 0.31.0 kind v0.31.0; expect 0.24.0 kind 0.24; expect 1.35.0 kubectl v1.35.0
 expect "$(newest python 3.12.)" python 3.12; expect "$(newest python 3.8.)" python 3.8; expect 3.10.22 python 3.10; refuse "no pinned version for '3.99'" python 3.99
 
 # install with a stub curl: a fake `helm` pinned in a copy of the actions (the archive layouts

@@ -1,5 +1,5 @@
 ---
-# setup-{go,node,python,uv,terraform,helm}-nora for real: each toolchain from nora with the job's
+# setup-{go,node,python,uv,terraform,helm,kubectl}-nora and setup-kind-nora for real: each toolchain from nora with the job's
 # OIDC token, checked against its pin, on PATH for later steps with the setup action's outputs and
 # environment. A re-run (run attempt > 1) must take every toolchain from the runner cache or the
 # tool cache, never from nora (the actions' tool-source output). Fork pull requests get no OIDC
@@ -291,3 +291,78 @@ jobs:
           set -euo pipefail
           [ "$OUTCOME" = failure ]
           [ -z "$SOURCE" ]
+
+  kind:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: runs-on=${{ github.run_id }}-nora-tool-kind/pool=small
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write # nora session token
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: a kind config
+        run: |
+          printf 'kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\nnodes:\n- role: control-plane\n' > "$RUNNER_TEMP/kind.yaml"
+      - id: kind
+        uses: ./setup-kind-nora
+        with:
+          version: v0.31.0
+          config: ${{ runner.temp }}/kind.yaml
+          cluster_name: nora-selftest
+          wait: 120s
+      - name: the cluster runs the pinned node image from nora, kind and kubectl are the pins
+        env:
+          IMAGE: ${{ steps.kind.outputs.node-image }}
+        run: |
+          set -euo pipefail
+          want="packages.maestra.io/docker-hub/$(awk '$1 == "0.31.0" { print $3 }' setup-kind-nora/versions.txt)"
+          [ "$IMAGE" = "$want" ] && [ "$KIND_NODE_IMAGE" = "$want" ]
+          [ "$(docker inspect -f '{{ .Config.Image }}' nora-selftest-control-plane)" = "$want" ]
+          kind version | grep -F ' v0.31.0 '
+          case "$(command -v kind)" in "$RUNNER_TOOL_CACHE"/kind/*) ;; *) echo "kind is $(command -v kind)"; exit 1 ;; esac
+          kubectl version --client -o json | jq -e '.clientVersion.gitVersion == "v1.35.0"'
+          kubectl wait --for=condition=Ready node --all --timeout=120s
+      - name: install_only, kind 0.24.0
+        id: only
+        uses: ./setup-kind-nora
+        with:
+          version: "0.24"
+          install_only: "true"
+      - name: kind 0.24.0 on PATH, its default node image pulled, no second cluster
+        env:
+          IMAGE: ${{ steps.only.outputs.node-image }}
+        run: |
+          set -euo pipefail
+          kind version | grep -F ' v0.24.0 '
+          [ "$IMAGE" = "packages.maestra.io/docker-hub/$(awk '$1 == "0.24.0" { print $3 }' setup-kind-nora/versions.txt)" ]
+          docker image inspect "$IMAGE" >/dev/null
+          [ "$(kind get clusters)" = nora-selftest ]
+      - name: a node_image around nora is refused
+        id: hub
+        continue-on-error: true
+        uses: ./setup-kind-nora
+        with:
+          node_image: kindest/node:v1.35.0
+      - name: refused
+        env:
+          OUTCOME: ${{ steps.hub.outcome }}
+        run: '[ "$OUTCOME" = failure ]'
+      - id: kubectl
+        uses: ./setup-kubectl-nora
+        with:
+          version: "1.35"
+      - name: sources (a re-run takes nothing from nora)
+        env:
+          SRC_KIND: ${{ steps.kind.outputs.kind-source }}
+          SRC_KUBECTL: ${{ steps.kind.outputs.kubectl-source }}
+          SRC_ONLY: ${{ steps.only.outputs.kind-source }}
+          SRC_KUBECTL_AGAIN: ${{ steps.kubectl.outputs.tool-source }}
+        run: |
+          set -euo pipefail
+          env | grep '^SRC_' | sort
+          [ "$SRC_KUBECTL_AGAIN" = tool-cache ]
+          if [ "$GITHUB_RUN_ATTEMPT" -gt 1 ] && env | grep -q '^SRC_.*=nora$'; then echo "::error::re-run attempt $GITHUB_RUN_ATTEMPT fetched from nora"; exit 1; fi
