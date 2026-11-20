@@ -39,6 +39,13 @@
   check_mode: false
   loop: "{{ os_update_silence_sets }}"
   register: os_update_silence_post
+  # A transient `Connection reset by peer` from the Alertmanager tunnel failed a whole
+  # node before the drain (20.11.2026 omega worker-storage08; the rerun passed with the
+  # same body). A retried POST may leave one untracked silence behind; it expires with
+  # endsAt, which the invariant above keeps under 30 min.
+  retries: 3
+  delay: 10
+  until: os_update_silence_post is succeeded
 
 - name: Remember the silence IDs so `always` can drop them
   ansible.builtin.set_fact:
