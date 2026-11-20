@@ -128,9 +128,11 @@ jobs:
           cat > "$bin/docker-credential-nora" <<'EOF'
           #!/usr/bin/env bash
           set -euo pipefail
-          [ "${1:-}" = get ] || exit 0
-          server=$(cat) # docker sends it without a newline
+          case "${1:-}" in get | list) ;; *) exit 0 ;; esac
           . "${BASH_SOURCE[0]%/*}/oidc.env"
+          # Testcontainers for Node runs `list` and calls `get` only for a registry the answer names.
+          if [ "$1" = list ]; then jq -cn --arg h "${nora#*://}" '{($h): "token"}'; exit 0; fi
+          server=$(cat) # docker sends it without a newline
           t=$(curl -sSf --retry 3 --connect-timeout 10 --max-time 30 -H "Authorization: bearer $token" \
             "$url&audience=$aud" | jq -r '.value // empty')
           [ -n "$t" ]
