@@ -36,7 +36,13 @@ Ordering contract (fixed, do not reorder):
    (`--output-format=json | jq -er .value`) with box-table fallback. Fixes
    the static-token 401 race between concurrent runs. User: `ci@pve`
    (Administrator) on push/dispatch; `ci-plan@pve` (PVEAuditor, owned by
-   maestra-io/proxmox `tasks/ci_plan_user.yml`) on `pull_request`.
+   maestra-io/proxmox `tasks/ci_plan_user.yml`) on `pull_request`. A PR plan
+   on the read-only bot passes `teleport_join_token: github-actions-infra-plan`,
+   `proxmox_token_vault_role: proxmox-ci-plan-token` and
+   `proxmox_tunnel_login: pve-plan` (plus the state WI inputs): nothing is
+   minted; the token is read from vault.maestra.io
+   `infrastructure/proxmox/ci-plan/<environment>` (written by the proxmox
+   deploy of main) and the API tunnel is `tsh ssh -N` as `pve-plan`.
 5. AWS state creds via Teleport Workload Identity (`terraform-state-s3` →
    `AWS_WEB_IDENTITY_TOKEN_FILE` + role `teleport-terraform-state`), then
    optional extra WI legs (`extra_workload_identities`, multiline

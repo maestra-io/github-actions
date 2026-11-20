@@ -90,6 +90,16 @@ on:
         required: false
         type: string
         default: "github-actions-infra-deploy"
+      proxmox_token_vault_role:
+        description: "terraform-run: Vault role of the PVEAuditor PR-plan token (proxmox-ci-plan-token); empty = mint over sudo"
+        required: false
+        type: string
+        default: ""
+      proxmox_tunnel_login:
+        description: "terraform-run: Teleport login of the Proxmox API tunnel; github-actions-infra-plan passes pve-plan"
+        required: false
+        type: string
+        default: "teleport-production"
       state_workload_identity:
         description: "State WI for terraform-run; a caller on token github-actions-infra-plan passes infra-plan-state"
         required: false
@@ -171,6 +181,8 @@ jobs:
       extra_env: ${{ matrix.env.extra_env || inputs.extra_env }}
       teleport_join_token: ${{ inputs.teleport_join_token }}
       state_workload_identity: ${{ inputs.state_workload_identity }}
+      proxmox_token_vault_role: ${{ inputs.proxmox_token_vault_role }}
+      proxmox_tunnel_login: ${{ inputs.proxmox_tunnel_login }}
       state_role_arn: ${{ inputs.state_role_arn }}
       teleport_fqdn: ${{ inputs.teleport_fqdn }}
       artifact_name: tf-plan-${{ matrix.env.region }}-${{ matrix.env.environment }}-${{ matrix.env.site }}

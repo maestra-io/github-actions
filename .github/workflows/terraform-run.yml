@@ -115,6 +115,23 @@ on:
         required: false
         type: string
         default: ""
+      proxmox_token_vault_role:
+        description: >-
+          pull_request only: vault.maestra.io jwt-github role that reads the
+          PVEAuditor token of ci-plan@pve from infrastructure/proxmox/ci-plan/<environment>
+          (minted by maestra-io/proxmox), instead of minting one with sudo pveum
+          over teleport-production. Pass proxmox-ci-plan-token with
+          teleport_join_token github-actions-infra-plan. Empty = mint.
+        required: false
+        type: string
+        default: ""
+      proxmox_tunnel_login:
+        description: >-
+          Teleport login of the Proxmox API tunnel. github-actions-infra-plan holds
+          only pve-plan (fluxcd pve-plan-forward-role.yaml: no sudo, forward only).
+        required: false
+        type: string
+        default: "teleport-production"
       api_tunnel:
         description: "Open the Proxmox API tunnel (port from nodes.json .api_tunnel_port, default 8006)"
         required: false
@@ -237,6 +254,9 @@ jobs:
       # i.e. apply). push/dispatch runs keep ci@pve (Administrator) + the key.
       PVE_CI_USER: ${{ github.event_name == 'pull_request' && 'ci-plan@pve' || 'ci@pve' }}
       PVE_NODE_KEY: ${{ inputs.node_ssh_tunnels && github.event_name != 'pull_request' }}
+      # PR plan with proxmox_token_vault_role: the ci-plan@pve token comes from
+      # Vault, nothing is minted on the host.
+      PVE_VAULT_TOKEN: ${{ github.event_name == 'pull_request' && inputs.proxmox_token_vault_role != '' }}
     steps:
       # No-op off RunsOn (exits when RUNS_ON_RUNNER_NAME is unset), so ARC rows are unaffected.
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
@@ -490,7 +510,6 @@ jobs:
           # Per-run token name: concurrent runs never remove each other's token
           # (the static-name scheme caused documented 401 races).
           TOKEN_NAME="${PROXMOX_TOKEN_PREFIX}-${{ github.run_id }}-${{ github.run_attempt }}"
-          echo "token_name=$TOKEN_NAME" >> "$GITHUB_OUTPUT"
 
           PROXMOX_HOST="$PROXMOX_HOST_IN"
           if [ -z "$PROXMOX_HOST" ]; then
@@ -501,8 +520,13 @@ jobs:
             fi
             PROXMOX_HOST="${HOSTS[0]}"
           fi
-          echo "Creating API token ${TOKEN_NAME} for ${PVE_CI_USER} on ${PROXMOX_HOST}..."
           echo "host=$PROXMOX_HOST" >> "$GITHUB_OUTPUT"
+          if [ "$PVE_VAULT_TOKEN" = "true" ]; then
+            echo "PR plan: PVEAuditor token of ci-plan@pve from Vault, nothing minted on ${PROXMOX_HOST}"
+            exit 0
+          fi
+          echo "token_name=$TOKEN_NAME" >> "$GITHUB_OUTPUT"
+          echo "Creating API token ${TOKEN_NAME} for ${PVE_CI_USER} on ${PROXMOX_HOST}..."
 
           # `--output-format=json` keeps us out of the unicode-table parsing
           # business (the regex-on-`│` parser once extracted the literal string
@@ -541,6 +565,36 @@ jobs:
           echo "::add-mask::${TOKEN_VALUE}"
           echo "PROXMOX_VE_API_TOKEN=${PVE_CI_USER}!${TOKEN_NAME}=${TOKEN_VALUE}" >> "$GITHUB_ENV"
           echo "API token created successfully"
+
+      - name: Read the Proxmox PVEAuditor token from Vault (PR plan)
+        id: pve-plan-token
+        if: ${{ env.PVE_VAULT_TOKEN == 'true' }}
+        uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
+        with:
+          url: https://vault.maestra.io
+          method: jwt
+          path: jwt-github
+          role: ${{ inputs.proxmox_token_vault_role }}
+          jwtGithubAudience: https://github.com/maestra-io
+          exportEnv: false
+          secrets: |
+            infrastructure/data/proxmox/ci-plan/${{ inputs.environment }} token_id | PVE_TOKEN_ID ;
+            infrastructure/data/proxmox/ci-plan/${{ inputs.environment }} token_secret | PVE_TOKEN_SECRET
+
+      - name: Export the Proxmox PVEAuditor token (PR plan)
+        if: ${{ env.PVE_VAULT_TOKEN == 'true' }}
+        env:
+          PVE_TOKEN_ID: ${{ steps.pve-plan-token.outputs.PVE_TOKEN_ID }}
+          PVE_TOKEN_SECRET: ${{ steps.pve-plan-token.outputs.PVE_TOKEN_SECRET }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          case "$PVE_TOKEN_ID" in
+            ci-plan@pve!*) ;;
+            *) echo "::error::infrastructure/proxmox/ci-plan/${ENVIRONMENT} holds token_id '${PVE_TOKEN_ID}', not a ci-plan@pve token"; exit 1 ;;
+          esac
+          echo "PROXMOX_VE_API_TOKEN=${PVE_TOKEN_ID}=${PVE_TOKEN_SECRET}" >> "$GITHUB_ENV"
+          echo "Proxmox API token: ${PVE_TOKEN_ID} (PVEAuditor)"
 
       # --- AWS state creds via Teleport Workload Identity -------------------
       - name: Get AWS credentials via Teleport Workload Identity
@@ -825,6 +879,7 @@ jobs:
           HAS_NODES_JSON: ${{ steps.nodes.outputs.has_nodes_json }}
           NODE_SSH_DIRECT: ${{ inputs.node_ssh_direct }}
           NODE_SSH_TUNNELS: ${{ env.PVE_NODE_KEY }}
+          TUNNEL_LOGIN: ${{ inputs.proxmox_tunnel_login }}
         run: |
           # Local port comes from nodes.json .api_tunnel_port; the REMOTE side
           # is FIXED at 8006 — Proxmox always listens on 8006. This removes the
@@ -866,10 +921,19 @@ jobs:
               "root@${API_ADDR}" &
           else
             echo "Starting API tunnel: localhost:${API_PORT} -> ${HOST}:8006"
-            tsh ssh --no-resume -i "$TELEPORT_IDENTITY_FILE" \
-              -L "${API_PORT}:localhost:8006" \
-              "teleport-production@${HOST}" \
-              "sleep infinity" &
+            echo "  as ${TUNNEL_LOGIN}"
+            if [ "$TUNNEL_LOGIN" = "teleport-production" ]; then
+              tsh ssh --no-resume -i "$TELEPORT_IDENTITY_FILE" \
+                -L "${API_PORT}:localhost:8006" \
+                "teleport-production@${HOST}" \
+                "sleep infinity" &
+            else
+              # An unprivileged forward-only login (pve-plan: nologin shell)
+              # runs no remote command.
+              tsh ssh --no-resume -N -i "$TELEPORT_IDENTITY_FILE" \
+                -L "${API_PORT}:localhost:8006" \
+                "${TUNNEL_LOGIN}@${HOST}" &
+            fi
           fi
           TUNNEL_PID=$!
           echo "tunnel_pid=$TUNNEL_PID" >> "$GITHUB_OUTPUT"
