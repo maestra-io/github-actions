@@ -125,13 +125,17 @@ on:
         required: false
         type: string
         default: ""
-      proxmox_tunnel_login:
+      proxmox_tunnel_join_token:
         description: >-
-          Teleport login of the Proxmox API tunnel. github-actions-infra-plan holds
-          only pve-plan (fluxcd pve-plan-forward-role.yaml: no sudo, forward only).
+          Teleport join token of a separate bot for the Proxmox API tunnel, which
+          then runs `tsh ssh -N` as pve-plan (fluxcd pve-plan-forward-role.yaml:
+          github-actions-infra-plan-pve, no sudo, local forward only, egress capped
+          to the PVE API on the hosts). Pass it with teleport_join_token
+          github-actions-infra-plan, whose node-ansible-check forbids forwarding.
+          Empty = the main identity as teleport-production.
         required: false
         type: string
-        default: "teleport-production"
+        default: ""
       api_tunnel:
         description: "Open the Proxmox API tunnel (port from nodes.json .api_tunnel_port, default 8006)"
         required: false
@@ -395,6 +399,32 @@ jobs:
           echo "TELEPORT_IDENTITY_FILE=${{ steps.teleport-auth.outputs.identity-file || steps.teleport-auth-retry.outputs.identity-file }}" >> "$GITHUB_ENV"
           echo "TBOT_DEST_DIR=${{ steps.teleport-auth.outputs.destination-dir || steps.teleport-auth-retry.outputs.destination-dir }}" >> "$GITHUB_ENV"
           echo "TELEPORT_PROXY=${TELEPORT_FQDN}" >> "$GITHUB_ENV"
+
+      # The Proxmox API tunnel's own identity (proxmox_tunnel_join_token): Teleport
+      # ANDs ssh_port_forwarding over all roles of an identity, so the forward-only
+      # role lives on its own bot. Same flaky-heartbeat retry as above.
+      - name: Teleport auth — Proxmox API tunnel bot
+        id: teleport-auth-pve
+        if: ${{ inputs.proxmox_tunnel_join_token != '' && inputs.api_tunnel }}
+        continue-on-error: true
+        uses: teleport-actions/auth@3b365df2b4f64891358392a444ff34929ba0d0b1 # v2.1.2
+        with:
+          proxy: ${{ inputs.teleport_fqdn }}
+          token: ${{ inputs.proxmox_tunnel_join_token }}
+          certificate-ttl: 30m
+
+      - name: Teleport auth — Proxmox API tunnel bot, wait out the path loss window
+        if: steps.teleport-auth-pve.outcome == 'failure'
+        run: sleep 120
+
+      - name: Teleport auth — Proxmox API tunnel bot, retry
+        id: teleport-auth-pve-retry
+        if: steps.teleport-auth-pve.outcome == 'failure'
+        uses: teleport-actions/auth@3b365df2b4f64891358392a444ff34929ba0d0b1 # v2.1.2
+        with:
+          proxy: ${{ inputs.teleport_fqdn }}
+          token: ${{ inputs.proxmox_tunnel_join_token }}
+          certificate-ttl: 30m
 
       # --- Vault: tunnel mode (mssql/ad omicron) ---------------------------
       - name: Start Vault tunnel via Teleport
@@ -879,7 +909,7 @@ jobs:
           HAS_NODES_JSON: ${{ steps.nodes.outputs.has_nodes_json }}
           NODE_SSH_DIRECT: ${{ inputs.node_ssh_direct }}
           NODE_SSH_TUNNELS: ${{ env.PVE_NODE_KEY }}
-          TUNNEL_LOGIN: ${{ inputs.proxmox_tunnel_login }}
+          PVE_TUNNEL_IDENTITY: ${{ steps.teleport-auth-pve.outputs.identity-file || steps.teleport-auth-pve-retry.outputs.identity-file }}
         run: |
           # Local port comes from nodes.json .api_tunnel_port; the REMOTE side
           # is FIXED at 8006 — Proxmox always listens on 8006. This removes the
@@ -921,18 +951,18 @@ jobs:
               "root@${API_ADDR}" &
           else
             echo "Starting API tunnel: localhost:${API_PORT} -> ${HOST}:8006"
-            echo "  as ${TUNNEL_LOGIN}"
-            if [ "$TUNNEL_LOGIN" = "teleport-production" ]; then
+            if [ -z "$PVE_TUNNEL_IDENTITY" ]; then
               tsh ssh --no-resume -i "$TELEPORT_IDENTITY_FILE" \
                 -L "${API_PORT}:localhost:8006" \
                 "teleport-production@${HOST}" \
                 "sleep infinity" &
             else
-              # An unprivileged forward-only login (pve-plan: nologin shell)
-              # runs no remote command.
-              tsh ssh --no-resume -N -i "$TELEPORT_IDENTITY_FILE" \
+              # github-actions-infra-plan-pve: forward-only login pve-plan with a
+              # nologin shell, so no remote command.
+              echo "  as pve-plan (proxmox_tunnel_join_token)"
+              tsh ssh --no-resume -N -i "$PVE_TUNNEL_IDENTITY" \
                 -L "${API_PORT}:localhost:8006" \
-                "${TUNNEL_LOGIN}@${HOST}" &
+                "pve-plan@${HOST}" &
             fi
           fi
           TUNNEL_PID=$!

@@ -95,11 +95,11 @@ on:
         required: false
         type: string
         default: ""
-      proxmox_tunnel_login:
-        description: "terraform-run: Teleport login of the Proxmox API tunnel; github-actions-infra-plan passes pve-plan"
+      proxmox_tunnel_join_token:
+        description: "terraform-run: join token of the Proxmox API tunnel's own bot; github-actions-infra-plan callers pass github-actions-infra-plan-pve"
         required: false
         type: string
-        default: "teleport-production"
+        default: ""
       state_workload_identity:
         description: "State WI for terraform-run; a caller on token github-actions-infra-plan passes infra-plan-state"
         required: false
@@ -182,7 +182,7 @@ jobs:
       teleport_join_token: ${{ inputs.teleport_join_token }}
       state_workload_identity: ${{ inputs.state_workload_identity }}
       proxmox_token_vault_role: ${{ inputs.proxmox_token_vault_role }}
-      proxmox_tunnel_login: ${{ inputs.proxmox_tunnel_login }}
+      proxmox_tunnel_join_token: ${{ inputs.proxmox_tunnel_join_token }}
       state_role_arn: ${{ inputs.state_role_arn }}
       teleport_fqdn: ${{ inputs.teleport_fqdn }}
       artifact_name: tf-plan-${{ matrix.env.region }}-${{ matrix.env.environment }}-${{ matrix.env.site }}

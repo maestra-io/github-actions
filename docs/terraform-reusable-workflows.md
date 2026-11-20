@@ -39,10 +39,12 @@ Ordering contract (fixed, do not reorder):
    maestra-io/proxmox `tasks/ci_plan_user.yml`) on `pull_request`. A PR plan
    on the read-only bot passes `teleport_join_token: github-actions-infra-plan`,
    `proxmox_token_vault_role: proxmox-ci-plan-token` and
-   `proxmox_tunnel_login: pve-plan` (plus the state WI inputs): nothing is
-   minted; the token is read from vault.maestra.io
-   `infrastructure/proxmox/ci-plan/<environment>` (written by the proxmox
-   deploy of main) and the API tunnel is `tsh ssh -N` as `pve-plan`.
+   `proxmox_tunnel_join_token: github-actions-infra-plan-pve` (plus the state WI
+   inputs): nothing is minted; the token is read from vault.maestra.io
+   `infrastructure/proxmox/ci-plan/<environment>` (written by the proxmox deploy
+   of main) and the API tunnel is `tsh ssh -N` as `pve-plan` on that separate
+   bot (Teleport ANDs port forwarding over an identity's roles, and the plan
+   bot's node-ansible-check forbids it).
 5. AWS state creds via Teleport Workload Identity (`terraform-state-s3` →
    `AWS_WEB_IDENTITY_TOKEN_FILE` + role `teleport-terraform-state`), then
    optional extra WI legs (`extra_workload_identities`, multiline
