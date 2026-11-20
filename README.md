@@ -650,7 +650,7 @@ cannot see outside it; an absolute glob fails the step).
 A new version: for go / node / helm / kubectl the maestra-io/dockerfiles `.github/raw-uploads/<tool>.txt`
 PR first (its merge uploads), then the line in `versions.txt`; for uv / terraform / kind only
 `versions.txt` (the proxies hold a release for 3 days; kind's line also names its default node
-image, `pkg/apis/config/defaults/image.go` at the tag).
+image, `pkg/apis/config/defaults/image.go` at the tag, or kind's later rebuild of that tag on main).
 
 `setup-kind-nora` pulls the node image (`node_image`, else the pinned kind's default as
 `packages.maestra.io/docker-hub/kindest/node:<tag>@sha256:…`; anything outside nora fails) with a
