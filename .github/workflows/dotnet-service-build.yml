@@ -906,6 +906,10 @@ jobs:
       - if: ${{ steps.mount.outputs.dir != '' && steps.mount-cache.outputs.cache-hit != 'true' }}
         name: nuget cache mount (copy out)
         id: mount-out
+        # Only fills the NuGet cache. Since 20.11.2026 the local export can stall for good
+        # (runner image 20261120075252, Nexus): bound it, the job goes on without the cache.
+        timeout-minutes: 5
+        continue-on-error: true
         env:
           DIR: ${{ runner.temp }}/nuget-mount
           BUILDER: ${{ steps.buildx.outputs.name }}
@@ -920,7 +924,12 @@ jobs:
           echo "NuGet cache mount: $n package versions, $(du -sh "$DIR" | cut -f1)"
           if [ "$n" -gt 0 ]; then echo "save=true" >> "$GITHUB_OUTPUT"; fi
           # <<< nuget-mount-extract
-      - if: ${{ steps.mount-out.outputs.save == 'true' }}
+      - if: ${{ steps.mount-out.outcome != 'success' && steps.mount-out.outcome != 'skipped' }}
+        name: nuget cache mount (not saved)
+        run: echo "::warning::nuget cache mount (copy out) timed out or failed, the NuGet cache was not saved for this run"
+      # outcome, not conclusion: continue-on-error makes the conclusion success. A partial
+      # copy-out must never be saved under the full key.
+      - if: ${{ steps.mount-out.outcome == 'success' && steps.mount-out.outputs.save == 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/nuget-mount
