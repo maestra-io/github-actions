@@ -21,7 +21,7 @@ inputs:
     required: false
     default: ""
   file:
-    description: "Where to keep the asset; empty = $RUNNER_TEMP/nora-asset/<asset>."
+    description: "Where to keep the asset; empty = $RUNNER_TEMP/nora-asset/<sha256>/<asset>."
     required: false
     default: ""
 
