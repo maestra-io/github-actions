@@ -403,6 +403,7 @@ jobs:
     uses: ./.github/workflows/pr-checks.yml
     permissions:
       contents: read
+      id-token: write # the checks' tools from nora
     with:
       ref: ${{ github.event.pull_request.head.sha || github.sha }}
 

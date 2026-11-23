@@ -4,8 +4,8 @@
 # the GitLab pipelines pulled it from the Yandex mirror, which GitHub builds must
 # not depend on).
 #
-# Add an image: one `include` entry: repository, tag, url and sha256 of the
-# release binary, `asset` (the file name it is saved as) and a Dockerfile under
+# Add an image: one `include` entry: repository, tag, url (nora's GitHub Releases
+# proxy, issues-maestra#1649) and sha256 of the release binary, `asset` (the file name it is saved as) and a Dockerfile under
 # test-images/ that COPYs that file. The sha256 is pinned here and also checked against the
 # upstream `.sha256sum` asset when `sha256sum-url` is given.
 #
@@ -46,29 +46,32 @@ jobs:
         include:
           - repository: test-images/minio
             tag: RELEASE.2025-09-07T16-13-09Z
-            url: https://github.com/minio/minio/releases/download/RELEASE.2025-09-07T16-13-09Z/minio.linux-amd64.RELEASE.2025-09-07T16-13-09Z
-            sha256sum-url: https://github.com/minio/minio/releases/download/RELEASE.2025-09-07T16-13-09Z/minio.linux-amd64.RELEASE.2025-09-07T16-13-09Z.sha256sum
+            url: https://packages.maestra.io/github/minio/minio/releases/download/RELEASE.2025-09-07T16-13-09Z/minio.linux-amd64.RELEASE.2025-09-07T16-13-09Z
+            sha256sum-url: https://packages.maestra.io/github/minio/minio/releases/download/RELEASE.2025-09-07T16-13-09Z/minio.linux-amd64.RELEASE.2025-09-07T16-13-09Z.sha256sum
             sha256: 7c5bd8512c6e966455b1d198209358b2d191c77a83ab377c4073281065fb855f
             dockerfile: test-images/minio.Dockerfile
             asset: minio
           # Messaging, ai-assistant-rnd, db-maintenance pin this one (issues-maestra#1569).
           - repository: test-images/minio
             tag: RELEASE.2025-03-12T18-04-18Z
-            url: https://github.com/minio/minio/releases/download/RELEASE.2025-03-12T18-04-18Z/minio.linux-amd64.RELEASE.2025-03-12T18-04-18Z
-            sha256sum-url: https://github.com/minio/minio/releases/download/RELEASE.2025-03-12T18-04-18Z/minio.linux-amd64.RELEASE.2025-03-12T18-04-18Z.sha256sum
+            url: https://packages.maestra.io/github/minio/minio/releases/download/RELEASE.2025-03-12T18-04-18Z/minio.linux-amd64.RELEASE.2025-03-12T18-04-18Z
+            sha256sum-url: https://packages.maestra.io/github/minio/minio/releases/download/RELEASE.2025-03-12T18-04-18Z/minio.linux-amd64.RELEASE.2025-03-12T18-04-18Z.sha256sum
             sha256: 8ec42f70f5db7bfe584790b06af3f7e2b16f48488ea4c96e0ebd8cea40990dfa
             dockerfile: test-images/minio.Dockerfile
             asset: minio
           # minio RELEASE.2025-09-07T16-13-09Z + mc (dm-serving execs `mc` in the
           # container, issues-maestra#1569); the entry's binary is mc, minio is
-          # ADDed with its checksum in the Dockerfile.
+          # its `extra-*` file.
           - repository: test-images/minio-mc
             tag: RELEASE.2025-09-07T16-13-09Z
-            url: https://github.com/minio/mc/releases/download/RELEASE.2025-08-13T08-35-41Z/mc.linux-amd64.RELEASE.2025-08-13T08-35-41Z
-            sha256sum-url: https://github.com/minio/mc/releases/download/RELEASE.2025-08-13T08-35-41Z/mc.linux-amd64.RELEASE.2025-08-13T08-35-41Z.sha256sum
+            url: https://packages.maestra.io/github/minio/mc/releases/download/RELEASE.2025-08-13T08-35-41Z/mc.linux-amd64.RELEASE.2025-08-13T08-35-41Z
+            sha256sum-url: https://packages.maestra.io/github/minio/mc/releases/download/RELEASE.2025-08-13T08-35-41Z/mc.linux-amd64.RELEASE.2025-08-13T08-35-41Z.sha256sum
             sha256: 01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891
             dockerfile: test-images/minio-mc.Dockerfile
             asset: mc
+            extra-url: https://packages.maestra.io/github/minio/minio/releases/download/RELEASE.2025-09-07T16-13-09Z/minio.linux-amd64.RELEASE.2025-09-07T16-13-09Z
+            extra-sha256: 7c5bd8512c6e966455b1d198209358b2d191c77a83ab377c4073281065fb855f
+            extra-asset: minio
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -98,13 +101,22 @@ jobs:
           SUM_URL: ${{ matrix.sha256sum-url }}
           SHA256: ${{ matrix.sha256 }}
           ASSET: ${{ matrix.asset }}
+          EXTRA_URL: ${{ matrix.extra-url }}
+          EXTRA_SHA256: ${{ matrix.extra-sha256 }}
+          EXTRA_ASSET: ${{ matrix.extra-asset }}
           DOCKERFILE: ${{ matrix.dockerfile }}
         run: |
           ctx="$RUNNER_TEMP/ctx"; mkdir -p "$ctx"
-          curl -sfL --retry 3 -o "$ctx/$ASSET" "$URL"
-          echo "${SHA256}  $ctx/$ASSET" | sha256sum -c -
+          bash security-scan/fetch-pinned.sh "$URL" "$SHA256" "$ctx/$ASSET"
+          if [ -n "$EXTRA_URL" ]; then
+            bash security-scan/fetch-pinned.sh "$EXTRA_URL" "$EXTRA_SHA256" "$ctx/$EXTRA_ASSET"
+            chmod 0755 "$ctx/$EXTRA_ASSET"
+          fi
           if [ -n "$SUM_URL" ]; then
-            upstream=$(curl -sfL --retry 3 "$SUM_URL" | awk '{print $1}')
+            oidc=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=packages.maestra.io" | jq -r .value)
+            echo "::add-mask::$oidc"
+            upstream=$(printf 'user = "oidc:%s"\n' "$oidc" | curl -sfL --retry 3 -K - "$SUM_URL" | awk '{print $1}')
             [ "$upstream" = "$SHA256" ] || { echo "::error::upstream sha256 ${upstream} != pinned ${SHA256}"; exit 1; }
           fi
           chmod 0755 "$ctx/$ASSET"

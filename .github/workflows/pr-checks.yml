@@ -109,8 +109,8 @@ env:
   # networkPolicy gate. Helm 4: Flux 2.8.6's helm-controller (v1.5.4) renders with the
   # helm.sh/helm/v4 SDK, so the gate renders with the same major. get.helm.sh .sha256sum and
   # the kubeconform release CHECKSUMS.
-  HELM_VERSION: v4.3.1
-  HELM_SHA256: 0403a88ae20913d11b10a2467b50087721fea7581736da6b9d3992f5357fe54b
+  HELM_VERSION: v4.3.2
+  HELM_SHA256: d1c0278d46beab79582d7e50f5b3dc206944ba8e577cde618513fd07daa53983
   KUBECONFORM_VERSION: v0.8.0
   KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
   ECR_REGISTRY: 515260921971.dkr.ecr.us-west-2.amazonaws.com
