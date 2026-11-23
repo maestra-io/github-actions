@@ -12,7 +12,7 @@
 #   - Per-run Proxmox pveum API token `<prefix>-<run_id>-<attempt>` (fixes the
 #     static-token 401 race between concurrent runs; json-first parse with
 #     box-table fallback), removed in always() cleanup. User ci@pve
-#     (Administrator); ci-plan@pve (PVEAuditor) on pull_request.
+#     (role TerraformApply, maestra-io/proxmox); ci-plan@pve (PVEAuditor) on pull_request.
 #   - AWS state creds via Teleport Workload Identity (terraform-state-s3),
 #     plus optional extra WI legs (e.g. haproxy's route53/cert-manager).
 #   - Optional per-node SSH tunnels + temp root ed25519 key (bpg/proxmox
@@ -255,7 +255,7 @@ jobs:
       # ci-plan@pve (PVEAuditor on /, maestra-io/proxmox tasks/ci_plan_user.yml)
       # and no root key goes onto the nodes, so no node SSH tunnels either —
       # bpg reads state over the API only (SSH is for uploads/disk imports,
-      # i.e. apply). push/dispatch runs keep ci@pve (Administrator) + the key.
+      # i.e. apply). push/dispatch runs keep ci@pve (role TerraformApply) + the key.
       PVE_CI_USER: ${{ github.event_name == 'pull_request' && 'ci-plan@pve' || 'ci@pve' }}
       PVE_NODE_KEY: ${{ inputs.node_ssh_tunnels && github.event_name != 'pull_request' }}
       # PR plan with proxmox_token_vault_role: the ci-plan@pve token comes from
@@ -572,15 +572,12 @@ jobs:
           # run that never reaches Cleanup (runner killed) cannot leave a
           # live token behind.
           TOKEN_EXPIRE=$(( $(date +%s) + 86400 ))
-          # ci-plan@pve and its ACL are owned by maestra-io/proxmox; only the
-          # apply user is still bootstrapped here.
-          USER_SETUP=""
-          if [ "$PVE_CI_USER" = "ci@pve" ]; then
-            USER_SETUP="sudo pveum user add ci@pve --comment 'Terraform CI automation' 2>/dev/null || true && \
-             sudo pveum acl modify / -user ci@pve -role Administrator 2>/dev/null || true && "
-          fi
+          # Both users and their ACLs are owned by maestra-io/proxmox
+          # (tasks/ci_plan_user.yml, tasks/ci_apply_user.yml): nothing is
+          # created or granted here, a grant made on every run would undo the
+          # role that repo sets.
           TOKEN_OUTPUT=$(tsh ssh "teleport-production@${PROXMOX_HOST}" -- \
-            "${USER_SETUP}sudo pveum user token list ${PVE_CI_USER} --output-format=json 2>/dev/null \
+            "sudo pveum user token list ${PVE_CI_USER} --output-format=json 2>/dev/null \
                | python3 -c 'import json,sys,time; [print(t[\"tokenid\"]) for t in json.load(sys.stdin) if 0 < t.get(\"expire\", 0) < time.time()]' \
                | xargs -r -n1 sudo pveum user token remove ${PVE_CI_USER} 2>/dev/null; \
              sudo pveum user token remove ${PVE_CI_USER} ${TOKEN_NAME} 2>/dev/null || true && \

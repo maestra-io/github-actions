@@ -35,8 +35,10 @@ Ordering contract (fixed, do not reorder):
    `<proxmox_token_prefix>-<run_id>-<attempt>`, json-first parse
    (`--output-format=json | jq -er .value`) with box-table fallback. Fixes
    the static-token 401 race between concurrent runs. User: `ci@pve`
-   (Administrator) on push/dispatch; `ci-plan@pve` (PVEAuditor, owned by
-   maestra-io/proxmox `tasks/ci_plan_user.yml`) on `pull_request`. A PR plan
+   (role TerraformApply) on push/dispatch; `ci-plan@pve` (PVEAuditor) on
+   `pull_request`. Both users and their ACLs are owned by maestra-io/proxmox
+   (`tasks/ci_apply_user.yml`, `tasks/ci_plan_user.yml`); the workflow creates
+   and grants nothing. A PR plan
    on the read-only bot passes `teleport_join_token: github-actions-infra-plan`,
    `proxmox_token_vault_role: proxmox-ci-plan-token` and
    `proxmox_tunnel_join_token: github-actions-infra-plan-pve` (plus the state WI
