@@ -137,5 +137,24 @@ dockerfile 'RUN python3 -m pip check' '' 'FROM base AS worker' 'CMD ["python3", 
 pr_commit
 run "old CMD repeated in a new stage of an unparsed Dockerfile" opengrep 1
 
+# 10. a rule whose id other rules share (ssrf: 4 files in csharp/lang/security/ssrf) runs under
+# its own id (rules-bundle.py): its new finding fails; its old finding, moved by an unrelated
+# edit, passes (base and head are scanned with the same rules)
+ssrf() { # <method name>
+	printf '    public class %s\n    {\n        public void Get(string host)\n        {\n            HttpClient client = new HttpClient();\n            HttpResponseMessage response = client.GetAsync(host).Result;\n        }\n    }\n' "$1"
+}
+cs() { printf 'using System.Net.Http;\n\nnamespace App\n{\n%s\n}\n' "$1" > app/Fetch.cs; }
+repo; cs ""; base_commit
+cs "$(ssrf NewOne)"
+pr_commit
+run "new ssrf (a shared rule id)" opengrep 1
+if jq -e '.results[] | select(.check_id == "csharp.lang.security.ssrf.http-client.ssrf")' "$work/out/opengrep.json" > /dev/null 2>&1
+then echo "ok   new ssrf: reported as csharp.lang.security.ssrf.http-client.ssrf"; else echo "FAIL new ssrf: no csharp.lang.security.ssrf.http-client.ssrf result"; fail=1; fi
+repo; cs "$(ssrf OldOne)"; base_commit
+cs "$(printf '    public class Health\n    {\n    }\n\n%s' "$(ssrf OldOne)")"
+pr_commit
+run "moved old ssrf (a shared rule id)" opengrep 0
+if grep -qE 'Current version has [1-9]' "$work/log"; then echo "ok   moved old ssrf: found at head, dropped by the baseline"; else echo "FAIL moved old ssrf: no finding at head, the case proves nothing"; fail=1; fi
+
 [ "$fail" = 0 ] && echo "all security-scan PR mode cases passed"
 exit "$fail"
