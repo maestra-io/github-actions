@@ -2622,6 +2622,7 @@ jobs:
     uses: maestra-io/github-actions/.github/workflows/pr-checks.yml@main
     permissions:
       contents: read
+      id-token: write # the checks' tools from nora
     with:
       check-encoding: false
       kustomize: true

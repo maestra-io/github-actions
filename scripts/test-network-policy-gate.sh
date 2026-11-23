@@ -6,7 +6,7 @@
 # stub helm that renders a broad / invalid policy is caught by the broad gate / kubeconform; the
 # commons-app-init hook Job policies render, fail on the chart's text, render nothing disabled.
 #
-# Real kustomize, helm and kubeconform (downloaded at the workflow's pins when not on PATH) and
+# Real kustomize, helm and kubeconform (from nora at the workflow's pins, unless set by env) and
 # the real commons-app and commons-app-init charts: from $CHARTS_DIR when it holds both
 # <chart>-<version>.tgz, else pulled from ECR after an `aws ecr get-login-password` login (the
 # runner's instance role) — the same path the pr-checks step takes, so a runner without ECR
@@ -23,20 +23,19 @@ trap 'rm -rf "$work"' EXIT
 fail=0
 pin() { sed -n "s/^  $1: //p" "$wf"; }
 
-# tool <env var> <name> <url> <sha256> <tar member> [strip]
+# tool <env var> <name> <path under packages.maestra.io> <sha256> <tar member> [strip]
 tool() {
 	local var=$1 name=$2 url=$3 sha=$4 member=$5 strip=${6:-0}
-	# Pinned download, as the pr-checks step; a binary on PATH is used only as an explicit
+	# Pinned download from nora (needs the job's id-token); a binary on PATH is used only as an explicit
 	# override (HELM=/path/to/helm …, for a macOS run with local tools).
 	if [ -n "${!var:-}" ]; then export "${var?}"; return; fi
-	curl -fsSL -o "$work/$name.tgz" "$url"
-	echo "$sha  $work/$name.tgz" | sha256sum -c - >/dev/null
+	GITHUB_OUTPUT='' bash "$root/security-scan/fetch-pinned.sh" "https://packages.maestra.io/$url" "$sha" "$work/$name.tgz"
 	tar -xzf "$work/$name.tgz" -C "$work" --strip-components="$strip" "$member"
 	export "$var=$work/$name"
 }
-tool KUSTOMIZE kustomize "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F$(pin KUSTOMIZE_VERSION)/kustomize_$(pin KUSTOMIZE_VERSION)_linux_amd64.tar.gz" "$(pin KUSTOMIZE_SHA256)" kustomize
-tool HELM helm "https://get.helm.sh/helm-$(pin HELM_VERSION)-linux-amd64.tar.gz" "$(pin HELM_SHA256)" linux-amd64/helm 1
-tool KUBECONFORM kubeconform "https://github.com/yannh/kubeconform/releases/download/$(pin KUBECONFORM_VERSION)/kubeconform-linux-amd64.tar.gz" "$(pin KUBECONFORM_SHA256)" kubeconform
+tool KUSTOMIZE kustomize "github/kubernetes-sigs/kustomize/releases/download/kustomize%2F$(pin KUSTOMIZE_VERSION)/kustomize_$(pin KUSTOMIZE_VERSION)_linux_amd64.tar.gz" "$(pin KUSTOMIZE_SHA256)" kustomize
+tool HELM helm "raw/src/get.helm.sh/helm-$(pin HELM_VERSION)-linux-amd64.tar.gz" "$(pin HELM_SHA256)" linux-amd64/helm 1
+tool KUBECONFORM kubeconform "github/yannh/kubeconform/releases/download/$(pin KUBECONFORM_VERSION)/kubeconform-linux-amd64.tar.gz" "$(pin KUBECONFORM_SHA256)" kubeconform
 echo "kustomize $("$KUSTOMIZE" version), helm $("$HELM" version --template '{{.Version}}'), kubeconform $("$KUBECONFORM" -v)"
 
 version=$(sed -n 's/^ *version: "\(.*\)"/\1/p' "$fixture/base/helm-release-app.yaml")

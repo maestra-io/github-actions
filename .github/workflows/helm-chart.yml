@@ -20,8 +20,8 @@
 # Inputs:
 #   chart-path     Chart directory (default repo root).
 #   helm-version   Helm CLI (default v3.18.5, as the GitLab jobs).
-#   unittest-version  helm-unittest plugin, run when a <chart-path>/tests/*.yaml
-#                  is a helm-unittest suite (promtool tests etc. are the caller's).
+# helm-unittest (from nora) runs when a <chart-path>/tests/*.yaml is a helm-unittest
+# suite (promtool tests etc. are the caller's).
 #
 # Lint/unittest values: <chart-path>/ci/values.yaml or ci/test-values.yaml, as
 # in GitLab. Not ported: helm-diff MR comment, kind `helm template --validate`,
@@ -41,9 +41,6 @@ on:
       helm-version:
         type: string
         default: "v3.18.5"
-      unittest-version:
-        type: string
-        default: "v1.1.0"
 
 concurrency:
   group: ${{ github.event_name == 'pull_request' && format('helm-check-{0}-{1}', github.repository, github.ref) || format('helm-release-{0}', github.repository) }}
@@ -93,10 +90,20 @@ jobs:
             exit 1
           fi
 
+      # The release archive is the plugin: `helm plugin install` would run its hook, which downloads
+      # the binary from GitHub again.
+      - name: helm-unittest through nora
+        if: ${{ hashFiles(format('{0}/tests/*.yaml', inputs.chart-path)) != '' }}
+        id: untt
+        uses: maestra-io/github-actions/nora-asset@bce883a9462ae1a0ec95b02ac797f223589ef7a5 # v1.115.0
+        with:
+          path: github/helm-unittest/helm-unittest/releases/download/v1.1.0/helm-unittest-linux-amd64-1.1.0.tgz
+          sha256: 3a8adc16a6d56cb2176b3668b4c4a3ec55130a8a8a52ae78804fd9b12ddf3418
+
       - name: Lint and unittest
         env:
           CHART_PATH: ${{ inputs.chart-path }}
-          UNITTEST_VERSION: ${{ inputs.unittest-version }}
+          UNITTEST_TGZ: ${{ steps.untt.outputs.file }}
         run: |
           set -euo pipefail
           values=()
@@ -106,7 +113,7 @@ jobs:
           helm dependency build "$CHART_PATH"
           helm lint "$CHART_PATH" "${values[@]}"
           if grep -qs "^suite:" "${CHART_PATH}"/tests/*.yaml; then
-            helm plugin install https://github.com/helm-unittest/helm-unittest --version "$UNITTEST_VERSION"
+            d="$(helm env HELM_PLUGINS)/helm-unittest"; mkdir -p "$d"; tar -xzf "$UNITTEST_TGZ" -C "$d"
             helm unittest "$CHART_PATH"
           fi
 
