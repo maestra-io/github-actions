@@ -87,6 +87,8 @@ jobs:
           NORA_URL: ${{ inputs.packages-url }}
           NORA_TOKEN: ${{ steps.session.outputs.token }}
         run: |
-          # PyYAML reads the Kubernetes manifests (as pr-checks.yml's fixed-digest step)
-          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet pyyaml==6.0.3
+          # PyYAML reads the Kubernetes manifests. Probe and install with -I as the checker
+          # runs (no PR-controlled yaml.py from the checkout's cwd, no user site it ignores).
+          python3 -I -c 'import yaml' 2>/dev/null \
+            || sudo -n python3 -I -m pip install --quiet --break-system-packages pyyaml==6.0.3
           python3 -I .pr-checks/pr-checks/check-base-images.py HEAD HEAD^1

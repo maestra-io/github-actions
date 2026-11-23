@@ -91,6 +91,7 @@ KYVERNO = {"docker.io": "docker-hub", "index.docker.io": "docker-hub", "registry
            "xpkg.upbound.io": "upbound", "xpkg.crossplane.io": "crossplane",
            "europe-west1-docker.pkg.dev": "gar-europe-west1"}
 KYVERNO_EXCLUDE = ("public.ecr.aws/g5f9s8a4/*",)
+MERGE = "tag:yaml.org,2002:merge"
 MANIFEST = re.compile(r"\.ya?ml$")
 # CI configs, lock files, and chart/kustomize test fixtures (tests/, *_test.yaml): never deployed
 NOT_MANIFEST = re.compile(r"(^|/)(\.github/|\.gitlab|\.circleci/|tests?/)|(^|/)[^/]*(-lock|_test)\.ya?ml$")
@@ -239,6 +240,18 @@ def manifest_refs(text):
         if IMAGE_REF.match(ref) and ("@" in ref or name.rfind(":") > name.rfind("/")):
             out.append((node.start_mark.line + 1, ref))
 
+    def merged(node):
+        """{key: value node} a mapping takes from its `<<` merge keys; the first source wins."""
+        out = {}
+        for k, v in node.value:
+            if isinstance(k, yaml.ScalarNode) and k.tag == MERGE:
+                for src in reversed(v.value if isinstance(v, yaml.SequenceNode) else [v]):
+                    if isinstance(src, yaml.MappingNode):
+                        out.update(merged(src))
+                        out.update((kk.value, vv) for kk, vv in src.value
+                                   if isinstance(kk, yaml.ScalarNode) and kk.tag != MERGE)
+        return out
+
     def walk(node, parent=""):
         if isinstance(node, yaml.SequenceNode):
             for n in node.value:
@@ -246,9 +259,9 @@ def manifest_refs(text):
             return
         if not isinstance(node, yaml.MappingNode):
             return
-        pairs = [(k.value, v) for k, v in node.value if isinstance(k, yaml.ScalarNode)]
-        s = {k: v.value.strip() for k, v in pairs if scalar(v)}
-        n = dict(pairs)
+        pairs = [(k.value, v) for k, v in node.value if isinstance(k, yaml.ScalarNode) and k.tag != MERGE]
+        n = {**merged(node), **dict(pairs)}  # `<<: *defaults` under the mapping's own keys
+        s = {k: v.value.strip() for k, v in n.items() if scalar(v)}
         tag = f":{s['tag']}" if s.get("tag") else ""
         digest = f"@{s['digest']}" if s.get("digest") else ""
         if s.get("repository") and (tag or digest):  # Helm values, CRs
@@ -265,7 +278,7 @@ def manifest_refs(text):
     for doc in docs:
         if doc is not None:
             walk(doc)
-    return out
+    return list(dict.fromkeys(out))  # an alias walks its anchor's nodes again
 
 
 def pulled_as(ref):
@@ -706,6 +719,12 @@ spec:
                  "/v2/docker-hub/library/held-busybox/manifests/1.37"):
         assert any(p == want for p, *_ in seen), (want, seen)
     assert rc == 1 and not [p for p, *_ in seen if "svc" in p], seen
+    # YAML merge keys: `<<: *defaults` supplies the repository, the mapping its own tag
+    rc, log = run(mbase, {**mbase, "deploy/merge.yaml":
+                          "defaults: &d {repository: ghcr.io/x/base, tag: '1'}\n"
+                          "image: {<<: *d, repository: ghcr.io/x/held-merge}\nother: {<<: [*d], tag: '2'}\n"})
+    assert rc == 1 and "file=deploy/merge.yaml,line=2,title=base image in nora quarantine" in log, log
+    assert "packages.maestra.io/ghcr/x/held-merge:1 " in log and "packages.maestra.io/ghcr/x/base:2 " in log, log
     # an image already in another file is still new to this one (an omicron digest promoted to omega)
     held_m = {**mbase, "kustomization/overlays/omicron/values.yaml": f"image: ghcr.io/x/held-a:1@{h}\n"}
     rc, log = run(held_m, {**held_m, "kustomization/overlays/omega/values.yaml": f"image: ghcr.io/x/held-a:1@{h}\n"})
