@@ -10,6 +10,12 @@
 #   opengrep  `opengrep scan --baseline-commit HEAD^1`: only the files the PR changes are
 #             scanned, and a match whose (rule id, path, matched lines) also matches at HEAD^1 is
 #             dropped, so a finding moved by unrelated edits stays out (opengrep Diff_scan).
+#             When there are findings, one full scan of their files' base and head copies is the
+#             reference (pr-diff.py opengrep): a rule + path + matched lines found at the base at
+#             least as often as at the (fully scanned) head is old (the baseline's own base scan
+#             can miss it). In a Dockerfile opengrep cannot parse at the base, the base copy's text
+#             stands in: the same instruction in a stage with the same USER lines, at least as
+#             often as at the head.
 #             Skipped when the PR only deletes files: opengrep would scan no file.
 #   trivy     `trivy fs` of HEAD; when it has findings, `trivy fs` of HEAD^1 too (a git
 #             worktree, vulnerability DB not re-downloaded), and only the head findings whose key
@@ -53,6 +59,19 @@ opengrep)
     --no-rewrite-rule-ids --error --baseline-commit "$base" \
     --json-output="$OUT/opengrep.json" . || rc=$?
   [ "$rc" -le 1 ] || exit 2
+  [ "$rc" = 1 ] || exit 0
+  # The reference for the findings: one full scan of their files' base copies and head copies (pr-diff.py).
+  wt=$(mktemp -d)/base
+  git worktree add -q --detach "$wt" "$base" || { echo "pr-scan: cannot check out the base" >&2; exit 2; }
+  trap 'git worktree remove --force "$wt"' EXIT
+  files=() targets=()
+  while IFS= read -r f; do files+=("$f"); [ ! -f "$wt/$f" ] || targets+=("$wt/$f"); done \
+    < <(jq -r '[.results[].path] | unique[]' "$OUT/opengrep.json")
+  [ "${#targets[@]}" -gt 0 ] || exit 1  # every finding is in a file the PR adds
+  "$OPENGREP" scan --config "$OPENGREP_RULES" --severity=ERROR --taint-intrafile --no-rewrite-rule-ids \
+    --json-output="$OUT/opengrep-full.json" "${targets[@]}" "${files[@]}" > /dev/null \
+    || { echo "pr-scan: opengrep full scan of the base and head copies failed" >&2; exit 2; }
+  rc=0; python3 "$here/pr-diff.py" opengrep "$OUT/opengrep.json" "$OUT/opengrep-full.json" "$wt" || rc=$?
   exit "$rc" ;;
 
 trivy)

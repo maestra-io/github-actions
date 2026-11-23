@@ -24,7 +24,9 @@ permissions:
 jobs:
   pr-mode:
     runs-on: runs-on=${{ github.run_id }}-security-scan-pr/pool=small
-    timeout-minutes: 20
+    # Each opengrep run loads the rules for ~3.5 min on pool=small (23.11.2026); the opengrep
+    # cases make 9 runs (a diff scan, plus a base scan when it has findings).
+    timeout-minutes: 45
     permissions:
       contents: read
       id-token: write # nora OIDC token for the scanner downloads
