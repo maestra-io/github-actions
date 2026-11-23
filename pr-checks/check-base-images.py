@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Fail a PR whose Dockerfiles bring in a base image nora still holds in quarantine.
+"""Fail a PR whose Dockerfiles, compose files or workflows bring in an image nora still
+holds in quarantine.
 
 Usage: NORA_TOKEN=<token> check-base-images.py <head rev> <base rev>   (run in the repo)
        check-base-images.py --self-test
@@ -34,6 +35,12 @@ makes first (service-build `base-image`). A new image from any other registry
 (docker.io, ghcr.io, mcr, quay, ...) is not pulled through nora, so no quarantine
 covers it: it fails, naming its packages.maestra.io/<prefix>/ path. A bare name
 (`FROM upstream`) is a stage or a named build context and only warns.
+Compose files (docker-compose*.y*ml, compose*.y*ml, any depth) and workflows/actions are
+read for `image:` values (compose `${VAR:-default}` / `${VAR-default}` take the default)
+and, in workflows/actions, for any digest-pinned packages.maestra.io image; only
+packages.maestra.io references are judged there (ai-assistant-rnd PR 107 merged a held
+minio digest through docker-compose.yml, 23.11.2026). They are asked by their tag when
+they carry no digest, and never change the Dockerfile not-pinned rule.
 """
 import datetime as dt
 import json
@@ -57,6 +64,8 @@ PREFIX = {"docker.io": "docker-hub", "index.docker.io": "docker-hub", "registry-
           "xpkg.crossplane.io": "crossplane", "europe-west1-docker.pkg.dev": "gar-europe-west1"}
 DOCKERFILE = re.compile(r"(^|/)(Dockerfile[^/]*|[^/]+\.[Dd]ockerfile|Containerfile[^/]*)$")
 WORKFLOW = re.compile(r"(^\.github/workflows/[^/]+|(^|/)action)\.ya?ml$")
+COMPOSE = re.compile(r"(^|/)(docker-)?compose[^/]*\.ya?ml$")
+IMAGE_KEY = re.compile(r"^\s*(?:-\s+)?image:\s*[\"']?(?:docker://)?([^\s\"'#]+)")
 PINNED = re.compile(r"packages\.maestra\.io/[A-Za-z0-9._/-]+(?::[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}")
 ACCEPT = ", ".join([
     "application/vnd.oci.image.index.v1+json",
@@ -154,14 +163,26 @@ def references(text):
 
 
 def refs_of(path, text):
-    """[(line, image)] of a Dockerfile, or the digest-pinned nora images a workflow or an
-    action names (a job `container:`, mcf-build's DEPS_BASE). ponytail: a workflow image
-    without a digest is not read, a bare `packages.maestra.io/...` there is mostly an index URL."""
+    """[(line, image)] of a Dockerfile; for a compose file, a workflow or an action the
+    packages.maestra.io images of its `image:` keys, and in a workflow or an action also every
+    digest-pinned nora image (mcf-build's DEPS_BASE). ponytail: a workflow image without a
+    digest is read only under `image:`, a bare `packages.maestra.io/...` elsewhere is mostly an
+    index URL; compose `.env` files and `${VAR:?err}` are not read (the ref stays with its `$`)."""
     if DOCKERFILE.search(path):
         return references(text)
-    if not WORKFLOW.search(path):
+    compose = COMPOSE.search(path)
+    if not compose and not WORKFLOW.search(path):
         return []
-    return [(n, m) for n, line in enumerate(text.splitlines(), 1) for m in PINNED.findall(line)]
+    out = []
+    for n, line in enumerate(text.splitlines(), 1):
+        found = [] if compose else PINNED.findall(line)
+        m = IMAGE_KEY.match(line)
+        if m and "${{" not in m.group(1):
+            ref = subst(m.group(1), {})
+            if NORA_HOST in ref:
+                found.append(ref)
+        out += [(n, r) for r in dict.fromkeys(found)]
+    return out
 
 
 def split(ref):
@@ -258,13 +279,17 @@ def dockerfiles(rev):
     except subprocess.CalledProcessError:
         return {}
     return {p: git("show", f"{rev}:{p}").decode(errors="replace")
-            for p in names if DOCKERFILE.search(p) or WORKFLOW.search(p)}
+            for p in names if DOCKERFILE.search(p) or WORKFLOW.search(p) or COMPOSE.search(p)}
 
 
 def main(head, base, out=print):
     new_files, old_files = dockerfiles(head), dockerfiles(base)
-    old = {ref for p, text in old_files.items() for _, ref in refs_of(p, text)}
-    old_nora = [r for r in old if nora_path(r)]
+    old_by_file = {p: [ref for _, ref in refs_of(p, text)] for p, text in old_files.items()}
+    old = {ref for refs in old_by_file.values() for ref in refs}
+    # the not-pinned rule reads Dockerfiles and digest-pinned workflow images, as before
+    # compose and workflow `image:` keys were read: their tag-only images never relax it
+    old_nora = [r for p, refs in old_by_file.items() for r in refs if nora_path(r)
+                and (DOCKERFILE.search(p) or (WORKFLOW.search(p) and "@" in r))]
     pins = bool(old_nora) and all("@" in r for r in old_nora)
     asks, failures = {}, 0
     for path, text in sorted(new_files.items()):
@@ -273,14 +298,14 @@ def main(head, base, out=print):
                 continue
             at = f"file={path},line={line}"
             if "$" in ref:
-                out(f"::warning {at}::{ref}: a build-arg the Dockerfile gives no default; not checked")
+                out(f"::warning {at}::{ref}: a variable the file gives no default; not checked")
             elif not nora_path(ref) and not re.search(r"[/:@]", ref):
                 out(f"::warning {at}::{ref}: a stage or a named build context, not checked")
             elif not nora_path(ref):
                 failures += 1
                 out(f"::error {at},title=base image not through nora::{ref} is pulled straight from its "
                     f"registry, around nora's 3-day quarantine: use {direct_fix(ref)} (issues-maestra#1649)")
-            elif "@" not in ref and pins:
+            elif "@" not in ref and pins and DOCKERFILE.search(path):
                 failures += 1
                 out(f"::error {at},title=base image not pinned::{ref} has no @sha256 digest, and every "
                     f"other {NORA_HOST} image of this repo has one: pin it as <tag>@sha256:<digest>")
@@ -474,6 +499,40 @@ COPY --from=nginx:1.27 /etc/nginx /etc/nginx
                          "x/action.yml": f"image: docker://{n}mature:7{d}\n"})
     assert rc == 1 and "file=.github/workflows/build.yml,line=2" in log and f"ok       {n}mature:7" in log, log
     assert refs_of("README.md", f"{n}held:2{d}") == []  # neither a Dockerfile nor a workflow
+    # compose files at any depth (ai-assistant-rnd PR 107: a held minio digest, plain and as a
+    # ${VAR:-default}); only nora images, a direct one is not this check's business
+    m = "packages.maestra.io/cgr/chainguard/"
+    cbase = {"Dockerfile": f"FROM {n}mature:1{d}\n",
+             "docker-compose.yml": f"services:\n  minio:\n    image: {m}mature-minio{d}\n",
+             "tests_functional/tests/docker-compose.yml":
+                 f"services:\n  minio:\n    image: ${{TEST_MINIO_IMAGE:-{m}mature-minio{d}}}\n"}
+    rc, log = run(cbase, {**cbase, "docker-compose.yml": f"services:\n  minio:\n    image: {m}held-minio{d}\n"})
+    assert rc == 1 and "file=docker-compose.yml,line=3,title=base image in nora quarantine" in log, log
+    rc, log = run(cbase, {**cbase, "tests_functional/tests/docker-compose.yml":
+                          f"services:\n  minio:\n    # x\n    image: \"${{TEST_MINIO_IMAGE:-{m}held-minio{d}}}\"\n"})
+    assert rc == 1 and "file=tests_functional/tests/docker-compose.yml,line=4" in log and "until 2026-11-13" in log, log
+    seen.clear()
+    rc, log = run(cbase, {**cbase, "deploy/compose.override.yaml":
+                          f"services:\n  db:\n    image: postgres:17\n  x:\n    image: ${{X_IMAGE}}\n"
+                          f"  y:\n    image: {m}y:${{TAG}}\n  z:\n    image: {m}mature-z{d}\n"})
+    assert rc == 0 and "file=deploy/compose.override.yaml,line=7" in log and "postgres" not in log, log
+    assert [p for p, *_ in seen if "mature-z" in p], seen
+    assert refs_of("docs/compose.md", f"image: {m}held{d}") == []
+    # an unchanged held compose image is not new; a tag-only one is asked, never "not pinned"
+    held_c = {**cbase, "docker-compose.yml": f"services:\n  minio:\n    image: {m}held-minio{d}\n"}
+    assert run(held_c, {**held_c, "Dockerfile": f"FROM {n}mature:1{d}\nRUN true\n"})[0] == 0
+    rc, log = run(cbase, {**cbase, "compose.yaml": f"services:\n  a:\n    image: {m}mature-a:1\n"})
+    assert rc == 0 and "not pinned" not in log, log
+    # a tag-only compose image in the base does not relax the Dockerfile not-pinned rule
+    tag_c = {**cbase, "compose.yaml": f"services:\n  a:\n    image: {m}mature-a:1\n"}
+    rc, log = run(tag_c, {**tag_c, "Dockerfile": f"FROM {n}mature:3\n"})
+    assert rc == 1 and "not pinned" in log, log
+    # workflow job `services:` / `container:` images: tag-only nora images are read too
+    rc, log = run(base, {**base, ".github/workflows/ci.yml":
+                         f"jobs:\n  t:\n    container:\n      image: {n}mature:8{d}\n    services:\n"
+                         f"      db:\n        image: '{n}held-pg:17'\n      r:\n        image: ${{{{ inputs.img }}}}\n"})
+    assert rc == 1 and "file=.github/workflows/ci.yml,line=7" in log and f"ok       {n}mature:8{d}" in log, log
+    assert log.count(f"{n}mature:8{d}") == 1, log  # one line, one ask: PINNED and image: agree
     # tag only: not pinned where the repo pins, asked where it does not
     rc, log = run(base, {"Dockerfile": f"FROM {n}mature:3\n"})
     assert rc == 1 and "not pinned" in log, log

@@ -13,8 +13,11 @@
 #
 # What it judges (pr-checks/check-base-images.py): every image the PR ADDS against its
 # base branch, in any Dockerfile of the repo (FROM, COPY/ADD --from, RUN --mount from,
-# ARG defaults substituted) and every digest-pinned packages.maestra.io image of a
-# workflow or action. Unchanged images never turn a PR red, and it never runs on a push:
+# ARG defaults substituted), every packages.maestra.io `image:` of a compose file
+# (docker-compose*.y*ml, compose*.y*ml, `${VAR:-default}` taken), and every digest-pinned
+# packages.maestra.io image or `image:` of a workflow or action (job container/services).
+# It runs on every PR of the caller, whatever files it touches (a compose-only Renovate PR
+# included). Unchanged images never turn a PR red, and it never runs on a push:
 # a default branch that already carries a held digest builds as before.
 # nora is asked with `Cache-Control: only-if-cached`, so the check never starts a
 # digest's clock. Held = red, with the UTC time it matures; re-run after it. nora down or
