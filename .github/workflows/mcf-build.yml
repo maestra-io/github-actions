@@ -262,10 +262,11 @@ env:
   HUSKY: "0"
   # Static image base: maestra-io/dockerfiles, Renovate preset mcfUploadBase moves the pin.
   UPLOAD_BASE: 515260921971.dkr.ecr.us-west-2.amazonaws.com/mcf-upload-base:1.76.0-maestra.1
-  # with-deps base, by digest on the tag of the Node major, not node:<node-version>-slim:
+  # with-deps base, by digest on the tag of the Node major, not node:<node-version>-trixie-slim:
   # upstream stops rebuilding an exact tag once the next release is out (24.19.0-slim froze
-  # on 25.08 with its Debian). Renovate moves the digest (renovate.json).
-  DEPS_BASE: packages.maestra.io/docker-hub/library/node:24-slim@sha256:c86ecead9e55a5210ac1727de38a4ca840bf03dcaf34dc9749addbf383b1920c
+  # on 25.08 with its Debian). Renovate moves the digest (renovate.json). The Debian release
+  # is named: node:24-slim still resolves to bookworm (Debian 12, issues-maestra#1810).
+  DEPS_BASE: packages.maestra.io/docker-hub/library/node:24-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d
   # npm of the with-deps image, in place of the one the base bundles: the base's lags behind
   # its own fixes (11.19.1 up to node 24.22.3 carries HIGH undici and brace-expansion). Keeps the
   # base's npm major. Renovate moves it (renovate.json). nora hides a public release for its
@@ -397,7 +398,7 @@ jobs:
           NODE_VERSION: ${{ inputs.node-version }}
         run: |
           case "$DEPS_BASE" in
-            *"/node:${NODE_VERSION%%.*}-slim@"*) ;;
+            *"/node:${NODE_VERSION%%.*}-trixie-slim@"*) ;;
             *) echo "::error::node-version $NODE_VERSION does not match the major of DEPS_BASE $DEPS_BASE"; exit 1 ;;
           esac
       - id: v
