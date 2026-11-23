@@ -661,6 +661,25 @@ default from Docker Hub. One script, `nora-tool/nora-tool.sh`,
 does all of them. Tests: `scripts/test-nora-tool.sh` (selftest) and the real installs of
 `.github/workflows/nora-tool-selftest.yml`.
 
+## Release assets through nora (`nora-asset`)
+
+A pinned binary or archive from GitHub Releases (or releases.hashicorp.com) without the vendor's
+host: nora holds a release for 3 days (403), checks the digest GitHub publishes, and the action
+checks the caller's `sha256`. Replaces `curl https://github.com/…/releases/download/…` and the
+`setup-*` / `cosign-installer` actions that download by themselves. Needs `id-token: write`.
+
+```yaml
+- uses: maestra-io/github-actions/nora-asset@<sha> # vX.Y.Z
+  with:
+    path: github/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+    sha256: <the release's asset digest>
+    bin: actionlint     # on PATH under this name; omit to only download (output `file`)
+    member: actionlint  # the binary inside the tar or zip; omit when the asset is the binary
+```
+
+`latest/download` is not served: pin a version. A shell script with no action step uses
+`security-scan/fetch-pinned.sh <url> <sha256> <file>`.
+
 ## Python packages through nora (`uv-nora`)
 
 Every Python repo uses uv with a committed `uv.lock` and nora as its only index

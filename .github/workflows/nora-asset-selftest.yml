@@ -1,0 +1,64 @@
+# nora-asset against the real nora, and nora's 3-day hold on GitHub release assets (min_release_age
+# of [curation.github], issues-maestra#1649): an asset of a release younger than 3 days is 403, one
+# of an older release is served.
+name: nora-asset-selftest
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/nora-asset-selftest.yml"
+      - "nora-asset/**"
+      - "security-scan/fetch-pinned.sh"
+
+permissions:
+  contents: read
+
+jobs:
+  real-nora:
+    runs-on: runs-on=${{ github.run_id }}-nora-asset/pool=small
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # nora OIDC token
+    steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: a raw binary (cosign)
+        uses: ./nora-asset
+        with:
+          path: github/sigstore/cosign/releases/download/v3.0.6/cosign-linux-amd64
+          sha256: c956e5dfcac53d52bcf058360d579472f0c1d2d9b69f55209e256fe7783f4c74
+          bin: cosign
+      - name: a tar member (kubeconform)
+        uses: ./nora-asset
+        with:
+          path: github/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz
+          sha256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+          bin: kubeconform
+          member: kubeconform
+      - run: cosign version && kubeconform -v
+      - name: the 3-day hold
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # renovate releases several times a day and attaches docs.tgz
+          rel=$(gh api 'repos/renovatebot/renovate/releases?per_page=100' --jq \
+            '[.[] | select(any(.assets[]; .name == "docs.tgz")) | {tag: .tag_name, at: (.published_at | fromdateiso8601)}]')
+          young=$(jq -r '[.[] | select(now - .at < 2 * 86400)] | first | .tag // empty' <<<"$rel")
+          old=$(jq -r '[.[] | select(now - .at > 4 * 86400)] | first | .tag // empty' <<<"$rel")
+          { [ -n "$young" ] && [ -n "$old" ]; } || { echo "::error::no renovate release on both sides of the hold: young='$young' old='$old'"; exit 1; }
+          oidc=$(curl -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=packages.maestra.io" | jq -r .value)
+          echo "::add-mask::${oidc}"
+          code() {
+            printf 'user = "oidc:%s"\n' "$oidc" | curl -sL -K - -o "$RUNNER_TEMP/body" -w '%{http_code}' \
+              "https://packages.maestra.io/github/renovatebot/renovate/releases/download/$1/docs.tgz"
+          }
+          y=$(code "$young"); echo "$(date -u +%FT%TZ) $young (younger than 2 days): $y $(head -c 400 "$RUNNER_TEMP/body" | tr -cd '[:print:]')"
+          o=$(code "$old"); echo "$(date -u +%FT%TZ) $old (older than 4 days): $o"
+          [ "$y" = 403 ] || { echo "::error::a release younger than 3 days was not held: $young got $y"; exit 1; }
+          [ "$o" = 200 ] || { echo "::error::a mature release was refused: $old got $o"; exit 1; }

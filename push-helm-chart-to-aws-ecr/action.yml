@@ -192,15 +192,16 @@ runs:
     # failed sign fails the job loudly; the published version then has no
     # signature, and every cluster OCIRepository with spec.verify refuses it until
     # a re-run signs it (the push is skipped, the signing is not).
-    - id: cosign-install
+    # The version cosign-installer v4.1.2 installed; from GitHub Releases through nora, which
+    # cosign-installer cannot use. Bump version and both sha256 together (the release's asset digest).
+    - name: cosign through nora
       if: ${{ steps.chart.outputs.version != '0.0.0' }}
-      continue-on-error: true
-      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-    - if: ${{ steps.chart.outputs.version != '0.0.0' && steps.cosign-install.outcome == 'failure' }}
       shell: bash
-      run: sleep 20
-    - if: ${{ steps.chart.outputs.version != '0.0.0' && steps.cosign-install.outcome == 'failure' }}
-      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      env:
+        ASSET_PATH: github/sigstore/cosign/releases/download/v3.0.6/cosign-linux-${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}
+        ASSET_SHA256: ${{ runner.arch == 'ARM64' && 'bedac92e8c3729864e13d4a17048007cfafa79d5deca993a43a90ffe018ef2b8' || 'c956e5dfcac53d52bcf058360d579472f0c1d2d9b69f55209e256fe7783f4c74' }}
+        ASSET_BIN: cosign
+      run: bash "${GITHUB_ACTION_PATH}/../nora-asset/nora-asset.sh"
 
     - name: cosign sign + verify chart
       if: ${{ steps.chart.outputs.version != '0.0.0' }}

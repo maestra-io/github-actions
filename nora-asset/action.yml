@@ -1,0 +1,45 @@
+name: "release asset through nora"
+description: >-
+  One pinned file from GitHub Releases (or releases.hashicorp.com) through nora instead of the vendor:
+  nora holds a release for 3 days and checks the digest GitHub publishes, this action checks the sha256
+  pinned by the caller (issues-maestra#1649). With `bin` the file, or the `member` of the tar / zip, is
+  put on PATH under that name. Needs `permissions: id-token: write`.
+
+inputs:
+  path:
+    description: "nora path: github/<owner>/<repo>/releases/download/<tag>/<asset> (a / of the tag as %2F), hashicorp/<product>/<version>/<file> or raw/src/<host>/<path> (the hosts nora proxies, e.g. get.helm.sh)."
+    required: true
+  sha256:
+    description: "sha256 of the asset (the release's asset digest)."
+    required: true
+  bin:
+    description: "Install as this executable on PATH; empty = only download to `file`."
+    required: false
+    default: ""
+  member:
+    description: "With `bin`: path of the binary inside the tar (gz, xz) or zip; empty = the asset is the binary."
+    required: false
+    default: ""
+  file:
+    description: "Where to keep the asset; empty = $RUNNER_TEMP/nora-asset/<sha256>/<asset>."
+    required: false
+    default: ""
+
+outputs:
+  file:
+    description: "The verified asset."
+    value: ${{ steps.fetch.outputs.file }}
+
+runs:
+  using: composite
+  steps:
+    - name: ${{ inputs.bin || 'asset' }} through nora
+      id: fetch
+      shell: bash
+      env:
+        ASSET_PATH: ${{ inputs.path }}
+        ASSET_SHA256: ${{ inputs.sha256 }}
+        ASSET_BIN: ${{ inputs.bin }}
+        ASSET_MEMBER: ${{ inputs.member }}
+        ASSET_FILE: ${{ inputs.file }}
+      run: bash "${GITHUB_ACTION_PATH}/nora-asset.sh"

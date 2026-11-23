@@ -9,6 +9,7 @@
 # The SBOMs are made in the background while cosign installs and signs: the scan (image
 # download + syft) is most of the time and does not depend on the signature.
 set -uo pipefail
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # cosign 3.1.4 (3.0.6 annotates the attestation referrer https://sigstore.dev/cosign/sign/v1,
 # not the https://cyclonedx.org/bom SOC registry:no-sbom keys on, issues-maestra#1648).
@@ -29,15 +30,17 @@ retry() { # <what> <cmd...>: 3 attempts, 5 min each
   return 1
 }
 
-install_cosign() { # pinned binary from the GitHub release, sha256-checked; one retry after a pause.
+install_cosign() { # pinned binary from GitHub Releases through nora, sha256-checked; one retry after a pause.
   # Left on the job's PATH like cosign-installer did (callers verify with it afterwards).
   local arch bindir="${RUNNER_TEMP:-$dir}/sign-image-bin" i
   local bin="$bindir/cosign"
   case $(uname -m) in x86_64) arch=amd64 ;; aarch64 | arm64) arch=arm64 ;; *) echo "no cosign pin for $(uname -m)"; return 1 ;; esac
   mkdir -p "$bindir"
   for i in 1 2; do
-    if curl -fsSL --retry 3 --max-time 120 -o "$bin" "https://github.com/sigstore/cosign/releases/download/$COSIGN_VERSION/cosign-linux-$arch" &&
-      sha256sum -c --status <<<"${COSIGN_SHA256[$arch]}  $bin"; then
+    # GITHUB_OUTPUT is this action's own: fetched=true there is for security-scan's cache step
+    if GITHUB_OUTPUT='' timeout 120 bash "$here/../security-scan/fetch-pinned.sh" \
+      "https://packages.maestra.io/github/sigstore/cosign/releases/download/$COSIGN_VERSION/cosign-linux-$arch" \
+      "${COSIGN_SHA256[$arch]}" "$bin"; then
       chmod +x "$bin"; PATH="$bindir:$PATH"
       [ -n "${GITHUB_PATH:-}" ] && echo "$bindir" >>"$GITHUB_PATH"
       return 0
