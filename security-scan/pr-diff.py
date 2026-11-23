@@ -5,13 +5,15 @@
   pr-diff.py trivy <base.json> <head.json> [<base root> <head root>]
                                            print the head findings absent from the base; exit 1
                                            when there is one, else 0
-  pr-diff.py opengrep <diff.json> <base.json> <base root> [<head root>]
+  pr-diff.py opengrep <diff.json> <full.json> <base root> [<head root>]
                                            print the diff-scan (--baseline-commit) findings that are
-                                           new; exit 1 when there is one, else 0. Old: the full scan
-                                           of the base copies (<base.json>, paths under <base root>)
-                                           has the same rule, path and matched lines; or that scan
-                                           could not fully parse the file and the base copy has the
-                                           matched lines verbatim
+                                           new; exit 1 when there is one, else 0. <full.json>: one
+                                           full scan of the base copies (paths under <base root>)
+                                           and the head copies of their files. Old: the same rule,
+                                           path and matched lines at the base at least as often as
+                                           at the head; in a Dockerfile with a parse error at the
+                                           base, the same in the base copy's text, in a stage with
+                                           the same USER lines
   pr-diff.py --self-test
   Exit 2 on an unreadable report (a crash never reads as 0 or 1).
 
@@ -27,9 +29,12 @@ opengrep: --baseline-commit drops a head match only when its own scan of the bas
 same lines. That scan can miss one the full scan finds (a taint match on a slow runner: the
 moved sqli of test-security-scan-pr.sh case 4, 23.11.2026), and in a file opengrep cannot parse
 at the base (1.33.1 stops at `RUN --mount=...,rw` and skips the lines after it) it has none, so
-every match reads as new. A full scan of the base copies is the reference: the same (rule, path,
-matched lines) there is old; in a file it could not fully parse, the base copy's text stands in
-for its matches (matched lines, whitespace-normalised, present in a row).
+every match reads as new. A full scan of the base and head copies is the reference: a (rule, path,
+matched lines) found at the base at least as often as at the head is old (an occurrence added by
+the PR is new). In a Dockerfile with a parse error at the base (a timeout is not one), the base
+copy's text stands in for its matches: the matched lines (whitespace-normalised, in a row) in a
+stage with the same USER instructions, at least as often as at the head, so a PR that removes
+the stage's USER or repeats the CMD in a new stage still fails.
 """
 import hashlib, json, os, sys
 
@@ -73,29 +78,58 @@ def norm_lines(root, path):
         return None
 
 
-def opengrep_new(diff_path, base_path, base_root, head_root="."):
+PARSE_ERRORS = {"Lexical error", "Syntax error", "Other syntax error", "AST builder error", "PartialParsing"}
+
+
+def at(lines, want):
+    """Indexes where the lines `want` start in `lines`."""
+    return [i for i in range(len(lines) - len(want) + 1) if tuple(lines[i:i + len(want)]) == want]
+
+
+def stage_users(lines, i):
+    """The USER instructions of the Dockerfile stage (FROM to FROM) holding line index i."""
+    start = max([j for j in range(i + 1) if lines[j].upper().startswith(b"FROM ")] or [0])
+    end = min([j for j in range(i + 1, len(lines)) if lines[j].upper().startswith(b"FROM ")] or [len(lines)])
+    return tuple(l for l in lines[start:end] if l.upper().startswith(b"USER "))
+
+
+def opengrep_new(diff_path, full_path, base_root, head_root="."):
     """(new findings, files not fully parsed at the base) for pr-scan.sh's opengrep mode."""
     with open(diff_path) as f:
         diff = json.load(f)
-    with open(base_path) as f:
-        base = json.load(f)
+    with open(full_path) as f:
+        full = json.load(f)
     base_root = os.path.abspath(base_root)
-    rel = lambda p: os.path.relpath(os.path.abspath(p), base_root)
-    unparsed = {rel(e["path"]) for e in base.get("errors") or [] if e.get("path")}
+    def base_rel(p):  # path of a base copy relative to base_root; None for a head file
+        r = os.path.relpath(os.path.abspath(p), base_root)
+        return None if r == os.pardir or r.startswith(os.pardir + os.sep) else r
+    def kind(e):
+        t = e.get("type")
+        return t[0] if isinstance(t, list) and t else t
+    unparsed = {base_rel(e["path"]) for e in full.get("errors") or []
+                if e.get("path") and kind(e) in PARSE_ERRORS and base_rel(e["path"])}
     def matched(root, path, r):
         return tuple((norm_lines(root, path) or [])[r["start"]["line"] - 1:r["end"]["line"]])
-    old = {(r["check_id"], rel(r["path"]), matched(base_root, rel(r["path"]), r)) for r in base.get("results") or []}
+    count = {}  # (rule, path, matched lines) -> [occurrences at the base, at the head]
+    for r in full.get("results") or []:
+        rel = base_rel(r["path"])
+        root, path = (base_root, rel) if rel else (head_root, os.path.normpath(r["path"]))
+        count.setdefault((r["check_id"], path, matched(root, path, r)), [0, 0])[0 if rel else 1] += 1
     new = []
     for r in diff.get("results") or []:
         path = os.path.normpath(r["path"])
         want = matched(head_root, path, r)
-        if want and (r["check_id"], path, want) in old:
-            continue  # the full scan of the base has the same match: --baseline-commit missed it
-        if want and path in unparsed:
-            # ponytail: same text = old, so a PR that only removes the context (a USER line above
-            # an old CMD) passes in such a file; the full scan of main still reports it
-            had = norm_lines(base_root, path) or []
-            if any(tuple(had[i:i + len(want)]) == want for i in range(len(had) - len(want) + 1)):
+        b, h = count.get((r["check_id"], path, want), [0, 0])
+        if want and b and h <= b:
+            continue  # the full scans have it as often at the base: --baseline-commit missed it
+        if want and path in unparsed and "dockerfile" in os.path.basename(path).lower():
+            # The base copy's text stands in for its matches: the same lines in a stage with the
+            # same USER instructions, at least as often as at the head.
+            # ponytail: context other than the stage's USER lines is not compared
+            had, has = norm_lines(base_root, path) or [], norm_lines(head_root, path) or []
+            users = stage_users(has, r["start"]["line"] - 1)
+            b = sum(stage_users(had, i) == users for i in at(had, want))
+            if b and sum(stage_users(has, i) == users for i in at(has, want)) <= b:
                 continue
         new.append((r["check_id"], path, r["start"]["line"]))
     return new, unparsed
@@ -188,17 +222,35 @@ def self_test():
     assert opengrep_new(diff_, unparsed, ob, oh)[0] == [("missing-user", "Dockerfile", 5), ("sqli", "app.py", 3)]
     assert opengrep_new(diff_, parsed, ob, oh)[0] == [("missing-user", "Dockerfile", 4), ("missing-user", "Dockerfile", 5), ("sqli", "app.py", 3)]
     # the full scan of the base has the old CMD (line 3 there), the baseline did not drop it
-    full_base = put("og-base-full.json", {"results": [og("missing-user", os.path.join(ob, "Dockerfile"), 3)], "errors": []})
+    full_base = put("og-base-full.json", {"results": [og("missing-user", os.path.join(ob, "Dockerfile"), 3),
+                                                      og("missing-user", "Dockerfile", 4)], "errors": []})
     assert opengrep_new(diff_, full_base, ob, oh)[0] == [("missing-user", "Dockerfile", 5), ("sqli", "app.py", 3)]
     assert main(["opengrep", diff_, unparsed, ob, oh]) == 1
-    # a report path that leaves the roots is never read: the same file on both sides would read as old
+    # ... but twice in the full scan of the head: one of them is new
+    twice = put("og-full-twice.json", {"results": json.load(open(full_base))["results"] + [og("missing-user", "Dockerfile", 4)], "errors": []})
+    assert opengrep_new(diff_, twice, ob, oh)[0] == [("missing-user", "Dockerfile", 4), ("missing-user", "Dockerfile", 5), ("sqli", "app.py", 3)]
+    # only a parse error makes a file unparsed: a timeout does not
+    timeout = put("og-base-timeout.json", {"results": [], "errors": [{"type": "Timeout", "path": os.path.join(ob, "Dockerfile")}]})
+    assert opengrep_new(diff_, timeout, ob, oh)[0] == [("missing-user", "Dockerfile", 4), ("missing-user", "Dockerfile", 5), ("sqli", "app.py", 3)]
+    # unparsed base, text fallback: a PR that removes the stage's USER, or repeats the CMD in a new stage
+    for name, base_df, head_df, line in (
+            ("user", 'FROM a\nUSER app\nRUN x,rw\nCMD ["x"]\n', 'FROM a\nRUN y,rw\nCMD ["x"]\n', 3),
+            ("dup", 'FROM a\nRUN x,rw\nCMD ["x"]\n', 'FROM a\nRUN y,rw\nCMD ["x"]\nFROM a AS w\nCMD ["x"]\n', 5),
+            ("same", 'FROM a\nUSER app\nRUN x,rw\nCMD ["x"]\n', 'FROM a\nUSER app\nRUN y,rw\nCMD ["x"]\n', 4)):
+        b_, h_ = os.path.join(d, name + "-b"), os.path.join(d, name + "-h")
+        for root, body in ((b_, base_df), (h_, head_df)):
+            os.makedirs(root, exist_ok=True)
+            with open(os.path.join(root, "Dockerfile"), "w") as f:
+                f.write(body)
+        dd = put(name + "-diff.json", {"results": [og("missing-user", "Dockerfile", line)], "errors": []})
+        un = put(name + "-full.json", {"results": [], "errors": [{"type": ["PartialParsing", []], "path": os.path.join(b_, "Dockerfile")}]})
+        assert opengrep_new(dd, un, b_, h_)[0] == ([] if name == "same" else [("missing-user", "Dockerfile", line)]), name
+    # a report path that leaves its root is never read
     ox = os.path.join(d, "ox")
     os.makedirs(ox, exist_ok=True)
     with open(os.path.join(ox, "Dockerfile"), "w") as f:
         f.write('CMD ["x"]\n')
-    escape = put("og-diff-escape.json", {"results": [og("missing-user", "../ox/Dockerfile", 1)], "errors": []})
-    unparsed_escape = put("og-base-escape.json", {"results": [], "errors": [{"path": os.path.join(ox, "Dockerfile")}]})
-    assert opengrep_new(escape, unparsed_escape, ob, oh)[0] == [("missing-user", "../ox/Dockerfile", 1)]
+    assert norm_lines(ox, "Dockerfile") == [b'CMD ["x"]', b""] and norm_lines(ob, "../ox/Dockerfile") is None
     print("pr-diff self-test ok")
     return 0
 
