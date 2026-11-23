@@ -7,7 +7,7 @@ description: >-
 
 inputs:
   path:
-    description: "nora path: github/<owner>/<repo>/releases/download/<tag>/<asset> (a / of the tag as %2F) or hashicorp/<product>/<version>/<file>."
+    description: "nora path: github/<owner>/<repo>/releases/download/<tag>/<asset> (a / of the tag as %2F), hashicorp/<product>/<version>/<file> or raw/src/<host>/<path> (the hosts nora proxies, e.g. get.helm.sh)."
     required: true
   sha256:
     description: "sha256 of the asset (the release's asset digest)."

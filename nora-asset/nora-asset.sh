@@ -4,8 +4,8 @@
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 fail() { echo "::error::nora-asset: $*" >&2; exit 1; }
-[[ "$ASSET_PATH" =~ ^(github/[^/]+/[^/]+/releases/download/[^/]+|hashicorp/[^/]+/[^/]+)/[^/]+$ && "$ASSET_PATH" != *..* ]] ||
-  fail "path '$ASSET_PATH' is not github/<owner>/<repo>/releases/download/<tag>/<asset> or hashicorp/<product>/<version>/<file>"
+[[ "$ASSET_PATH" =~ ^(github/[^/]+/[^/]+/releases/download/[^/]+|hashicorp/[^/]+/[^/]+|raw/src/[^/]+(/[^/]+)*)/[^/]+$ && "$ASSET_PATH" != *..* ]] ||
+  fail "path '$ASSET_PATH' is not github/<owner>/<repo>/releases/download/<tag>/<asset>, hashicorp/<product>/<version>/<file> or raw/src/<host>/<path>"
 [[ "$ASSET_SHA256" =~ ^[0-9a-f]{64}$ ]] || fail "sha256 '$ASSET_SHA256' is not 64 hex characters"
 [[ "${ASSET_BIN:-}" =~ ^[A-Za-z0-9._-]*$ ]] || fail "bin '$ASSET_BIN' is not a file name"
 file=${ASSET_FILE:-$RUNNER_TEMP/nora-asset/${ASSET_PATH##*/}}
