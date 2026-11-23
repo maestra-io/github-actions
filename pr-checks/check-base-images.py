@@ -44,8 +44,8 @@ they carry no digest, and never change the Dockerfile not-pinned rule.
 Kubernetes manifests, kustomizations and Helm values (any other changed *.y*ml, outside
 .github/, .gitlab*, .circleci/, tests/, lock files) are read for what a cluster pulls: a string
 `image:` or `*Image:` value (Deployment, CronJob, HelmRelease values `nginxImage`), a
-`{repository, tag|digest}` mapping (+ `registry`), a kustomization `images:` entry
-(`name`/`newName` + `newTag`|`digest`). Under fluxcd's use-nora-pull-through (Kyverno)
+`{repository, tag|digest}` mapping (+ `registry`; + `image` as the last path segment),
+a kustomization `images:` entry (`name`/`newName` + `newTag`|`digest`). Under fluxcd's use-nora-pull-through (Kyverno)
 the cluster pulls an upstream image as packages.maestra.io/<prefix>/..., so such a
 reference is asked in that form (KYVERNO, the policy's own map); a host the policy leaves
 alone (our ECR, trow, excludeImages) is not this check's business. Only images new to
@@ -265,7 +265,9 @@ def manifest_refs(text):
         tag = f":{s['tag']}" if s.get("tag") else ""
         digest = f"@{s['digest']}" if s.get("digest") else ""
         if s.get("repository") and (tag or digest):  # Helm values, CRs
-            keep(n["repository"], (f"{s['registry']}/" if s.get("registry") else "") + s["repository"] + tag + digest)
+            # {repository: docker.io/library, image: rabbitmq, tag}: the name is split in two
+            name = s["repository"] + (f"/{s['image']}" if s.get("image") else "")
+            keep(n["repository"], (f"{s['registry']}/" if s.get("registry") else "") + name + tag + digest)
         elif parent == "images" and s.get("name") and (s.get("newTag") or digest):  # kustomization
             new_tag = f":{s['newTag']}" if s.get("newTag") else ""
             keep(n.get("newName") or n["name"], s.get("newName", s["name"]) + new_tag + digest)
@@ -702,7 +704,8 @@ spec:
     seen.clear()
     rc, log = run(mbase, {**mbase, "deploy/values.yaml":
                           f"redis:\n  image:\n    registry: docker.io\n    repository: bitnami/held-redis\n    tag: '7.4'\n"
-                          f"pg:\n  image:\n    repository: ghcr.io/cloudnative-pg/held-pg\n    tag: 17\n    digest: {h}\n",
+                          f"pg:\n  image:\n    repository: ghcr.io/cloudnative-pg/held-pg\n    tag: 17\n    digest: {h}\n"
+                          f"mq:\n  image:\n    repository: docker.io/library\n    image: held-mq\n    tag: '3.13@{h}'\n",
                           "kustomization/overlays/omega/kustomization.yaml":
                           f"images:\n  - name: app\n    newName: quay.io/x/held-k\n    digest: {h}\n"
                           "  - name: 515260921971.dkr.ecr.us-west-2.amazonaws.com/svc\n    newTag: '1.2'\n",
@@ -710,11 +713,12 @@ spec:
                           "kind: CronJob\nspec:\n  jobTemplate:\n    spec:\n      template:\n        spec:\n          containers:\n"
                           f"            - name: c\n              image: mcr.microsoft.com/dotnet/held-runtime:10.0@{h}\n"
                           f"            - name: m\n              image: mirror.gcr.io/library/held-busybox:1.37\n"})
-    for want in ("file=deploy/values.yaml,line=4", "file=deploy/values.yaml,line=8",
+    for want in ("file=deploy/values.yaml,line=4", "file=deploy/values.yaml,line=8", "file=deploy/values.yaml,line=13",
                  "file=kustomization/overlays/omega/kustomization.yaml,line=3",
                  "file=kustomization/base/cronjob.yaml,line=9", "file=kustomization/base/cronjob.yaml,line=11"):
         assert f"{want},title=base image in nora quarantine" in log, (want, log)
     for want in ("/v2/docker-hub/bitnami/held-redis/manifests/7.4", f"/v2/ghcr/cloudnative-pg/held-pg/manifests/{h}",
+                 f"/v2/docker-hub/library/held-mq/manifests/{h}",
                  f"/v2/quay/x/held-k/manifests/{h}", f"/v2/mcr/dotnet/held-runtime/manifests/{h}",
                  "/v2/docker-hub/library/held-busybox/manifests/1.37"):
         assert any(p == want for p, *_ in seen), (want, seen)
