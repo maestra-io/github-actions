@@ -12,9 +12,10 @@
 #             dropped, so a finding moved by unrelated edits stays out (opengrep Diff_scan).
 #             When there are findings, one full scan of their files' base and head copies is the
 #             reference (pr-diff.py opengrep): a rule + path + matched lines found at the base at
-#             least as often as at the head is old (the baseline's own base scan can miss it). In
-#             a Dockerfile opengrep cannot parse at the base, the base copy's text stands in: the
-#             same lines in a stage with the same USER lines, at least as often as at the head.
+#             least as often as at the (fully scanned) head is old (the baseline's own base scan
+#             can miss it). In a Dockerfile opengrep cannot parse at the base, the base copy's text
+#             stands in: the same instruction in a stage with the same USER lines, at least as
+#             often as at the head.
 #             Skipped when the PR only deletes files: opengrep would scan no file.
 #   trivy     `trivy fs` of HEAD; when it has findings, `trivy fs` of HEAD^1 too (a git
 #             worktree, vulnerability DB not re-downloaded), and only the head findings whose key

@@ -11,9 +11,10 @@
                                            full scan of the base copies (paths under <base root>)
                                            and the head copies of their files. Old: the same rule,
                                            path and matched lines at the base at least as often as
-                                           at the head; in a Dockerfile with a parse error at the
-                                           base, the same in the base copy's text, in a stage with
-                                           the same USER lines
+                                           at the head (a complete head count: no parse error in
+                                           the file, no timeout of the rule); in a Dockerfile with
+                                           a parse error at the base, the same instruction in the
+                                           base copy's text, in a stage with the same USER lines
   pr-diff.py --self-test
   Exit 2 on an unreadable report (a crash never reads as 0 or 1).
 
@@ -32,11 +33,13 @@ at the base (1.33.1 stops at `RUN --mount=...,rw` and skips the lines after it) 
 every match reads as new. A full scan of the base and head copies is the reference: a (rule, path,
 matched lines) found at the base at least as often as at the head is old (an occurrence added by
 the PR is new). In a Dockerfile with a parse error at the base (a timeout is not one), the base
-copy's text stands in for its matches: the matched lines (whitespace-normalised, in a row) in a
-stage with the same USER instructions, at least as often as at the head, so a PR that removes
-the stage's USER or repeats the CMD in a new stage still fails.
+copy's text stands in for its matches: the matched lines (whitespace-normalised, in a row) as an
+instruction (not heredoc data, not a continuation line) in a stage with the same USER
+instructions, at least as often as at the head, so a PR that removes the stage's USER or repeats
+the CMD in a new stage still fails. A head copy the full scan did not finish (a parse error, a
+timeout of the rule) gives no count: its findings stay new unless that text fallback holds.
 """
-import hashlib, json, os, sys
+import hashlib, json, os, re, sys
 
 
 def raw_lines(root, target, start, end):
@@ -81,16 +84,38 @@ def norm_lines(root, path):
 PARSE_ERRORS = {"Lexical error", "Syntax error", "Other syntax error", "AST builder error", "PartialParsing"}
 
 
-def at(lines, want):
-    """Indexes where the lines `want` start in `lines`."""
-    return [i for i in range(len(lines) - len(want) + 1) if tuple(lines[i:i + len(want)]) == want]
+HEREDOC = re.compile(rb"<<-?([\"']?)([A-Za-z_][A-Za-z0-9_]*)\1")
 
 
-def stage_users(lines, i):
+def instructions(lines):
+    """Indexes of the (normalised) Dockerfile lines that start an instruction: not heredoc data,
+    not a continuation line, not a comment."""
+    starts, cont, ends = set(), False, []
+    for i, l in enumerate(lines):
+        if ends:
+            if l == ends[0]:
+                ends.pop(0)
+            continue
+        if l.startswith(b"#"):
+            continue
+        if l and not cont:
+            starts.add(i)
+        ends = [m.group(2) for m in HEREDOC.finditer(l)]
+        cont = l.endswith(b"\\")
+    return starts
+
+
+def at(lines, want, starts):
+    """Indexes where the instruction `want` (its lines) starts in `lines`."""
+    return [i for i in sorted(starts) if tuple(lines[i:i + len(want)]) == want]
+
+
+def stage_users(lines, i, starts):
     """The USER instructions of the Dockerfile stage (FROM to FROM) holding line index i."""
-    start = max([j for j in range(i + 1) if lines[j].upper().startswith(b"FROM ")] or [0])
-    end = min([j for j in range(i + 1, len(lines)) if lines[j].upper().startswith(b"FROM ")] or [len(lines)])
-    return tuple(l for l in lines[start:end] if l.upper().startswith(b"USER "))
+    first = lambda kw, js: [j for j in js if j in starts and lines[j].upper().startswith(kw)]
+    start = max(first(b"FROM ", range(i + 1)) or [0])
+    end = min(first(b"FROM ", range(i + 1, len(lines))) or [len(lines)])
+    return tuple(lines[j] for j in first(b"USER ", range(start, end)))
 
 
 def opengrep_new(diff_path, full_path, base_root, head_root="."):
@@ -110,6 +135,9 @@ def opengrep_new(diff_path, full_path, base_root, head_root="."):
                 if e.get("path") and kind(e) in PARSE_ERRORS and base_rel(e["path"])}
     def matched(root, path, r):
         return tuple((norm_lines(root, path) or [])[r["start"]["line"] - 1:r["end"]["line"]])
+    # a head copy the full scan did not finish (parse error: whole file; timeout: that rule) has no complete count
+    partial = {(os.path.normpath(e["path"]), None if kind(e) in PARSE_ERRORS else e.get("rule_id"))
+               for e in full.get("errors") or [] if e.get("path") and not base_rel(e["path"])}
     count = {}  # (rule, path, matched lines) -> [occurrences at the base, at the head]
     for r in full.get("results") or []:
         rel = base_rel(r["path"])
@@ -120,16 +148,17 @@ def opengrep_new(diff_path, full_path, base_root, head_root="."):
         path = os.path.normpath(r["path"])
         want = matched(head_root, path, r)
         b, h = count.get((r["check_id"], path, want), [0, 0])
-        if want and b and h <= b:
+        if want and 0 < h <= b and not {(path, None), (path, r["check_id"])} & partial:
             continue  # the full scans have it as often at the base: --baseline-commit missed it
         if want and path in unparsed and "dockerfile" in os.path.basename(path).lower():
-            # The base copy's text stands in for its matches: the same lines in a stage with the
-            # same USER instructions, at least as often as at the head.
-            # ponytail: context other than the stage's USER lines is not compared
+            # The base copy's text stands in for its matches: the same instruction in a stage with
+            # the same USER instructions, at least as often as at the head.
+            # ponytail: context other than the stage's USER lines (and `# escape=`) is not modelled
             had, has = norm_lines(base_root, path) or [], norm_lines(head_root, path) or []
-            users = stage_users(has, r["start"]["line"] - 1)
-            b = sum(stage_users(had, i) == users for i in at(had, want))
-            if b and sum(stage_users(has, i) == users for i in at(has, want)) <= b:
+            bs, hs = instructions(had), instructions(has)
+            users = stage_users(has, r["start"]["line"] - 1, hs)
+            b = sum(stage_users(had, i, bs) == users for i in at(had, want, bs))
+            if b and sum(stage_users(has, i, hs) == users for i in at(has, want, hs)) <= b:
                 continue
         new.append((r["check_id"], path, r["start"]["line"]))
     return new, unparsed
@@ -222,20 +251,29 @@ def self_test():
     assert opengrep_new(diff_, unparsed, ob, oh)[0] == [("missing-user", "Dockerfile", 5), ("sqli", "app.py", 3)]
     assert opengrep_new(diff_, parsed, ob, oh)[0] == [("missing-user", "Dockerfile", 4), ("missing-user", "Dockerfile", 5), ("sqli", "app.py", 3)]
     # the full scan of the base has the old CMD (line 3 there), the baseline did not drop it
-    full_base = put("og-base-full.json", {"results": [og("missing-user", os.path.join(ob, "Dockerfile"), 3),
-                                                      og("missing-user", "Dockerfile", 4)], "errors": []})
+    full_results = [og("missing-user", os.path.join(ob, "Dockerfile"), 3), og("missing-user", "Dockerfile", 4)]
+    full_base = put("og-base-full.json", {"results": full_results, "errors": []})
     assert opengrep_new(diff_, full_base, ob, oh)[0] == [("missing-user", "Dockerfile", 5), ("sqli", "app.py", 3)]
     assert main(["opengrep", diff_, unparsed, ob, oh]) == 1
     # ... but twice in the full scan of the head: one of them is new
-    twice = put("og-full-twice.json", {"results": json.load(open(full_base))["results"] + [og("missing-user", "Dockerfile", 4)], "errors": []})
+    twice = put("og-full-twice.json", {"results": full_results + [og("missing-user", "Dockerfile", 4)], "errors": []})
     assert opengrep_new(diff_, twice, ob, oh)[0] == [("missing-user", "Dockerfile", 4), ("missing-user", "Dockerfile", 5), ("sqli", "app.py", 3)]
+    # ... or the full scan of the head did not finish that rule (or the file): its count is not complete
+    for err in ({"type": "Timeout", "rule_id": "missing-user"}, {"type": ["PartialParsing", []]}):
+        cut = put("og-full-cut.json", {"results": full_results, "errors": [dict(err, path="Dockerfile")]})
+        assert opengrep_new(diff_, cut, ob, oh)[0] == [("missing-user", "Dockerfile", 4), ("missing-user", "Dockerfile", 5), ("sqli", "app.py", 3)], err
+    other = put("og-full-other.json", {"results": full_results, "errors": [{"type": "Timeout", "rule_id": "sqli", "path": "Dockerfile"}]})
+    assert opengrep_new(diff_, other, ob, oh)[0] == [("missing-user", "Dockerfile", 5), ("sqli", "app.py", 3)]
     # only a parse error makes a file unparsed: a timeout does not
     timeout = put("og-base-timeout.json", {"results": [], "errors": [{"type": "Timeout", "path": os.path.join(ob, "Dockerfile")}]})
     assert opengrep_new(diff_, timeout, ob, oh)[0] == [("missing-user", "Dockerfile", 4), ("missing-user", "Dockerfile", 5), ("sqli", "app.py", 3)]
-    # unparsed base, text fallback: a PR that removes the stage's USER, or repeats the CMD in a new stage
+    # unparsed base, text fallback: a PR that removes the stage's USER, repeats the CMD in a new
+    # stage, or turns heredoc data or a continuation line into the instruction is new
     for name, base_df, head_df, line in (
             ("user", 'FROM a\nUSER app\nRUN x,rw\nCMD ["x"]\n', 'FROM a\nRUN y,rw\nCMD ["x"]\n', 3),
             ("dup", 'FROM a\nRUN x,rw\nCMD ["x"]\n', 'FROM a\nRUN y,rw\nCMD ["x"]\nFROM a AS w\nCMD ["x"]\n', 5),
+            ("heredoc", 'FROM a\nRUN x,rw\nCOPY <<EOF /t\nCMD ["x"]\nEOF\n', 'FROM a\nRUN y\nCMD ["x"]\n', 3),
+            ("continued", 'FROM a\nRUN x,rw \\\n  CMD ["x"]\n', 'FROM a\nRUN y\nCMD ["x"]\n', 3),
             ("same", 'FROM a\nUSER app\nRUN x,rw\nCMD ["x"]\n', 'FROM a\nUSER app\nRUN y,rw\nCMD ["x"]\n', 4)):
         b_, h_ = os.path.join(d, name + "-b"), os.path.join(d, name + "-h")
         for root, body in ((b_, base_df), (h_, head_df)):
