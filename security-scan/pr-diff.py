@@ -57,8 +57,13 @@ def findings(path, root=None):
             yield key, f"{s.get('Severity')} secret {s.get('RuleID')} in {t}:{s.get('StartLine')}"
 
 
-def norm_lines(path):
-    with open(path, "rb") as f:
+def norm_lines(root, path):
+    """Whitespace-normalised lines of root/path; None when it resolves outside root (a report path is data)."""
+    root = os.path.realpath(root)
+    full = os.path.realpath(os.path.join(root, path))
+    if not full.startswith(root + os.sep):
+        return None
+    with open(full, "rb") as f:
         return [b" ".join(l.split()) for l in f.read().split(b"\n")]
 
 
@@ -77,8 +82,8 @@ def opengrep_new(diff_path, base_path, base_root, head_root="."):
         if path in unparsed:
             # ponytail: same text = old, so a PR that only removes the context (a USER line above
             # an old CMD) passes in such a file; the full scan of main still reports it
-            want = norm_lines(os.path.join(head_root, path))[start - 1:end]
-            had = norm_lines(os.path.join(base_root, path))
+            want = (norm_lines(head_root, path) or [])[start - 1:end]
+            had = norm_lines(base_root, path) or []
             if want and any(had[i:i + len(want)] == want for i in range(len(had) - len(want) + 1)):
                 continue
         new.append((r["check_id"], path, start))
@@ -172,6 +177,14 @@ def self_test():
     assert opengrep_new(diff_, unparsed, ob, oh)[0] == [("missing-user", "Dockerfile", 5), ("sqli", "app.py", 3)]
     assert opengrep_new(diff_, parsed, ob, oh)[0] == [("missing-user", "Dockerfile", 4), ("missing-user", "Dockerfile", 5), ("sqli", "app.py", 3)]
     assert main(["opengrep", diff_, unparsed, ob, oh]) == 1
+    # a report path that leaves the roots is never read: the same file on both sides would read as old
+    ox = os.path.join(d, "ox")
+    os.makedirs(ox, exist_ok=True)
+    with open(os.path.join(ox, "Dockerfile"), "w") as f:
+        f.write('CMD ["x"]\n')
+    escape = put("og-diff-escape.json", {"results": [og("missing-user", "../ox/Dockerfile", 1)], "errors": []})
+    unparsed_escape = put("og-base-escape.json", {"results": [], "errors": [{"path": os.path.join(ox, "Dockerfile")}]})
+    assert opengrep_new(escape, unparsed_escape, ob, oh)[0] == [("missing-user", "../ox/Dockerfile", 1)]
     print("pr-diff self-test ok")
     return 0
 
