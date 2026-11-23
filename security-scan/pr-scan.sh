@@ -10,6 +10,9 @@
 #   opengrep  `opengrep scan --baseline-commit HEAD^1`: only the files the PR changes are
 #             scanned, and a match whose (rule id, path, matched lines) also matches at HEAD^1 is
 #             dropped, so a finding moved by unrelated edits stays out (opengrep Diff_scan).
+#             When there are findings, a full scan of the base copies of their files: in a copy
+#             opengrep cannot fully parse (no matches for the baseline to drop) a finding whose
+#             matched lines the base copy already has is old (pr-diff.py opengrep).
 #             Skipped when the PR only deletes files: opengrep would scan no file.
 #   trivy     `trivy fs` of HEAD; when it has findings, `trivy fs` of HEAD^1 too (a git
 #             worktree, vulnerability DB not re-downloaded), and only the head findings whose key
@@ -53,6 +56,20 @@ opengrep)
     --no-rewrite-rule-ids --error --baseline-commit "$base" \
     --json-output="$OUT/opengrep.json" . || rc=$?
   [ "$rc" -le 1 ] || exit 2
+  [ "$rc" = 1 ] || exit 0
+  # A base copy opengrep cannot fully parse has no matches for the baseline to drop: a full scan
+  # of the base copies of the files with findings tells which, pr-diff.py compares those by text.
+  wt=$(mktemp -d)/base
+  git worktree add -q --detach "$wt" "$base" || { echo "pr-scan: cannot check out the base" >&2; exit 2; }
+  trap 'git worktree remove --force "$wt"' EXIT
+  targets=()
+  while IFS= read -r f; do [ ! -f "$wt/$f" ] || targets+=("$wt/$f"); done \
+    < <(jq -r '[.results[].path] | unique[]' "$OUT/opengrep.json")
+  [ "${#targets[@]}" -gt 0 ] || exit 1  # every finding is in a file the PR adds
+  "$OPENGREP" scan --config "$OPENGREP_RULES" --severity=ERROR --taint-intrafile --no-rewrite-rule-ids \
+    --json-output="$OUT/opengrep-base.json" "${targets[@]}" > /dev/null \
+    || { echo "pr-scan: opengrep scan of the base copies failed" >&2; exit 2; }
+  rc=0; python3 "$here/pr-diff.py" opengrep "$OUT/opengrep.json" "$OUT/opengrep-base.json" "$wt" || rc=$?
   exit "$rc" ;;
 
 trivy)

@@ -117,5 +117,24 @@ if grep -q "nothing to scan" "$work/log"; then echo "ok   deletion-only PR: open
 repo; git add -A && git commit -qm only
 run "no parent commit" gitleaks 2
 
+# 9. a Dockerfile opengrep cannot fully parse (a bare `,rw` mount option; 1.33.1 skips the lines
+# after it, so the base has no match for the baseline to drop): an old CMD without USER under an
+# edited RUN passes (py-reports#37 failed on it, run 44814697416); a new CMD without USER fails
+dockerfile() { # <the RUN line above the last CMD> [extra lines]
+	printf '%s\n' 'FROM python:3.12-slim AS base' 'WORKDIR /opt' \
+		"RUN --mount=type=bind,from=busybox,source=/bin,target=/b \\" \
+		"    --mount=type=bind,from=busybox,source=/x,target=/x,rw \\" '    echo hi' '' \
+		'WORKDIR /opt/src' '' "$1" '' 'CMD ["python3", "-m", "pytest"]' "${@:2}" > Dockerfile
+}
+repo; dockerfile 'RUN pipconflictchecker'; base_commit
+dockerfile 'RUN python3 -m pip check'
+pr_commit
+run "old CMD in an unparsed Dockerfile" opengrep 0
+if grep -q 'not fully parsed at the base' "$work/log"; then echo "ok   old CMD in an unparsed Dockerfile: found at head, the base copy's text drops it"; else echo "FAIL old CMD in an unparsed Dockerfile: the base was not compared, the case proves nothing"; fail=1; fi
+repo; dockerfile 'RUN pipconflictchecker'; base_commit
+dockerfile 'RUN python3 -m pip check' '' 'FROM base AS worker' 'CMD ["python3", "worker.py"]'
+pr_commit
+run "new CMD in an unparsed Dockerfile" opengrep 1
+
 [ "$fail" = 0 ] && echo "all security-scan PR mode cases passed"
 exit "$fail"
