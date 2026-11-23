@@ -24,7 +24,9 @@
 #   opengrep   `opengrep scan --severity=ERROR --taint-intrafile` with the security rules
 #              of semgrep/semgrep-rules (branch `release`, `category: security`, no
 #              `secrets/`: the rule set the GitLab opengrep-ci image bakes in).
-#              Accepted findings: `nosemgrep: <rule-id>` inline or `.semgrepignore`.
+#              Accepted findings: `nosemgrep: <rule-id>` inline or `.semgrepignore`. A rule
+#              whose id another rule shares runs as <dir>.<id> (security-scan/rules-bundle.py);
+#              `nosemgrep: <id>` matches it too.
 #
 # GitLab sent the reports to DefectDojo and stayed green; DefectDojo is not reachable from
 # GitHub and the org has no code scanning, so here a finding turns its job red and the
@@ -329,7 +331,7 @@ jobs:
             "$OPENGREP_SHA256" "$cached"
           install -m 755 "$cached" "$RUNNER_TEMP/opengrep"
           # The rules and the scripts leave the tree, or the scan would read them as code.
-          mv .github-actions/security-scan/{report.py,pr-scan.sh,pr-diff.py} "$RUNNER_TEMP/"
+          mv .github-actions/security-scan/{report.py,pr-scan.sh,pr-diff.py,rules-bundle.py} "$RUNNER_TEMP/"
           rm -rf .github-actions
           mv .semgrep-rules "$RUNNER_TEMP/semgrep-rules"
           cd "$RUNNER_TEMP/semgrep-rules"
@@ -341,6 +343,9 @@ jobs:
           find . -path '*/secrets/*' -delete
           find . -type d -empty -delete
           echo "$(find . -name '*.yaml' | wc -l) rule files"
+          # One rule file per directory (load time), a unique id for every rule (opengrep
+          # runs one rule per id): security-scan/rules-bundle.py.
+          python3 "$RUNNER_TEMP/rules-bundle.py" . "$RUNNER_TEMP/semgrep-rules-bundle"
       - if: ${{ steps.install.outputs.fetched == 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -348,11 +353,11 @@ jobs:
           key: ${{ steps.bin-cache.outputs.cache-primary-key }}
       - name: opengrep scan (ERROR) of the PR's changes, base matches dropped (PR mode)
         if: ${{ github.event_name == 'pull_request' }}
-        run: OPENGREP="$RUNNER_TEMP/opengrep" OPENGREP_RULES="$RUNNER_TEMP/semgrep-rules" bash "$RUNNER_TEMP/pr-scan.sh" opengrep
+        run: OPENGREP="$RUNNER_TEMP/opengrep" OPENGREP_RULES="$RUNNER_TEMP/semgrep-rules-bundle" bash "$RUNNER_TEMP/pr-scan.sh" opengrep
       - name: opengrep scan (ERROR)
         if: ${{ github.event_name != 'pull_request' }}
         run: |
-          "$RUNNER_TEMP/opengrep" scan --config "$RUNNER_TEMP/semgrep-rules" --severity=ERROR \
+          "$RUNNER_TEMP/opengrep" scan --config "$RUNNER_TEMP/semgrep-rules-bundle" --severity=ERROR \
             --taint-intrafile --no-rewrite-rule-ids --error --json-output="$RUNNER_TEMP/opengrep.raw.json" .
       - name: Report
         id: report

@@ -24,7 +24,7 @@ permissions:
 jobs:
   pr-mode:
     runs-on: runs-on=${{ github.run_id }}-security-scan-pr/pool=small
-    # The opengrep cases make 9 runs, on one rule file per directory (rules-bundle.py).
+    # The opengrep cases make 11 runs, on one rule file per directory (rules-bundle.py).
     timeout-minutes: 20
     permissions:
       contents: read
