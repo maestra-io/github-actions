@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Fail a PR whose Dockerfiles, compose files or workflows bring in an image nora still
-holds in quarantine.
+"""Fail a PR whose Dockerfiles, compose files, workflows or Kubernetes manifests bring in
+an image nora still holds in quarantine.
 
 Usage: NORA_TOKEN=<token> check-base-images.py <head rev> <base rev>   (run in the repo)
        check-base-images.py --self-test
@@ -41,8 +41,21 @@ and, in workflows/actions, for any digest-pinned packages.maestra.io image; only
 packages.maestra.io references are judged there (ai-assistant-rnd PR 107 merged a held
 minio digest through docker-compose.yml, 23.11.2026). They are asked by their tag when
 they carry no digest, and never change the Dockerfile not-pinned rule.
+Kubernetes manifests, kustomizations and Helm values (any other changed *.y*ml, outside
+.github/, .gitlab*, .circleci/, tests/, lock files) are read for what a cluster pulls: a string
+`image:` or `*Image:` value (Deployment, CronJob, HelmRelease values `nginxImage`), a
+`{repository, tag|digest}` mapping (+ `registry`), a kustomization `images:` entry
+(`name`/`newName` + `newTag`|`digest`). Under fluxcd's use-nora-pull-through (Kyverno)
+the cluster pulls an upstream image as packages.maestra.io/<prefix>/..., so such a
+reference is asked in that form (KYVERNO, the policy's own map); a host the policy leaves
+alone (our ECR, trow, excludeImages) is not this check's business. Only images new to
+that file are judged (an image promoted from another overlay is new there), by tag when
+they carry no digest. ponytail: Kyverno's namespace exclusions and the opt-out annotation
+are not read, an image without a tag or digest (a kustomize placeholder, a chart default)
+and a `{{ }}` template are skipped: fluxcd's own Diff check judges the rendered charts.
 """
 import datetime as dt
+import fnmatch
 import json
 import os
 import re
@@ -66,6 +79,24 @@ DOCKERFILE = re.compile(r"(^|/)(Dockerfile[^/]*|[^/]+\.[Dd]ockerfile|Containerfi
 WORKFLOW = re.compile(r"(^\.github/workflows/[^/]+|(^|/)action)\.ya?ml$")
 COMPOSE = re.compile(r"(^|/)(docker-)?compose[^/]*\.ya?ml$")
 IMAGE_KEY = re.compile(r"^\s*(?:-\s+)?image:\s*[\"']?(?:docker://)?([^\s\"'#]+)")
+# fluxcd base/kyverno-nora-pull-through/chart/values.yaml `registries`, `excludeImages` and
+# `dockerHubPrefix` @ main b74980c0cc (last change, 2026-11-16): the hosts use-nora-pull-through rewrites
+# to packages.maestra.io/<prefix>/ (mirror.gcr.io is Docker Hub there, unlike nora's own
+# upstreams above). fluxcd is private and callers' GITHUB_TOKEN cannot read it: a host added
+# there is added here next.
+KYVERNO = {"docker.io": "docker-hub", "index.docker.io": "docker-hub", "registry-1.docker.io": "docker-hub",
+           "mirror.gcr.io": "docker-hub", "ghcr.io": "ghcr", "quay.io": "quay", "registry.k8s.io": "k8s",
+           "gcr.io": "gcr", "mcr.microsoft.com": "mcr", "docker.dragonflydb.io": "dragonfly",
+           "public.ecr.aws": "ecr-public", "cgr.dev": "cgr", "reg.kyverno.io": "kyverno",
+           "xpkg.upbound.io": "upbound", "xpkg.crossplane.io": "crossplane",
+           "europe-west1-docker.pkg.dev": "gar-europe-west1"}
+KYVERNO_EXCLUDE = ("public.ecr.aws/g5f9s8a4/*",)
+MERGE = "tag:yaml.org,2002:merge"
+MANIFEST = re.compile(r"\.ya?ml$")
+# CI configs, lock files, and chart/kustomize test fixtures (tests/, *_test.yaml): never deployed
+NOT_MANIFEST = re.compile(r"(^|/)(\.github/|\.gitlab|\.circleci/|tests?/)|(^|/)[^/]*(-lock|_test)\.ya?ml$")
+IMAGE_REF = re.compile(r"^[a-z0-9][a-z0-9._-]*(?::[0-9]+)?(?:/[a-z0-9._-]+)*"
+                       r"(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(?:@sha256:[0-9a-f]{64})?$")
 PINNED = re.compile(r"packages\.maestra\.io/[A-Za-z0-9._/-]+(?::[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}")
 ACCEPT = ", ".join([
     "application/vnd.oci.image.index.v1+json",
@@ -185,6 +216,87 @@ def refs_of(path, text):
     return out
 
 
+def manifest_refs(text):
+    """[(line, image)] a Kubernetes manifest, kustomization or Helm values file names."""
+    import yaml  # PyYAML: base-images.yml installs it when the runner lacks it
+    try:
+        docs = list(yaml.compose_all(text, Loader=yaml.SafeLoader))
+    except yaml.YAMLError:
+        return []  # a Helm template, not YAML yet: its values file holds the images
+    out = []
+
+    def scalar(node):  # a non-empty, non-null scalar (`tag: null` is the chart's appVersion)
+        return isinstance(node, yaml.ScalarNode) and node.value.strip() and node.tag != "tag:yaml.org,2002:null"
+
+    def keep(node, ref):
+        ref = ref.strip()
+        if "{{" in ref:
+            return
+        if "$" in ref:  # Flux postBuild: warned when it names a host nora serves
+            if any(h in ref for h in (NORA_HOST, *KYVERNO)):
+                out.append((node.start_mark.line + 1, ref))
+            return
+        name = ref.partition("@")[0]
+        if IMAGE_REF.match(ref) and ("@" in ref or name.rfind(":") > name.rfind("/")):
+            out.append((node.start_mark.line + 1, ref))
+
+    def merged(node):
+        """{key: value node} a mapping takes from its `<<` merge keys; the first source wins."""
+        out = {}
+        for k, v in node.value:
+            if isinstance(k, yaml.ScalarNode) and k.tag == MERGE:
+                for src in reversed(v.value if isinstance(v, yaml.SequenceNode) else [v]):
+                    if isinstance(src, yaml.MappingNode):
+                        out.update(merged(src))
+                        out.update((kk.value, vv) for kk, vv in src.value
+                                   if isinstance(kk, yaml.ScalarNode) and kk.tag != MERGE)
+        return out
+
+    def walk(node, parent=""):
+        if isinstance(node, yaml.SequenceNode):
+            for n in node.value:
+                walk(n, parent)
+            return
+        if not isinstance(node, yaml.MappingNode):
+            return
+        pairs = [(k.value, v) for k, v in node.value if isinstance(k, yaml.ScalarNode) and k.tag != MERGE]
+        n = {**merged(node), **dict(pairs)}  # `<<: *defaults` under the mapping's own keys
+        s = {k: v.value.strip() for k, v in n.items() if scalar(v)}
+        tag = f":{s['tag']}" if s.get("tag") else ""
+        digest = f"@{s['digest']}" if s.get("digest") else ""
+        if s.get("repository") and (tag or digest):  # Helm values, CRs
+            keep(n["repository"], (f"{s['registry']}/" if s.get("registry") else "") + s["repository"] + tag + digest)
+        elif parent == "images" and s.get("name") and (s.get("newTag") or digest):  # kustomization
+            new_tag = f":{s['newTag']}" if s.get("newTag") else ""
+            keep(n.get("newName") or n["name"], s.get("newName", s["name"]) + new_tag + digest)
+        for k, v in pairs:
+            if scalar(v) and k.lower().endswith("image"):
+                keep(v, v.value)
+            else:
+                walk(v, k)
+
+    for doc in docs:
+        if doc is not None:
+            walk(doc)
+    return list(dict.fromkeys(out))  # an alias walks its anchor's nodes again
+
+
+def pulled_as(ref):
+    """The packages.maestra.io reference a cluster pulls for a manifest image: nora's own as
+    written, an upstream one as use-nora-pull-through rewrites it, None when it is left alone."""
+    if any(fnmatch.fnmatchcase(ref, g) for g in KYVERNO_EXCLUDE):
+        return None
+    host, repo, tag, digest = split(ref)
+    if host == NORA_HOST:
+        return ref
+    prefix = KYVERNO.get(host)
+    if not prefix:
+        return None
+    if prefix == "docker-hub" and "/" not in repo:
+        repo = f"library/{repo}"
+    return f"{NORA_HOST}/{prefix}/{repo}" + (f":{tag}" if tag else "") + (f"@{digest}" if digest else "")
+
+
 def split(ref):
     """(host, repo, tag, digest) of an image reference."""
     name, _, digest = ref.partition("@")
@@ -282,6 +394,25 @@ def dockerfiles(rev):
             for p in names if DOCKERFILE.search(p) or WORKFLOW.search(p) or COMPOSE.search(p)}
 
 
+def manifests(head, base):
+    """{path: (head text, base text)} of the changed YAML files that are not workflows or
+    compose files: Kubernetes manifests, kustomizations, Helm values."""
+    try:
+        names = git("diff", "--name-only", "-z", "--diff-filter=d", base, head).decode().split("\0")
+    except subprocess.CalledProcessError:  # no base revision: every file is new
+        names = git("ls-tree", "-r", "-z", "--name-only", head).decode().split("\0")
+    out = {}
+    for p in names:
+        if not MANIFEST.search(p) or NOT_MANIFEST.search(p) or COMPOSE.search(p) or WORKFLOW.search(p):
+            continue
+        try:
+            old = git("show", f"{base}:{p}").decode(errors="replace")
+        except subprocess.CalledProcessError:
+            old = ""
+        out[p] = (git("show", f"{head}:{p}").decode(errors="replace"), old)
+    return out
+
+
 def main(head, base, out=print):
     new_files, old_files = dockerfiles(head), dockerfiles(base)
     old_by_file = {p: [ref for _, ref in refs_of(p, text)] for p, text in old_files.items()}
@@ -311,6 +442,16 @@ def main(head, base, out=print):
                     f"other {NORA_HOST} image of this repo has one: pin it as <tag>@sha256:<digest>")
             else:
                 asks.setdefault(nora_path(ref), []).append((at, ref))
+    for path, (text, old_text) in sorted(manifests(head, base).items()):
+        before = {ref for _, ref in manifest_refs(old_text)}
+        for line, ref in manifest_refs(text):
+            at = f"file={path},line={line}"
+            if ref in before:
+                continue
+            if "$" in ref:
+                out(f"::warning {at}::{ref}: a variable the file gives no default; not checked")
+            elif pulled_as(ref):
+                asks.setdefault(nora_path(pulled_as(ref)), []).append((at, pulled_as(ref)))
     if not asks:
         out(f"base images: no new {NORA_HOST} image" + (", but see above" if failures else ""))
         return 1 if failures else 0
@@ -533,6 +674,74 @@ COPY --from=nginx:1.27 /etc/nginx /etc/nginx
                          f"      db:\n        image: '{n}held-pg:17'\n      r:\n        image: ${{{{ inputs.img }}}}\n"})
     assert rc == 1 and "file=.github/workflows/ci.yml,line=7" in log and f"ok       {n}mature:8{d}" in log, log
     assert log.count(f"{n}mature:8{d}") == 1, log  # one line, one ask: PINNED and image: agree
+    # Kubernetes manifests: upstream names as Kyverno's use-nora-pull-through rewrites them
+    # (ai-assistant-rnd PR 107 also moved a cgr.dev digest in a HelmRelease's `nginxImage`)
+    h = "sha256:" + "2" * 64
+    hr = f"""apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+spec:
+  values:
+    container:
+      nginxImage: cgr.dev/chainguard/nginx:latest@{{}}
+      image:
+        repository: docker.io/darthsim/imgproxy
+        tag: v4.0.14
+        digest: {h}
+"""
+    mbase = {**base, "kustomization/base/helm-release-imgproxy.yaml": hr.format("sha256:" + "3" * 64)}
+    seen.clear()
+    rc, log = run(mbase, {**mbase, "kustomization/base/helm-release-imgproxy.yaml": hr.format(h).replace(
+        "chainguard/nginx", "chainguard/held-nginx")})
+    assert rc == 1 and "file=kustomization/base/helm-release-imgproxy.yaml,line=6,title=base image in nora quarantine" \
+        in log and f"packages.maestra.io/cgr/chainguard/held-nginx:latest@{h}" in log, log
+    assert ("/v2/cgr/chainguard/held-nginx/manifests/" + h, "only-if-cached", "Bearer t") in seen, seen
+    assert not [p for p, *_ in seen if "imgproxy" in p], seen  # unchanged in the file: not asked
+    rc, log = run(mbase, {**mbase, "kustomization/base/helm-release-imgproxy.yaml": hr.format(h)})
+    assert rc == 0 and "ok       packages.maestra.io/cgr/chainguard/nginx:latest@" in log, log
+    # {repository, tag|digest} (+ registry), a kustomization `images:` entry, a plain Deployment
+    seen.clear()
+    rc, log = run(mbase, {**mbase, "deploy/values.yaml":
+                          f"redis:\n  image:\n    registry: docker.io\n    repository: bitnami/held-redis\n    tag: '7.4'\n"
+                          f"pg:\n  image:\n    repository: ghcr.io/cloudnative-pg/held-pg\n    tag: 17\n    digest: {h}\n",
+                          "kustomization/overlays/omega/kustomization.yaml":
+                          f"images:\n  - name: app\n    newName: quay.io/x/held-k\n    digest: {h}\n"
+                          "  - name: 515260921971.dkr.ecr.us-west-2.amazonaws.com/svc\n    newTag: '1.2'\n",
+                          "kustomization/base/cronjob.yaml":
+                          "kind: CronJob\nspec:\n  jobTemplate:\n    spec:\n      template:\n        spec:\n          containers:\n"
+                          f"            - name: c\n              image: mcr.microsoft.com/dotnet/held-runtime:10.0@{h}\n"
+                          f"            - name: m\n              image: mirror.gcr.io/library/held-busybox:1.37\n"})
+    for want in ("file=deploy/values.yaml,line=4", "file=deploy/values.yaml,line=8",
+                 "file=kustomization/overlays/omega/kustomization.yaml,line=3",
+                 "file=kustomization/base/cronjob.yaml,line=9", "file=kustomization/base/cronjob.yaml,line=11"):
+        assert f"{want},title=base image in nora quarantine" in log, (want, log)
+    for want in ("/v2/docker-hub/bitnami/held-redis/manifests/7.4", f"/v2/ghcr/cloudnative-pg/held-pg/manifests/{h}",
+                 f"/v2/quay/x/held-k/manifests/{h}", f"/v2/mcr/dotnet/held-runtime/manifests/{h}",
+                 "/v2/docker-hub/library/held-busybox/manifests/1.37"):
+        assert any(p == want for p, *_ in seen), (want, seen)
+    assert rc == 1 and not [p for p, *_ in seen if "svc" in p], seen
+    # YAML merge keys: `<<: *defaults` supplies the repository, the mapping its own tag
+    rc, log = run(mbase, {**mbase, "deploy/merge.yaml":
+                          "defaults: &d {repository: ghcr.io/x/base, tag: '1'}\n"
+                          "image: {<<: *d, repository: ghcr.io/x/held-merge}\nother: {<<: [*d], tag: '2'}\n"})
+    assert rc == 1 and "file=deploy/merge.yaml,line=2,title=base image in nora quarantine" in log, log
+    assert "packages.maestra.io/ghcr/x/held-merge:1 " in log and "packages.maestra.io/ghcr/x/base:2 " in log, log
+    # an image already in another file is still new to this one (an omicron digest promoted to omega)
+    held_m = {**mbase, "kustomization/overlays/omicron/values.yaml": f"image: ghcr.io/x/held-a:1@{h}\n"}
+    rc, log = run(held_m, {**held_m, "kustomization/overlays/omega/values.yaml": f"image: ghcr.io/x/held-a:1@{h}\n"})
+    assert rc == 1 and "file=kustomization/overlays/omega/values.yaml,line=1" in log and "omicron" not in log, log
+    # left alone: hosts Kyverno does not rewrite, its excludeImages, no tag/digest, null tags,
+    # templates, test fixtures, CI configs, a file that is not YAML yet; a ${VAR} warns
+    seen.clear()
+    rc, log = run(mbase, {**mbase, "k/a.yaml":
+                          "a:\n  image: 515260921971.dkr.ecr.us-west-2.amazonaws.com/x:1\n"
+                          "b:\n  image: public.ecr.aws/g5f9s8a4/held:1\nc:\n  image: registry.example.com/held:1\n"
+                          "d:\n  image: app\ne:\n  image:\n    repository: ghcr.io/x/held\n    tag: null\n"
+                          "f:\n  image: \"{{ .Values.image }}\"\ng:\n  defaultImage: ghcr.io/x/held:${TAG}\n"
+                          "h:\n  repository: maestra-io/github-actions\n  ref: main\n",
+                          "chart/tests/values.yaml": "image: busybox-held:1\n",
+                          "chart/templates/d.yaml": "{{- if .Values.x }}\nimage: ghcr.io/x/held:1\n{{- end }}\n",
+                          ".gitlab-ci.yml": "image: held-python:3.12\n"})
+    assert rc == 0 and not seen and "file=k/a.yaml,line=16" in log and log.count("::warning") == 1, log
     # tag only: not pinned where the repo pins, asked where it does not
     rc, log = run(base, {"Dockerfile": f"FROM {n}mature:3\n"})
     assert rc == 1 and "not pinned" in log, log

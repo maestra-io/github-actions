@@ -2625,10 +2625,20 @@ jobs:
       check-encoding: false
       kustomize: true
 
+  # Pull requests only: no new image nora still holds in its 3-day quarantine, in a
+  # Dockerfile, compose file, workflow or the kustomization/ manifests (base-images.yml,
+  # issues-maestra#1649), as in service-build.yml.
+  base-images:
+    if: ${{ github.event_name == 'pull_request' }}
+    uses: maestra-io/github-actions/.github/workflows/base-images.yml@main
+    permissions:
+      contents: read
+      id-token: write # nora session token
+
   pr-gate:
     name: pr gate
     if: ${{ always() && github.event_name == 'pull_request' }}
-    needs: [changes, version, install, tests-install, checks, test, tests-checks, build, hot-test, e2e-stand, functional, e2e, pr-checks]
+    needs: [changes, version, install, tests-install, checks, test, tests-checks, build, hot-test, e2e-stand, functional, e2e, pr-checks, base-images]
     runs-on: runs-on=${{ github.run_id }}-pr-gate/pool=small
     timeout-minutes: 5
     steps:

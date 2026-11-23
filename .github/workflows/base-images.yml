@@ -15,7 +15,11 @@
 # base branch, in any Dockerfile of the repo (FROM, COPY/ADD --from, RUN --mount from,
 # ARG defaults substituted), every packages.maestra.io `image:` of a compose file
 # (docker-compose*.y*ml, compose*.y*ml, `${VAR:-default}` taken), and every digest-pinned
-# packages.maestra.io image or `image:` of a workflow or action (job container/services).
+# packages.maestra.io image or `image:` of a workflow or action (job container/services),
+# and every image a changed Kubernetes manifest, kustomization or Helm values file names
+# (`image:`/`*Image:`, `{repository, tag|digest}`, kustomize `images:`), upstream names
+# asked as fluxcd's Kyverno use-nora-pull-through rewrites them (a held digest there is
+# ImagePullBackOff once nora enforces). mcf-build calls it too.
 # It runs on every PR of the caller, whatever files it touches (a compose-only Renovate PR
 # included). Unchanged images never turn a PR red, and it never runs on a push:
 # a default branch that already carries a held digest builds as before.
@@ -82,4 +86,9 @@ jobs:
         env:
           NORA_URL: ${{ inputs.packages-url }}
           NORA_TOKEN: ${{ steps.session.outputs.token }}
-        run: python3 -I .pr-checks/pr-checks/check-base-images.py HEAD HEAD^1
+        run: |
+          # PyYAML reads the Kubernetes manifests. Probe and install with -I as the checker
+          # runs (no PR-controlled yaml.py from the checkout's cwd, no user site it ignores).
+          python3 -I -c 'import yaml' 2>/dev/null \
+            || sudo -n python3 -I -m pip install --quiet --break-system-packages pyyaml==6.0.3
+          python3 -I .pr-checks/pr-checks/check-base-images.py HEAD HEAD^1
