@@ -22,6 +22,11 @@ SH
 stub curl <<'SH'
 #!/usr/bin/env bash
 [ "${FAKE_CURL:-ok}" = ok ] || exit 22
+case "${*: -1}" in
+  *audience=packages.maestra.io) echo '{"value":"eyJ.stub.jwt"}'; exit 0 ;;
+  https://packages.maestra.io/github/sigstore/cosign/*) grep -qx 'user = "oidc:eyJ.stub.jwt"' || exit 22 ;;
+  *) echo "unexpected curl: $*" >&2; exit 22 ;;
+esac
 while [ $# -gt 0 ]; do [ "$1" = -o ] && cp "$(dirname "$0")/cosign" "$2"; shift; done
 SH
 stub sha256sum <<'SH'
@@ -50,8 +55,10 @@ a=123456789012.dkr.ecr.us-west-2.amazonaws.com/a@sha256:$(printf '1%.0s' {1..64}
 b=123456789012.dkr.ecr.us-west-2.amazonaws.com/b@sha256:$(printf '2%.0s' {1..64})
 run() { # env assignments...: prints "rc status"
   : > "$tmp/out"; : > "$tmp/log"; : > "$tmp/path"
+  rm -rf "$tmp/sign-image-bin" # a verified cosign left there is a hit: nothing to fetch
   local rc=0
   env "$@" PATH="$tmp/bin:$PATH" FAKE_LOG="$tmp/log" RUNNER_TEMP="$tmp" GITHUB_OUTPUT="$tmp/out" GITHUB_PATH="$tmp/path" \
+    ACTIONS_ID_TOKEN_REQUEST_URL='https://idtok.example/x?api-version=2.0' ACTIONS_ID_TOKEN_REQUEST_TOKEN=req \
     SYFT_IMAGE=syft bash "$here/../sign-image/sign-image.sh" > "$tmp/stdout" 2>&1 || rc=$?
   echo "$rc $(cat "$tmp/out")"
 }

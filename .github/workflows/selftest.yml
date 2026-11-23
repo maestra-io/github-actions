@@ -39,6 +39,7 @@ on:
       - "cargo-nora/**"
       - "dotnet-nora/**"
       - "nora-tool/**"
+      - "nora-asset/**"
       - "setup-*-nora/**"
       - "nora-session/**"
       - "nora-service/**"
@@ -165,6 +166,9 @@ jobs:
 
       - name: nora-image-prewarm image mapping, flate diff, OIDC round trip (stub)
         run: python3 nora-image-prewarm/prewarm.py --self-test
+
+      - name: nora-asset raw binary, tar and zip member, tampered download refused (stub curl)
+        run: bash scripts/test-nora-asset.sh
 
       - name: security-scan trivy DBs through nora (stub curl)
         run: bash scripts/test-security-scan-trivy-nora-env.sh
