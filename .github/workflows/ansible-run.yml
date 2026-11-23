@@ -204,9 +204,10 @@ on:
       mint_proxmox_token:
         description: >-
           Proxmox API token for the play (proxmox repo only). push/dispatch: a
-          per-run ansible-ci@pve (Administrator) token minted with sudo pveum.
-          pull_request: nothing is minted; the PVEAuditor token of ci-plan@pve
-          is read from Vault (proxmox_token_vault_role).
+          per-run token of ci-plan@pve (PVEAuditor) minted with sudo pveum;
+          the play reads through it and writes with pvesh as root.
+          pull_request: nothing is minted; the standing PVEAuditor token of
+          ci-plan@pve is read from Vault (proxmox_token_vault_role).
         required: false
         type: boolean
         default: false
@@ -977,11 +978,11 @@ jobs:
           # maestra-io/proxmox run 31637270407: a deploy on `serial: 1` was on its
           # third hypervisor when a PR-check run tore the token down, and that
           # host alone failed with `no such token 'github-ci' for user
-          # 'ansible-ci@pve'`. A unique name per run removes the collision
+          # 'ansible-ci@pve'` (the user of that time). A unique name per run removes the collision
           # entirely; the id is exported so the play can address it.
           TOKEN_NAME="github-ci-${GH_RUN_ID}"
           # Server-side expiry, so a cleanup that never runs — cancelled job,
-          # runner death — cannot leave an Administrator token alive forever.
+          # runner death — cannot leave a token alive forever.
           # Two hours covers any run this workflow performs; the cleanup step
           # still removes it immediately on the normal path.
           TOKEN_EXPIRE="$(( $(date +%s) + 7200 ))"
@@ -991,10 +992,10 @@ jobs:
           TOKEN_NODE=""
           for NODE in $(echo "$NODES" | shuf); do
             OUT="$(timeout 30 tsh ssh --login=teleport-production "$NODE" "
-              sudo pveum user add ansible-ci@pve 2>/dev/null || true
-              sudo pveum acl modify / -user ansible-ci@pve -role Administrator
-              sudo pveum user token remove ansible-ci@pve ${TOKEN_NAME} 2>/dev/null || true
-              sudo pveum user token add ansible-ci@pve ${TOKEN_NAME} --privsep=0 --expire ${TOKEN_EXPIRE} --output-format=json
+              sudo pveum user add ci-plan@pve 2>/dev/null || true
+              sudo pveum acl modify / -user ci-plan@pve -role PVEAuditor
+              sudo pveum user token remove ci-plan@pve ${TOKEN_NAME} 2>/dev/null || true
+              sudo pveum user token add ci-plan@pve ${TOKEN_NAME} --privsep=0 --expire ${TOKEN_EXPIRE} --output-format=json
             " 2>/dev/null || true)"
             TOKEN="$(echo "$OUT" | jq -r '.value // empty' 2>/dev/null || true)"
             if [ -n "$TOKEN" ]; then
@@ -1008,8 +1009,11 @@ jobs:
             exit 1
           fi
           echo "::add-mask::$TOKEN_VALUE"
-          echo "PROXMOX_API_TOKEN_SECRET=$TOKEN_VALUE" >> "$GITHUB_ENV"
-          echo "PROXMOX_API_TOKEN_NAME=$TOKEN_NAME" >> "$GITHUB_ENV"
+          {
+            echo "PROXMOX_API_TOKEN_SECRET=$TOKEN_VALUE"
+            echo "PROXMOX_API_TOKEN_NAME=$TOKEN_NAME"
+            echo "PROXMOX_API_USER=ci-plan@pve"
+          } >> "$GITHUB_ENV"
           echo "node=$TOKEN_NODE" >> "$GITHUB_OUTPUT"
           echo "token_name=$TOKEN_NAME" >> "$GITHUB_OUTPUT"
 
@@ -1188,7 +1192,7 @@ jobs:
           # Both values arrive through the environment rather than being pasted
           # into the script text (see the mint step).
           timeout 30 tsh ssh --login=teleport-production "$PVE_NODE" \
-            "sudo pveum user token remove ansible-ci@pve $PVE_TOKEN_NAME" || true
+            "sudo pveum user token remove ci-plan@pve $PVE_TOKEN_NAME" || true
 
       - name: Generate summary
         if: ${{ always() }}
