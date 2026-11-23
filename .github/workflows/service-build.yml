@@ -391,7 +391,8 @@ jobs:
       - name: changed files
         if: ${{ github.event_name == 'pull_request' && inputs.docker-test-target == '' && inputs.test-command != '' }}
         run: |
-          files=$(git diff --name-only --diff-filter=ACMR HEAD^1 HEAD | tr '\n' ' ')
+          # -z: real names (without it git quotes and octal-escapes non-ASCII ones); NUL, CR and LF -> space.
+          files=$(git diff -z --name-only --diff-filter=ACMR HEAD^1 HEAD | tr '\0\r\n' '   ')
           echo "CHANGED_FILES=$files" >> "$GITHUB_ENV"
           echo "changed files: $(wc -w <<<"$files" | tr -d ' ')"
 
