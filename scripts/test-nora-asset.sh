@@ -45,6 +45,7 @@ refused "download only"
 run "$root/t.zip" "$gh/t.tar.gz" "$(sum "$root/t.tar.gz")" mytool d/tool && fail "wrong sha256 passed"; refused "wrong sha256"
 [ -z "$(find "$root/tmp/nora-asset" -type f)" ] || fail "wrong sha256: the file stayed"
 run "$root/t.tar.gz" "$gh/t.tar.gz" "$(sum "$root/t.tar.gz")" mytool d/none && fail "missing member passed"; refused "missing member"
+[ -z "$(find "$root/tmp/nora-asset-bin" -type f)" ] || fail "missing member: a file stayed in the bin dir"
 for p in github/o/r/releases/latest/download/t.tar.gz npm/x "$gh/../../t.tar.gz" https://github.com/o/r/releases/download/v1/t; do
   run "$root/t.tar.gz" "$p" "$(sum "$root/t.tar.gz")" mytool d/tool && fail "path '$p' passed"; refused "path '$p'"
 done

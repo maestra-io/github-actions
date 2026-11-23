@@ -13,12 +13,15 @@ GITHUB_OUTPUT='' bash "$here/../security-scan/fetch-pinned.sh" "https://packages
 echo "file=$file" >> "$GITHUB_OUTPUT"
 [ -n "${ASSET_BIN:-}" ] || exit 0
 bindir="$RUNNER_TEMP/nora-asset-bin"; mkdir -p "$bindir"
+# To a new file, then in place: a failed extraction leaves an earlier binary of that name alone.
+new=$(mktemp "$bindir/.new.XXXXXX"); trap 'rm -f "$new"' EXIT
 case "${ASSET_MEMBER:-}:$ASSET_PATH" in
-  :*) cp "$file" "$bindir/$ASSET_BIN" ;;
+  :*) cp "$file" "$new" ;;
   *.zip) python3 -I -c 'import sys,zipfile; sys.stdout.buffer.write(zipfile.ZipFile(sys.argv[1]).read(sys.argv[2]))' \
-           "$file" "$ASSET_MEMBER" > "$bindir/$ASSET_BIN" ;;
-  *) tar -xOf "$file" "$ASSET_MEMBER" > "$bindir/$ASSET_BIN" ;;
+           "$file" "$ASSET_MEMBER" > "$new" ;;
+  *) tar -xOf "$file" "$ASSET_MEMBER" > "$new" ;;
 esac
-[ -s "$bindir/$ASSET_BIN" ] || fail "$ASSET_MEMBER in ${file##*/} is empty"
-chmod 0755 "$bindir/$ASSET_BIN"
+[ -s "$new" ] || fail "$ASSET_MEMBER in ${file##*/} is empty"
+chmod 0755 "$new"
+mv "$new" "$bindir/$ASSET_BIN"
 echo "$bindir" >> "$GITHUB_PATH"
