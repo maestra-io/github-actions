@@ -7,10 +7,11 @@
                                            when there is one, else 0
   pr-diff.py opengrep <diff.json> <base.json> <base root> [<head root>]
                                            print the diff-scan (--baseline-commit) findings that are
-                                           new; exit 1 when there is one, else 0. In a file the scan
+                                           new; exit 1 when there is one, else 0. Old: the full scan
                                            of the base copies (<base.json>, paths under <base root>)
-                                           could not fully parse, a finding whose matched lines the
-                                           base copy has verbatim is old
+                                           has the same rule, path and matched lines; or that scan
+                                           could not fully parse the file and the base copy has the
+                                           matched lines verbatim
   pr-diff.py --self-test
   Exit 2 on an unreadable report (a crash never reads as 0 or 1).
 
@@ -22,11 +23,13 @@ replaced by another of the same length is new (trivy's redacted Match cannot tel
 is the fallback when the file cannot be read). Secret values are never printed or stored: only
 the hash, the rule, the file and the line number.
 
-opengrep: --baseline-commit drops a head match only when the scan of the base matches the same
-lines, so in a file opengrep cannot parse at the base (1.33.1 stops at `RUN --mount=...,rw` and
-skips the lines after it) every match reads as new, even on lines the PR never touched. There
-the base copy's text stands in for its matches: a finding whose matched lines (whitespace-
-normalised) the base copy has in a row is old.
+opengrep: --baseline-commit drops a head match only when its own scan of the base matches the
+same lines. That scan can miss one the full scan finds (a taint match on a slow runner: the
+moved sqli of test-security-scan-pr.sh case 4, 23.11.2026), and in a file opengrep cannot parse
+at the base (1.33.1 stops at `RUN --mount=...,rw` and skips the lines after it) it has none, so
+every match reads as new. A full scan of the base copies is the reference: the same (rule, path,
+matched lines) there is old; in a file it could not fully parse, the base copy's text stands in
+for its matches (matched lines, whitespace-normalised, present in a row).
 """
 import hashlib, json, os, sys
 
@@ -58,13 +61,16 @@ def findings(path, root=None):
 
 
 def norm_lines(root, path):
-    """Whitespace-normalised lines of root/path; None when it resolves outside root (a report path is data)."""
+    """Whitespace-normalised lines of root/path; None when unreadable or outside root (a report path is data)."""
     root = os.path.realpath(root)
     full = os.path.realpath(os.path.join(root, path))
     if not full.startswith(root + os.sep):
         return None
-    with open(full, "rb") as f:
-        return [b" ".join(l.split()) for l in f.read().split(b"\n")]
+    try:
+        with open(full, "rb") as f:
+            return [b" ".join(l.split()) for l in f.read().split(b"\n")]
+    except OSError:
+        return None
 
 
 def opengrep_new(diff_path, base_path, base_root, head_root="."):
@@ -74,19 +80,24 @@ def opengrep_new(diff_path, base_path, base_root, head_root="."):
     with open(base_path) as f:
         base = json.load(f)
     base_root = os.path.abspath(base_root)
-    unparsed = {os.path.relpath(os.path.abspath(e["path"]), base_root)
-                for e in base.get("errors") or [] if e.get("path")}
+    rel = lambda p: os.path.relpath(os.path.abspath(p), base_root)
+    unparsed = {rel(e["path"]) for e in base.get("errors") or [] if e.get("path")}
+    def matched(root, path, r):
+        return tuple((norm_lines(root, path) or [])[r["start"]["line"] - 1:r["end"]["line"]])
+    old = {(r["check_id"], rel(r["path"]), matched(base_root, rel(r["path"]), r)) for r in base.get("results") or []}
     new = []
     for r in diff.get("results") or []:
-        path, start, end = os.path.normpath(r["path"]), r["start"]["line"], r["end"]["line"]
-        if path in unparsed:
+        path = os.path.normpath(r["path"])
+        want = matched(head_root, path, r)
+        if want and (r["check_id"], path, want) in old:
+            continue  # the full scan of the base has the same match: --baseline-commit missed it
+        if want and path in unparsed:
             # ponytail: same text = old, so a PR that only removes the context (a USER line above
             # an old CMD) passes in such a file; the full scan of main still reports it
-            want = (norm_lines(head_root, path) or [])[start - 1:end]
             had = norm_lines(base_root, path) or []
-            if want and any(had[i:i + len(want)] == want for i in range(len(had) - len(want) + 1)):
+            if any(tuple(had[i:i + len(want)]) == want for i in range(len(had) - len(want) + 1)):
                 continue
-        new.append((r["check_id"], path, start))
+        new.append((r["check_id"], path, r["start"]["line"]))
     return new, unparsed
 
 
@@ -176,6 +187,9 @@ def self_test():
     parsed = put("og-base-parsed.json", {"results": [], "errors": []})
     assert opengrep_new(diff_, unparsed, ob, oh)[0] == [("missing-user", "Dockerfile", 5), ("sqli", "app.py", 3)]
     assert opengrep_new(diff_, parsed, ob, oh)[0] == [("missing-user", "Dockerfile", 4), ("missing-user", "Dockerfile", 5), ("sqli", "app.py", 3)]
+    # the full scan of the base has the old CMD (line 3 there), the baseline did not drop it
+    full_base = put("og-base-full.json", {"results": [og("missing-user", os.path.join(ob, "Dockerfile"), 3)], "errors": []})
+    assert opengrep_new(diff_, full_base, ob, oh)[0] == [("missing-user", "Dockerfile", 5), ("sqli", "app.py", 3)]
     assert main(["opengrep", diff_, unparsed, ob, oh]) == 1
     # a report path that leaves the roots is never read: the same file on both sides would read as old
     ox = os.path.join(d, "ox")
