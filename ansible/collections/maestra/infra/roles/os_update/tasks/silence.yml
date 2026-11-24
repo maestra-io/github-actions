@@ -79,7 +79,7 @@
          | selectattr('createdBy', 'search', '^gha-os-update')
          | rejectattr('comment', 'search', 'host=' ~ inventory_hostname ~ ' ')
          | map(attribute='comment')
-         | select('search', 'contour=' ~ os_update_contour ~ ' |^(?!.*contour=)')
+         | select('search', 'contour=(' ~ (os_update_contour_peers | default(os_update_contour)) ~ ') |^(?!.*contour=)')
          | list }}
 
 - name: Lost the race — expire our just-created silences before aborting
