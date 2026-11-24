@@ -7,7 +7,7 @@
 #   jobs:
 #     checks:
 #       uses: maestra-io/github-actions/.github/workflows/pr-checks.yml@main
-#       permissions: { contents: read }
+#       permissions: { contents: read, id-token: write } # its tools come from nora
 #
 # The secret scan is not here and not in any shared workflow: it is each repo's own
 # workflow calling gitleaks.yml (gitleaks/gitleaks-action):
@@ -123,6 +123,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+      id-token: write # nora OIDC token: kustomize, kyverno, helm, kubeconform
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
       # The test merge commit and its first parent, the base branch tip (HEAD^1). No
@@ -136,7 +137,9 @@ jobs:
           repository: maestra-io/github-actions
           ref: ${{ inputs.ref }}
           path: .pr-checks
-          sparse-checkout: pr-checks
+          sparse-checkout: |
+            pr-checks
+            security-scan
           persist-credentials: false
       - name: changed files
         run: |
@@ -164,9 +167,9 @@ jobs:
           if [ ! -d "$KPATH" ] || ! grep -qz "^${KPATH%/}/" "$RUNNER_TEMP/changed"; then
             echo "nothing changed under $KPATH"; exit 0
           fi
-          curl -fsSL -o "$RUNNER_TEMP/kustomize.tar.gz" \
-            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
-          echo "${KUSTOMIZE_SHA256}  $RUNNER_TEMP/kustomize.tar.gz" | sha256sum -c -
+          bash .pr-checks/security-scan/fetch-pinned.sh \
+            "https://packages.maestra.io/github/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" \
+            "$KUSTOMIZE_SHA256" "$RUNNER_TEMP/kustomize.tar.gz"
           tar -xzf "$RUNNER_TEMP/kustomize.tar.gz" -C "$RUNNER_TEMP" kustomize
           failed=0
           for ep in $(bash .pr-checks/pr-checks/kustomize-entry-points.sh "$KPATH"); do
@@ -224,9 +227,9 @@ jobs:
           python3 -I "$check" list "$policy" "$RUNNER_TEMP/head.yaml" "$RUNNER_TEMP/base.yaml" > "$RUNNER_TEMP/images"
           if [ ! -s "$RUNNER_TEMP/images" ]; then echo "no new image the policy covers"; exit 0; fi
           cat "$RUNNER_TEMP/images"
-          curl -fsSL -o "$RUNNER_TEMP/kyverno.tar.gz" \
-            "https://github.com/kyverno/kyverno/releases/download/${KYVERNO_VERSION}/kyverno-cli_${KYVERNO_VERSION}_linux_x86_64.tar.gz"
-          echo "${KYVERNO_SHA256}  $RUNNER_TEMP/kyverno.tar.gz" | sha256sum -c -
+          bash .pr-checks/security-scan/fetch-pinned.sh \
+            "https://packages.maestra.io/github/kyverno/kyverno/releases/download/${KYVERNO_VERSION}/kyverno-cli_${KYVERNO_VERSION}_linux_x86_64.tar.gz" \
+            "$KYVERNO_SHA256" "$RUNNER_TEMP/kyverno.tar.gz"
           tar -xzf "$RUNNER_TEMP/kyverno.tar.gz" -C "$RUNNER_TEMP" kyverno
           flag=()
           if [ "$ENFORCE" = true ]; then flag=(--enforce); fi
@@ -244,12 +247,13 @@ jobs:
           # chart (dragonfly's `networkPolicy: enabled`) gets past this grep; the script then
           # finds no commons-app/commons-app-init/postgres block and says so.
           if ! grep -rqE '^\s*networkPolicy:' "$KPATH"; then echo "no networkPolicy key under $KPATH"; exit 0; fi
-          curl -fsSL -o "$RUNNER_TEMP/helm.tar.gz" "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
-          echo "${HELM_SHA256}  $RUNNER_TEMP/helm.tar.gz" | sha256sum -c -
+          # nora's raw store (maestra-io/dockerfiles .github/raw-uploads/helm.txt holds the versions)
+          bash .pr-checks/security-scan/fetch-pinned.sh \
+            "https://packages.maestra.io/raw/src/get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" "$HELM_SHA256" "$RUNNER_TEMP/helm.tar.gz"
           tar -xzf "$RUNNER_TEMP/helm.tar.gz" -C "$RUNNER_TEMP" --strip-components=1 linux-amd64/helm
-          curl -fsSL -o "$RUNNER_TEMP/kubeconform.tar.gz" \
-            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
-          echo "${KUBECONFORM_SHA256}  $RUNNER_TEMP/kubeconform.tar.gz" | sha256sum -c -
+          bash .pr-checks/security-scan/fetch-pinned.sh \
+            "https://packages.maestra.io/github/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            "$KUBECONFORM_SHA256" "$RUNNER_TEMP/kubeconform.tar.gz"
           tar -xzf "$RUNNER_TEMP/kubeconform.tar.gz" -C "$RUNNER_TEMP" kubeconform
           # The chart comes from ECR with the runner's instance role (read only, the same
           # login the test job uses for a private base image). A fresh RunsOn instance can
