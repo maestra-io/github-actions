@@ -26,8 +26,8 @@
 # nora is asked with `Cache-Control: only-if-cached`, so the check never starts a
 # digest's clock. Held = red, with the UTC time it matures; re-run after it. nora down or
 # erroring = red with "nora check error" (fail closed). The only bypass is a digest
-# exception in fluxcd iota/us-iota-lw-kube-infra/nora/quarantine-exceptions.yaml, which
-# nora itself honors.
+# exception in fluxcd iota/us-iota-lw-kube-infra/nora/quarantine-exceptions.yaml, decided by
+# Igor Kudrin only (maestra-io/skillz plugins/delivery/rules/quarantine.md).
 #
 # Inputs:
 #   packages-url       nora (default https://packages.maestra.io).
