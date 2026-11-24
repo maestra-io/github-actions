@@ -344,13 +344,20 @@ A cancelled runner never executes `always`. Three layers, of which only the firs
 
    | consumer | `os_update_contour` | `os_update_contour_peers` |
    |---|---|---|
-   | kube nodes | `<triplet>_kube` | `<triplet>_kube\|<triplet>_gw` |
-   | NAT and burst gateways | `<triplet>_gw` | `<triplet>\|<triplet>_gw\|<triplet>_kube` |
-   | haproxy farms | `<triplet>` (default) | `<triplet>\|<triplet>_gw` |
+   | NAT and burst gateways | `<triplet>` (default) | `<triplet>\|<triplet>_lb\|<triplet>_kube` |
+   | haproxy farms | `<triplet>_lb` | `<triplet>\|<triplet>_lb` |
+   | kube nodes | `<triplet>_kube` | `<triplet>\|<triplet>_kube` |
 
-   Kube nodes and gateways list each other: a rebooting node drops its BGP session and the
-   gateway's verify wants every session Established. A kube node and a haproxy host can be
-   out at the same time.
+   Kube nodes and gateways wait for each other: a rebooting node drops its BGP session and
+   the gateway's verify wants every session Established. A kube node and a haproxy host can
+   be out at the same time.
+
+   Rollout order matters, because a host with a new contour name is invisible to a guard
+   that still matches only the plain triplet. The consumer that keeps the plain name and
+   waits for everyone (the gateways) gets its peers list FIRST, and no run of it started
+   before that change may still be alive. Only then do the others take their own names, in
+   any order. A consumer never takes a new name in the same step in which the consumers that
+   must wait for it learn that name.
 2. **The on-disk marker** `/var/lib/os-update/drained.json` — a re-run reads it, knows the
    host is already drained, and finishes the job idempotently.
 3. **`OsUpdateHostStrandedDrain`** fires on the marker's metric outliving the silence

@@ -143,13 +143,13 @@ os_update_allow_single_node: false
 os_update_contour: "{{ (os_update_farm.split('_'))[:3] | join('_') }}"
 
 # Contours whose open drain windows hold this host back, as a regex alternation
-# (anchored by the guard: `contour=(<this>) `). Default: only its own. A consumer
-# whose hosts are redundant independently of the rest of the contour takes its own
-# contour name and lists here the ones it still must not overlap. Kube nodes and
-# haproxy hosts do not depend on each other; a kube node and a NAT gateway do (the
-# node's BGP session drops on its reboot and the gateway's verify wants all of them
-# Established), so each lists the other. A window without a `contour=` token always
-# holds. The list replaces the default: it must name the host's own contour.
+# (anchored by the guard: `contour=(<this>) `). Default: only its own. The list
+# replaces the default, so it must name the host's own contour. A consumer whose
+# hosts are redundant independently of the rest of the contour takes its own contour
+# name: haproxy `<triplet>_lb`, kube `<triplet>_kube`. Gateways keep the plain triplet
+# and list all three, and kube lists the plain triplet: a rebooting node drops its BGP
+# session and the gateway's verify wants every session Established. A window without
+# a `contour=` token always holds. Rollout order: docs/ansible-os-update.md.
 os_update_contour_peers: "{{ os_update_contour }}"
 
 # Let `mode: stage` reclaim /boot when the plan guard cannot be met. Turning this

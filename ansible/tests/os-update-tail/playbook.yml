@@ -44,7 +44,7 @@
       vars:
         os_update_am_url: "{{ am }}/drain"
         os_update_contour: us_test_lw_kube
-        os_update_contour_peers: us_test_lw_kube|us_test_lw_gw
+        os_update_contour_peers: us_test_lw_kube|us_test_lw_lb
 
     - name: A drain in a listed peer contour DOES block it
       block:
@@ -52,8 +52,8 @@
           ansible.builtin.include_tasks: "{{ role_tasks }}/guards.yml"
           vars:
             os_update_am_url: "{{ am }}/drain"
-            os_update_contour: us_test_lw_gw
-            os_update_contour_peers: us_test_lw_gw|us_test_lw
+            os_update_contour: us_test_lw_kube
+            os_update_contour_peers: us_test_lw|us_test_lw_kube
         - name: Unreachable if the guard passed
           ansible.builtin.fail:
             msg: the guard let a drain through next to a peer contour's
