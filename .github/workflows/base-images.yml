@@ -1,7 +1,8 @@
 # Reusable pull-request check: no base image nora still holds in quarantine
 # (issues-maestra#1649). Renovate holds an external image 3 days only where the registry
-# gives a release date (Docker Hub); for mcr/ghcr/quay/... the 3-day control is nora's
-# quarantine, which runs in `observe`, so nothing else blocks a digest built hours ago.
+# gives a release date (Docker Hub); for mcr/ghcr/quay/... the 3-day control is nora's docker
+# quarantine, `enforce` since 2026-11-23 13:57Z (fluxcd#30428): a held digest that merges gets
+# 403 in the build or on the node, so it is stopped here, on the PR.
 # dotnet-service-build.yml and service-build.yml call it on pull_request and gate `pr gate`
 # on it; this repo's selftest runs it on its own PRs (mcf-build's DEPS_BASE lives here).
 # A repo with its own workflows calls it directly (it needs id-token for the nora token):
@@ -19,7 +20,7 @@
 # and every image a changed Kubernetes manifest, kustomization or Helm values file names
 # (`image:`/`*Image:`, `{repository, tag|digest}`, kustomize `images:`), upstream names
 # asked as fluxcd's Kyverno use-nora-pull-through rewrites them (a held digest there is
-# ImagePullBackOff once nora enforces). mcf-build calls it too.
+# ImagePullBackOff). mcf-build calls it too.
 # It runs on every PR of the caller, whatever files it touches (a compose-only Renovate PR
 # included). Unchanged images never turn a PR red, and it never runs on a push:
 # a default branch that already carries a held digest builds as before.

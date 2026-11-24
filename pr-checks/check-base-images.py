@@ -6,9 +6,10 @@ Usage: NORA_TOKEN=<token> check-base-images.py <head rev> <base rev>   (run in t
        check-base-images.py --self-test
 
 Renovate holds an external image 3 days only where the registry gives a release date
-(Docker Hub). For mcr/ghcr/quay/... the 3-day control is nora's quarantine, and under
-`observe` nothing blocks: a 15-hour-old .NET digest reached ~100 repos in one day
-(issues-maestra#1649). This check is that block, on pull requests only.
+(Docker Hub). For mcr/ghcr/quay/... the 3-day control is nora's quarantine: `enforce` for
+docker since 2026-11-23 13:57Z (fluxcd#30428), so a held digest that merges gets 403 in the
+build or on the node. This check stops it before the merge, on pull requests only
+(issues-maestra#1649).
 
 Every `FROM`, `COPY/ADD --from=` and `RUN --mount=...,from=` image of every Dockerfile
 in the PR head (Dockerfile*, *.Dockerfile, *.dockerfile, Containerfile*) is read, global
