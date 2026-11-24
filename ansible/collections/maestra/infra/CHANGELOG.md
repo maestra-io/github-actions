@@ -7,6 +7,13 @@ finding, and because the `os_update` contract is shared across four repos:
 anything that changes a variable name or a hook expectation has to be findable
 from one place.
 
+## 1.4.7
+
+- `os_update`: new `os_update_contour_peers`, a regex of contours whose open drain
+  windows hold a host (default: its own `os_update_contour`, so nothing changes for a
+  consumer that sets neither). A consumer with its own contour name runs next to the
+  rest of the contour: kube nodes and haproxy hosts no longer wait for each other.
+
 ## 1.4.6
 
 - `wireguard_burst`: `Add the FRR signing key` is skipped in a `--check` that

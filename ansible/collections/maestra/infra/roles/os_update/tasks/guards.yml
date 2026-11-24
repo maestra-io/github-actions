@@ -34,6 +34,9 @@
   # touch disjoint fleets and run in parallel by design. A LEGACY silence whose
   # comment carries no `contour=` token is treated as conflicting (fail safe)
   # until it expires or its run finishes on new code.
+  # os_update_contour_peers (defaults/main.yml) is the regex of contours whose windows
+  # hold this host: its own by default, so a consumer with its own contour name runs
+  # next to the others and still waits for the ones it lists.
   # The self-exclusion pattern is the PLAIN string `host=<me> ` with a trailing space —
   # not `host=<me>(\s|$)`. This is YAML: inside a folded scalar a backslash is literal,
   # so `(\\s|$)` reached the regex engine as an escaped backslash and never matched.
@@ -53,7 +56,7 @@
          | selectattr('createdBy', 'search', '^gha-os-update')
          | rejectattr('comment', 'search', 'host=' ~ inventory_hostname ~ ' ')
          | map(attribute='comment')
-         | select('search', 'contour=' ~ os_update_contour ~ ' |^(?!.*contour=)')
+         | select('search', 'contour=(' ~ (os_update_contour_peers | default(os_update_contour)) ~ ') |^(?!.*contour=)')
          | list }}
   when: (os_update_am_url | default('')) | length > 0
 

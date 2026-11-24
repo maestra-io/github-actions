@@ -336,6 +336,13 @@ A cancelled runner never executes `always`. Three layers, of which only the firs
    (`gha-os-update`) silence — a tail does not count. (The on-host metric is *not* usable as the interlock: it disappears
    during the reboot, so `count(...) == 0` evaluates over an empty vector and fails **open**
    in exactly the window it exists for.)
+   "The contour" is `os_update_contour` (default: the `region_environment_site` triplet of
+   the farm name), and the windows that hold a host are those of `os_update_contour_peers`
+   (a regex, default: its own contour). A consumer sets both in its `vars.yml` to run next
+   to the rest of the contour: kube nodes use `<triplet>_kube` and NAT gateways `<triplet>_gw`,
+   each listing the other (a rebooting node drops its BGP session and the gateway's verify
+   wants every session Established), while haproxy farms keep the triplet and list `_gw`
+   only. A kube node and a haproxy host can then be out at the same time.
 2. **The on-disk marker** `/var/lib/os-update/drained.json` — a re-run reads it, knows the
    host is already drained, and finishes the job idempotently.
 3. **`OsUpdateHostStrandedDrain`** fires on the marker's metric outliving the silence
