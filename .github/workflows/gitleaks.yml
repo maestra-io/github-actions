@@ -1,6 +1,5 @@
-# Reusable secret scan of a pull request's commits with the official
-# gitleaks/gitleaks-action. One job, `gitleaks` (the check is `<caller job> / gitleaks`),
-# skipped outside pull_request.
+# Reusable secret scan of a pull request's commits with the gitleaks CLI. One job,
+# `gitleaks` (the check is `<caller job> / gitleaks`), skipped outside pull_request.
 #
 # A second job, `actions pinned` (`<caller job> / actions pinned`), fails when a line the
 # PR adds or changes references an action by a tag or branch instead of a full commit
@@ -11,53 +10,47 @@
 # policy (slsa-github-generator even requires its tag). It rides on this workflow
 # because every repo already calls it.
 #
-# What is scanned: gitleaks-action lists the PR's commits through the API and runs
-# `gitleaks detect --log-opts="--no-merges --first-parent <first>^..<last>"`, so only
-# what the PR adds is scanned, never the whole tree. The checkout is full depth
-# (fetch-depth: 0) because that range reaches back to the parent of the PR's first
-# commit. The action reads only the first page of that list (30 commits), so a PR
-# with more than 30 commits (an upstream sync merged with a merge commit) is scanned
-# by the gitleaks CLI instead, over the same commits: `--no-merges --first-parent
-# <base sha>..<head sha>`, the sha256-pinned release of GITLEAKS_VERSION, the same
-# config and `.gitleaksignore`; findings are redacted in the job log, no PR review
-# comments or SARIF artifact on that path. Merge commits and side branches merged into the PR are not
-# scanned (`--first-parent --no-merges` is fixed in the action). Red on a finding; the job summary
-# lists the findings (redacted), each one gets a review comment on the PR, and the
-# SARIF report is uploaded as a run artifact (the action's defaults).
+# What is scanned: the PR's commits, `gitleaks git --log-opts="--no-merges --first-parent
+# HEAD^1..HEAD^2"` of the merge commit GitHub checks out (HEAD^1 = base, HEAD^2 = PR head),
+# any number of them, never the whole tree. Merge commits and side branches merged into the
+# PR are not scanned here. Red on a finding: an annotation on the file and line and a job
+# summary with the fingerprints, the secret itself always redacted.
+#
+# Binaries: gitleaks and pinact releases pinned by sha256, nothing runs before the check.
+# A caller that grants `id-token: write` gets them from nora (packages.maestra.io, which
+# holds a GitHub release for 3 days); any other caller, and a fork PR, gets the same sha256
+# from GitHub Releases. This workflow must NOT ask for id-token itself: a caller that does
+# not grant it would fail at startup (github-actions#375). selftest.yml runs both ways on
+# every PR here, so a bump of a pin younger than nora's 3 days is red before it merges.
 #
 # Usage: every repo enables the scan with its own PR workflow; no shared workflow
 # of this repo (dotnet-service-build, service-build, mcf-build, the package
 # publishers, helm-chart, frontend-codegen, terraform-pr, ansible-pr, pr-checks)
-# runs it. GITLEAKS_LICENSE is an org secret (gitleaks-action exits 1 on an org repo
-# without it); `secrets: inherit` passes it:
+# runs it:
 #
 # .github/workflows/gitleaks.yml in the repo:
 #   name: gitleaks
 #   on: pull_request
-#   permissions: { contents: read, pull-requests: write }
+#   permissions: { contents: read, id-token: write }
 #   jobs:
 #     gitleaks:
 #       uses: maestra-io/github-actions/.github/workflows/gitleaks.yml@main
-#       secrets: inherit
 #
-# Permissions come from the calling workflow (this one declares none):
-# pull-requests: write for the PR's commit list and the review comments.
+# Permissions come from the calling workflow (this one declares none): contents: read, and
+# id-token: write for nora. `pull-requests: write` and GITLEAKS_LICENSE, which
+# gitleaks-action needed, are no longer used; the secret stays declared because callers
+# pass it.
 #
 # Config: only the central gitleaks/gitleaks.toml of this repo (gitleaks' default
-# rules plus allowlists that apply to any repo), passed as GITLEAKS_CONFIG. A repo's
-# own gitleaks config is not read: a project-specific allowlist is added centrally.
+# rules plus allowlists that apply to any repo). A repo's own gitleaks config is not
+# read: a project-specific allowlist is added centrally.
 #
 # A single accepted finding goes to `.gitleaksignore` at the repo root, one
-# fingerprint `<commit>:<file>:<rule-id>:<line>` per line (the job log prints it; the
-# summary lists its parts).
-#
-# gitleaks-action downloads the gitleaks release GITLEAKS_VERSION names from github.com
-# itself (no URL or checksum input): the version is pinned, never `latest`, so a new
-# release reaches every repo only through a reviewed bump here.
+# fingerprint `<commit>:<file>:<rule-id>:<line>` per line (the job summary prints it).
 #
 # Inputs:
-#   ref   ref of maestra-io/github-actions the central config is read from (default
-#         main; set it when testing a branch of this repo).
+#   ref   ref of maestra-io/github-actions the central config and fetch-pinned.sh are read
+#         from (default main; set it when testing a branch of this repo).
 
 name: gitleaks
 
@@ -68,8 +61,9 @@ on:
         type: string
         default: main
     secrets:
+      # DEPRECATED, ignored: callers still pass it (an undeclared secret is refused).
       GITLEAKS_LICENSE:
-        required: true
+        required: false
 
 jobs:
   gitleaks:
@@ -96,42 +90,55 @@ jobs:
           repository: maestra-io/github-actions
           ref: ${{ inputs.ref }}
           path: .github-actions
-          sparse-checkout: gitleaks
+          sparse-checkout: |
+            gitleaks
+            security-scan
           persist-credentials: false
-      # gitleaks-action scans the first 30 commits of a PR and no more (one page of
-      # the commits API), so a longer PR goes through the CLI step below instead.
-      - if: ${{ github.event.pull_request.commits <= 30 }}
-        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
-          GITLEAKS_CONFIG: .github-actions/gitleaks/gitleaks.toml
-      - name: gitleaks CLI (PR longer than 30 commits)
-        if: ${{ github.event.pull_request.commits > 30 }}
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - name: Install gitleaks (sha256-pinned)
         run: |
           set -euo pipefail
-          curl -fsSL -o "$RUNNER_TEMP/gitleaks.tar.gz" \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum -c -
+          rel="gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          bash .github-actions/security-scan/fetch-pinned.sh "https://packages.maestra.io/github/$rel" \
+            "$GITLEAKS_SHA256" "$RUNNER_TEMP/gitleaks.tar.gz" "https://github.com/$rel"
           tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+      - name: gitleaks over the PR's commits
+        env:
+          GITLEAKS: ${{ runner.temp }}/gitleaks
+          GITLEAKS_TOML: .github-actions/gitleaks/gitleaks.toml
+        run: |
+          # >>> gitleaks-scan (scripts/test-gitleaks-scan.sh runs this block)
+          set -euo pipefail
           # gitleaks exits 0 on a range git cannot resolve: resolve it first.
-          n=$(git rev-list --count --no-merges --first-parent "${BASE_SHA}..${HEAD_SHA}")
-          echo "scanning ${n} first-parent non-merge commits of ${BASE_SHA}..${HEAD_SHA}"
-          # The commits gitleaks-action would scan (no merges, first parent), all of them.
-          "$RUNNER_TEMP/gitleaks" git . --config .github-actions/gitleaks/gitleaks.toml \
-            --log-opts="--no-merges --first-parent ${BASE_SHA}..${HEAD_SHA}" \
-            --redact --verbose --exit-code 1
+          if ! base=$(git rev-parse --verify -q 'HEAD^1') || ! head=$(git rev-parse --verify -q 'HEAD^2'); then
+            echo "::error::HEAD is not the PR's merge commit"; exit 1
+          fi
+          n=$(git rev-list --count --no-merges --first-parent "${base}..${head}")
+          echo "scanning ${n} first-parent non-merge commits of ${base}..${head}"
+          report=$(mktemp)
+          rc=0
+          "$GITLEAKS" git . --no-banner --config "$GITLEAKS_TOML" \
+            --log-opts="--no-merges --first-parent ${base}..${head}" \
+            --redact=100 --verbose --exit-code 2 --report-format json --report-path "$report" || rc=$?
+          [ "$rc" -ne 0 ] || exit 0
+          [ "$rc" -eq 2 ] || { echo "::error::gitleaks failed (exit $rc)"; exit "$rc"; }
+          # Rule, place and fingerprint only: no Secret, Match or author field is printed.
+          jq -r 'def esc: gsub("%";"%25") | gsub("\r";"%0D") | gsub("\n";"%0A"); def prop: esc | gsub(":";"%3A") | gsub(",";"%2C");
+            .[] | "::error file=\(.File | prop),line=\(.StartLine),title=gitleaks \(.RuleID | prop)::Secret in commit \(.Commit). A real one: rotate it now. A false positive: add to .gitleaksignore: \(.Fingerprint | esc)"' "$report"
+          {
+            echo "### gitleaks: secrets in this PR's commits"
+            echo 'Rotate a real secret now: removing the line does not remove it from the commit. Fingerprints for .gitleaksignore (false positives only):'
+            echo '```'
+            jq -r '.[].Fingerprint | gsub("[\r\n`]";"?")' "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+          # <<< gitleaks-scan
 
   actions-pinned:
     name: actions pinned
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: runs-on=${{ github.run_id }}-actions-pinned/pool=small
     timeout-minutes: 5
-    permissions:
-      contents: read
     env:
       PINACT_VERSION: 5.0.1
       PINACT_SHA256: 12500c0fff5db94a0155e2e76ed959d1dc0e899056ee168d8fb7b4840e7c04f0
@@ -142,12 +149,19 @@ jobs:
         with:
           fetch-depth: 2
           persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: maestra-io/github-actions
+          ref: ${{ inputs.ref }}
+          path: .github-actions
+          sparse-checkout: security-scan
+          persist-credentials: false
       - name: pinact --check (lines this PR changes)
         run: |
           set -euo pipefail
-          curl -fsSL -o "$RUNNER_TEMP/pinact.tar.gz" \
-            "https://github.com/suzuki-shunsuke/pinact/releases/download/v${PINACT_VERSION}/pinact_linux_amd64.tar.gz"
-          echo "${PINACT_SHA256}  $RUNNER_TEMP/pinact.tar.gz" | sha256sum -c -
+          rel="suzuki-shunsuke/pinact/releases/download/v${PINACT_VERSION}/pinact_linux_amd64.tar.gz"
+          bash .github-actions/security-scan/fetch-pinned.sh "https://packages.maestra.io/github/$rel" \
+            "$PINACT_SHA256" "$RUNNER_TEMP/pinact.tar.gz" "https://github.com/$rel"
           tar -xzf "$RUNNER_TEMP/pinact.tar.gz" -C "$RUNNER_TEMP" pinact
           cat > "$RUNNER_TEMP/pinact.yaml" <<'YAML'
           version: 3

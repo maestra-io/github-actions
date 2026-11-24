@@ -12,6 +12,8 @@ on:
     paths:
       - ".github/workflows/security-scan-selftest.yml"
       - ".github/workflows/security-scan.yml"
+      - ".github/workflows/gitleaks.yml"
+      - "scripts/test-gitleaks-scan.sh"
       - "security-scan/**"
       - "nora-session/**"
       - "gitleaks/**"
@@ -85,6 +87,8 @@ jobs:
           if grep -E 'mirror\.gcr\.io|ghcr\.io/aquasecurity|repo\.maven\.apache\.org|repo1\.maven\.org' "$d/log"; then exit 1; fi
           if grep '\[pom\] Failed to fetch' "$d/log"; then exit 1; fi
           jq -e '[.Results[]?.Vulnerabilities[]? | select(.VulnerabilityID == "CVE-2022-42889")] | length > 0' "$d/out.json"
+      - name: gitleaks.yml scan (seeded secret, clean, ignored, long PR, bad range)
+        run: GITLEAKS="$RUNNER_TEMP/gitleaks" GITLEAKS_TOML="$PWD/gitleaks/gitleaks.toml" bash scripts/test-gitleaks-scan.sh
       - name: PR mode cases
         env:
           TRIVY_DISABLE_VEX_NOTICE: "true"
