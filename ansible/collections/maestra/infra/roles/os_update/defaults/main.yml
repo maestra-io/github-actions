@@ -149,7 +149,7 @@ os_update_contour: "{{ (os_update_farm.split('_'))[:3] | join('_') }}"
 # haproxy hosts do not depend on each other; a kube node and a NAT gateway do (the
 # node's BGP session drops on its reboot and the gateway's verify wants all of them
 # Established), so each lists the other. A window without a `contour=` token always
-# holds.
+# holds. The list replaces the default: it must name the host's own contour.
 os_update_contour_peers: "{{ os_update_contour }}"
 
 # Let `mode: stage` reclaim /boot when the plan guard cannot be met. Turning this

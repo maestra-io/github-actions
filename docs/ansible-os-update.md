@@ -338,11 +338,19 @@ A cancelled runner never executes `always`. Three layers, of which only the firs
    in exactly the window it exists for.)
    "The contour" is `os_update_contour` (default: the `region_environment_site` triplet of
    the farm name), and the windows that hold a host are those of `os_update_contour_peers`
-   (a regex, default: its own contour). A consumer sets both in its `vars.yml` to run next
-   to the rest of the contour: kube nodes use `<triplet>_kube` and NAT gateways `<triplet>_gw`,
-   each listing the other (a rebooting node drops its BGP session and the gateway's verify
-   wants every session Established), while haproxy farms keep the triplet and list `_gw`
-   only. A kube node and a haproxy host can then be out at the same time.
+   (a regex, default: its own contour). The list replaces the default, so it must name the
+   host's own contour too, or two hosts of one farm stop waiting for each other. A consumer
+   sets both in its `vars.yml` to run next to the rest of the contour:
+
+   | consumer | `os_update_contour` | `os_update_contour_peers` |
+   |---|---|---|
+   | kube nodes | `<triplet>_kube` | `<triplet>_kube\|<triplet>_gw` |
+   | NAT and burst gateways | `<triplet>_gw` | `<triplet>\|<triplet>_gw\|<triplet>_kube` |
+   | haproxy farms | `<triplet>` (default) | `<triplet>\|<triplet>_gw` |
+
+   Kube nodes and gateways list each other: a rebooting node drops its BGP session and the
+   gateway's verify wants every session Established. A kube node and a haproxy host can be
+   out at the same time.
 2. **The on-disk marker** `/var/lib/os-update/drained.json` — a re-run reads it, knows the
    host is already drained, and finishes the job idempotently.
 3. **`OsUpdateHostStrandedDrain`** fires on the marker's metric outliving the silence
