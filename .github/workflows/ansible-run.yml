@@ -1126,8 +1126,35 @@ jobs:
           COMMON+=(${{ inputs.extra_run_args }})
 
           # no-hosts pre-flight guard
+          # >>> no-hosts-guard (ansible/tests/test-no-hosts-guard.sh runs this block)
+          # Reads `--list-hosts` output. 0 = some play has hosts, 3 = the inventory did
+          # not load, 4 = the target group is empty. A failed inventory script is not
+          # an empty group: ansible goes on with the implicit localhost and prints
+          # `hosts (0):`, with no "no hosts matched" in it. asbo Deploy 45429247024
+          # (24.11.2026): `tsh ls` timed out in the inventory script, the play matched
+          # nothing, the job stayed green under no_hosts_fail_on_apply and the host
+          # config was not written.
+          hosts_verdict() { # <file>
+            grep -qiE 'Failed to parse inventory|No inventory was parsed|Unable to parse .* as an inventory source' "$1" && return 3
+            grep -qiE 'no hosts (matched|to target)' "$1" && return 4
+            if grep -qE 'hosts \(0\):' "$1" && ! grep -qE 'hosts \([1-9][0-9]*\):' "$1"; then return 4; fi
+            return 0
+          }
+          # <<< no-hosts-guard
           ansible-playbook "$PLAYBOOK_INPUT" "${COMMON[@]}" --list-hosts > /tmp/list-hosts.txt 2>&1 || true
-          if grep -qiE 'no hosts (matched|to target)' /tmp/list-hosts.txt; then
+          hv=0; hosts_verdict /tmp/list-hosts.txt || hv=$?
+          if [ "$hv" -eq 3 ]; then
+            # One more try: the inventory is usually a Teleport query, and a lost dial is transient.
+            sleep 20
+            ansible-playbook "$PLAYBOOK_INPUT" "${COMMON[@]}" --list-hosts > /tmp/list-hosts.txt 2>&1 || true
+            hv=0; hosts_verdict /tmp/list-hosts.txt || hv=$?
+          fi
+          if [ "$hv" -eq 3 ]; then
+            tail -20 /tmp/list-hosts.txt | tee -a "$LOG_FILE"
+            echo "::error::the inventory did not load (twice); refusing to treat it as an empty group"
+            exit 1
+          fi
+          if [ "$hv" -eq 4 ]; then
             echo "No hosts matched" | tee -a "$LOG_FILE"
             if [ "${NO_HOSTS_FAIL_INPUT}" = "true" ] && [ "${CHECK_MODE_INPUT}" != "true" ]; then
               exit 1

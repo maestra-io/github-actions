@@ -327,6 +327,10 @@ jobs:
       - name: unreachable-only rerun gate (ansible-run.yml)
         run: bash ansible/tests/test-unreachable-retry.sh
 
+      # An inventory that did not load is a failure, never "an empty group".
+      - name: no-hosts guard (ansible-run.yml)
+        run: bash ansible/tests/test-no-hosts-guard.sh
+
       # Opt-in: a re-run of an old caller run must not apply its older commit.
       - name: refuse-ancestor gate (ansible-run.yml)
         run: bash ansible/tests/test-refuse-ancestor.sh
