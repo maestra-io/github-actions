@@ -20,8 +20,8 @@ what it holds and never asks the upstream, so this check never starts a digest's
 3-day clock itself (nora docker-only-if-cached). nora is the authority:
 - 200/403 + `x-nora-quarantine: new|pending`: held until `x-nora-quarantine-until`. Fails.
 - 200 + `mature`, `exception` (a digest exception in fluxcd
-  iota/us-iota-lw-kube-infra/nora/quarantine-exceptions.yaml, the break-glass), or no
-  header (quarantine off): passes.
+  iota/us-iota-lw-kube-infra/nora/quarantine-exceptions.yaml, decided by Igor Kudrin
+  only), or no header (quarantine off): passes.
 - 504: nora has never pulled it, its quarantine has not started. Fails.
 - 403 without the header: refused by another curation rule. Fails.
 - 404: no such image in nora. Fails.
@@ -106,6 +106,7 @@ ACCEPT = ", ".join([
 ])
 HELD = {"new", "pending"}
 EXCEPTIONS = "fluxcd iota/us-iota-lw-kube-infra/nora/quarantine-exceptions.yaml"
+RULES = "https://github.com/maestra-io/skillz/blob/main/plugins/delivery/rules/quarantine.md"
 VAR = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)(?::?([-+])([^}]*))?\}|([A-Za-z_][A-Za-z0-9_]*))")
 
 
@@ -484,8 +485,8 @@ def main(head, base, out=print):
             if kind == "held":
                 out(f"::error {at},title=base image in nora quarantine::{ref} is held by nora's 3-day "
                     f"quarantine until {detail}. This is a wait, not a breakage: re-run this check after "
-                    f"that time. Do not pin another digest to get past it; an emergency goes through a "
-                    f"digest exception in {EXCEPTIONS}")
+                    f"that time, or pin a mature digest. Do not pin another fresh digest to get past it; "
+                    f"exceptions are decided by Igor Kudrin only: {RULES}")
             elif kind == "unseen":
                 out(f"::error {at},title=base image unknown to nora::nora has never pulled {ref}: its 3-day "
                     f"quarantine has not started. Pull it once (docker pull {ref}), then re-run this "
