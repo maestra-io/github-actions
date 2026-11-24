@@ -1220,10 +1220,71 @@ spec:
                 - vault-secrets-operator
                 - openebs
                 - crossplane
+      # `type: SigstoreBundle` ignores `repository:` and asks the registry of
+      # the image for OCI referrers, which nora does not serve: verify the same
+      # digest under its upstream name.
+      imageExtractors:
+        Pod:
+          - name: initContainers
+            path: /spec/initContainers/*
+            key: name
+            value: image
+            jmesPath: "regex_replace_all_literal('^packages[.]maestra[.]io/ecr-public/', @, 'public.ecr.aws/')"
+          - name: containers
+            path: /spec/containers/*
+            key: name
+            value: image
+            jmesPath: "regex_replace_all_literal('^packages[.]maestra[.]io/ecr-public/', @, 'public.ecr.aws/')"
+          - name: ephemeralContainers
+            path: /spec/ephemeralContainers/*
+            key: name
+            value: image
+            jmesPath: "regex_replace_all_literal('^packages[.]maestra[.]io/ecr-public/', @, 'public.ecr.aws/')"
       verifyImages:
         - imageReferences:
             - "public.ecr.aws/gravitational/teleport-distroless@*"
             - "packages.maestra.io/ecr-public/gravitational/teleport-distroless@*"
+          type: SigstoreBundle
+          skipImageReferences:
+            - "public.ecr.aws/gravitational/teleport-distroless@sha256:1c048d7eb6f1b349999d952bc3297d9cea95c57b4a77f79241c8ab69cc058b7b"
+          repository: public.ecr.aws/gravitational/teleport-distroless
+          # nora answers 401 without a token; the digest of a nora name is
+          # resolved with kyverno/nora-pull-secret (base/kyverno-nora-pull-secret).
+          imageRegistryCredentials:
+            secrets:
+              - nora-pull-secret
+          # Digests are pinned in git and required by
+          # require-external-image-digest; this policy only verifies.
+          failureAction: Audit
+          mutateDigest: false
+          verifyDigest: false
+          required: true
+          attestors:
+            # One verifying entry is enough: a `pem` with several keys expands
+            # into one entry per key (litellm rotated its key).
+            - count: 1
+              entries:
+                - keys:
+                    signatureAlgorithm: sha256
+                    publicKeys: |-
+                      -----BEGIN PUBLIC KEY-----
+                      MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAx+9UZboMl9ibwu/IWqbX
+                      +wEJeKJqVpaLEsy1ODRpzIgcgaMh2n3BWtFEIoEszR3ZNlGdfqoPmb0nNnWx/qSf
+                      eEsoSXievXa63M/gAUBB+jecbGEJH+SNaJPMVuvjabPqKtoMT2Spw3cacqpINzq1
+                      rkWU8IawY333gXbwzgsuK7izT7ymgOLPO9qPuX7Q3EBaGw3EvY7u6UKtqhvSGdyr
+                      MirEErOERQ8EP8TrkCcJk0UfPAukzIcj91uHlXaqYBD/IyNYiC70EOlSLoN5/EeA
+                      I4jQnGRfaKF6H6K+WieX9tP9k8/02S+1EVJW592pdQZhJZEq1B/dMc8UR3IjPMMC
+                      qCT2xT6TsinaVzDaAbaRf0hvp311GxwrckNofGm/OSLn1+HqM6q4/A7qHubeRXGO
+                      byabRr93CHSLegZ7OBMswHqqnu6/DuXjc6gOsQkH09dVTFeh34rQy4GKrvnpmOwj
+                      Er1ccxzKcF/pw+lxi07hkpihR/uHUPxFboA/Wl7H2Jub21MFwIFQrDJv7z8yQgxJ
+                      EuIXJJox2oAL7NzdSi9VIUYnEnx+2EtkU/spAFRR6i1BnT6aoIy3521B76wnmRr9
+                      atCSKjt6MdRxgj4htCjBWWJAGM9Z/avF4CYFmK7qiVxgpdrSM8Esbt2Ta+Lu3QMJ
+                      T8LjqFu3u3dxVOo9RuLk+BkCAwEAAQ==
+                      -----END PUBLIC KEY-----
+                    rekor:
+                      url: https://rekor.sigstore.dev
+        - imageReferences:
+            - "public.ecr.aws/gravitational/teleport-distroless@sha256:1c048d7eb6f1b349999d952bc3297d9cea95c57b4a77f79241c8ab69cc058b7b"
           repository: public.ecr.aws/gravitational/teleport-distroless
           # nora answers 401 without a token; the digest of a nora name is
           # resolved with kyverno/nora-pull-secret (base/kyverno-nora-pull-secret).
@@ -1263,6 +1324,47 @@ spec:
         - imageReferences:
             - "public.ecr.aws/gravitational/teleport-distroless-debug@*"
             - "packages.maestra.io/ecr-public/gravitational/teleport-distroless-debug@*"
+          type: SigstoreBundle
+          skipImageReferences:
+            - "public.ecr.aws/gravitational/teleport-distroless-debug@sha256:042680a68cb18fcae95eb2e8b0a53ef16a9509772a08ab78be3354eeb8f8faec"
+          repository: public.ecr.aws/gravitational/teleport-distroless-debug
+          # nora answers 401 without a token; the digest of a nora name is
+          # resolved with kyverno/nora-pull-secret (base/kyverno-nora-pull-secret).
+          imageRegistryCredentials:
+            secrets:
+              - nora-pull-secret
+          # Digests are pinned in git and required by
+          # require-external-image-digest; this policy only verifies.
+          failureAction: Audit
+          mutateDigest: false
+          verifyDigest: false
+          required: true
+          attestors:
+            # One verifying entry is enough: a `pem` with several keys expands
+            # into one entry per key (litellm rotated its key).
+            - count: 1
+              entries:
+                - keys:
+                    signatureAlgorithm: sha256
+                    publicKeys: |-
+                      -----BEGIN PUBLIC KEY-----
+                      MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAx+9UZboMl9ibwu/IWqbX
+                      +wEJeKJqVpaLEsy1ODRpzIgcgaMh2n3BWtFEIoEszR3ZNlGdfqoPmb0nNnWx/qSf
+                      eEsoSXievXa63M/gAUBB+jecbGEJH+SNaJPMVuvjabPqKtoMT2Spw3cacqpINzq1
+                      rkWU8IawY333gXbwzgsuK7izT7ymgOLPO9qPuX7Q3EBaGw3EvY7u6UKtqhvSGdyr
+                      MirEErOERQ8EP8TrkCcJk0UfPAukzIcj91uHlXaqYBD/IyNYiC70EOlSLoN5/EeA
+                      I4jQnGRfaKF6H6K+WieX9tP9k8/02S+1EVJW592pdQZhJZEq1B/dMc8UR3IjPMMC
+                      qCT2xT6TsinaVzDaAbaRf0hvp311GxwrckNofGm/OSLn1+HqM6q4/A7qHubeRXGO
+                      byabRr93CHSLegZ7OBMswHqqnu6/DuXjc6gOsQkH09dVTFeh34rQy4GKrvnpmOwj
+                      Er1ccxzKcF/pw+lxi07hkpihR/uHUPxFboA/Wl7H2Jub21MFwIFQrDJv7z8yQgxJ
+                      EuIXJJox2oAL7NzdSi9VIUYnEnx+2EtkU/spAFRR6i1BnT6aoIy3521B76wnmRr9
+                      atCSKjt6MdRxgj4htCjBWWJAGM9Z/avF4CYFmK7qiVxgpdrSM8Esbt2Ta+Lu3QMJ
+                      T8LjqFu3u3dxVOo9RuLk+BkCAwEAAQ==
+                      -----END PUBLIC KEY-----
+                    rekor:
+                      url: https://rekor.sigstore.dev
+        - imageReferences:
+            - "public.ecr.aws/gravitational/teleport-distroless-debug@sha256:042680a68cb18fcae95eb2e8b0a53ef16a9509772a08ab78be3354eeb8f8faec"
           repository: public.ecr.aws/gravitational/teleport-distroless-debug
           # nora answers 401 without a token; the digest of a nora name is
           # resolved with kyverno/nora-pull-secret (base/kyverno-nora-pull-secret).
@@ -1302,6 +1404,7 @@ spec:
         - imageReferences:
             - "public.ecr.aws/gravitational/teleport-ent-distroless@*"
             - "packages.maestra.io/ecr-public/gravitational/teleport-ent-distroless@*"
+          type: SigstoreBundle
           repository: public.ecr.aws/gravitational/teleport-ent-distroless
           # nora answers 401 without a token; the digest of a nora name is
           # resolved with kyverno/nora-pull-secret (base/kyverno-nora-pull-secret).
@@ -1341,6 +1444,47 @@ spec:
         - imageReferences:
             - "public.ecr.aws/gravitational/tbot-distroless@*"
             - "packages.maestra.io/ecr-public/gravitational/tbot-distroless@*"
+          type: SigstoreBundle
+          skipImageReferences:
+            - "public.ecr.aws/gravitational/tbot-distroless@sha256:7f2939e3952caaf1d19f40b73b3684a7527a75f880c1ba0147a5695611a5a823"
+          repository: public.ecr.aws/gravitational/tbot-distroless
+          # nora answers 401 without a token; the digest of a nora name is
+          # resolved with kyverno/nora-pull-secret (base/kyverno-nora-pull-secret).
+          imageRegistryCredentials:
+            secrets:
+              - nora-pull-secret
+          # Digests are pinned in git and required by
+          # require-external-image-digest; this policy only verifies.
+          failureAction: Audit
+          mutateDigest: false
+          verifyDigest: false
+          required: true
+          attestors:
+            # One verifying entry is enough: a `pem` with several keys expands
+            # into one entry per key (litellm rotated its key).
+            - count: 1
+              entries:
+                - keys:
+                    signatureAlgorithm: sha256
+                    publicKeys: |-
+                      -----BEGIN PUBLIC KEY-----
+                      MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAx+9UZboMl9ibwu/IWqbX
+                      +wEJeKJqVpaLEsy1ODRpzIgcgaMh2n3BWtFEIoEszR3ZNlGdfqoPmb0nNnWx/qSf
+                      eEsoSXievXa63M/gAUBB+jecbGEJH+SNaJPMVuvjabPqKtoMT2Spw3cacqpINzq1
+                      rkWU8IawY333gXbwzgsuK7izT7ymgOLPO9qPuX7Q3EBaGw3EvY7u6UKtqhvSGdyr
+                      MirEErOERQ8EP8TrkCcJk0UfPAukzIcj91uHlXaqYBD/IyNYiC70EOlSLoN5/EeA
+                      I4jQnGRfaKF6H6K+WieX9tP9k8/02S+1EVJW592pdQZhJZEq1B/dMc8UR3IjPMMC
+                      qCT2xT6TsinaVzDaAbaRf0hvp311GxwrckNofGm/OSLn1+HqM6q4/A7qHubeRXGO
+                      byabRr93CHSLegZ7OBMswHqqnu6/DuXjc6gOsQkH09dVTFeh34rQy4GKrvnpmOwj
+                      Er1ccxzKcF/pw+lxi07hkpihR/uHUPxFboA/Wl7H2Jub21MFwIFQrDJv7z8yQgxJ
+                      EuIXJJox2oAL7NzdSi9VIUYnEnx+2EtkU/spAFRR6i1BnT6aoIy3521B76wnmRr9
+                      atCSKjt6MdRxgj4htCjBWWJAGM9Z/avF4CYFmK7qiVxgpdrSM8Esbt2Ta+Lu3QMJ
+                      T8LjqFu3u3dxVOo9RuLk+BkCAwEAAQ==
+                      -----END PUBLIC KEY-----
+                    rekor:
+                      url: https://rekor.sigstore.dev
+        - imageReferences:
+            - "public.ecr.aws/gravitational/tbot-distroless@sha256:7f2939e3952caaf1d19f40b73b3684a7527a75f880c1ba0147a5695611a5a823"
           repository: public.ecr.aws/gravitational/tbot-distroless
           # nora answers 401 without a token; the digest of a nora name is
           # resolved with kyverno/nora-pull-secret (base/kyverno-nora-pull-secret).
@@ -1380,6 +1524,47 @@ spec:
         - imageReferences:
             - "public.ecr.aws/gravitational/teleport-operator@*"
             - "packages.maestra.io/ecr-public/gravitational/teleport-operator@*"
+          type: SigstoreBundle
+          skipImageReferences:
+            - "public.ecr.aws/gravitational/teleport-operator@sha256:09dee4f85d8e4b17fd3fa1ff8ff7c237dd81a2ac7c39d1ac1cca44ec96f29b63"
+          repository: public.ecr.aws/gravitational/teleport-operator
+          # nora answers 401 without a token; the digest of a nora name is
+          # resolved with kyverno/nora-pull-secret (base/kyverno-nora-pull-secret).
+          imageRegistryCredentials:
+            secrets:
+              - nora-pull-secret
+          # Digests are pinned in git and required by
+          # require-external-image-digest; this policy only verifies.
+          failureAction: Audit
+          mutateDigest: false
+          verifyDigest: false
+          required: true
+          attestors:
+            # One verifying entry is enough: a `pem` with several keys expands
+            # into one entry per key (litellm rotated its key).
+            - count: 1
+              entries:
+                - keys:
+                    signatureAlgorithm: sha256
+                    publicKeys: |-
+                      -----BEGIN PUBLIC KEY-----
+                      MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAx+9UZboMl9ibwu/IWqbX
+                      +wEJeKJqVpaLEsy1ODRpzIgcgaMh2n3BWtFEIoEszR3ZNlGdfqoPmb0nNnWx/qSf
+                      eEsoSXievXa63M/gAUBB+jecbGEJH+SNaJPMVuvjabPqKtoMT2Spw3cacqpINzq1
+                      rkWU8IawY333gXbwzgsuK7izT7ymgOLPO9qPuX7Q3EBaGw3EvY7u6UKtqhvSGdyr
+                      MirEErOERQ8EP8TrkCcJk0UfPAukzIcj91uHlXaqYBD/IyNYiC70EOlSLoN5/EeA
+                      I4jQnGRfaKF6H6K+WieX9tP9k8/02S+1EVJW592pdQZhJZEq1B/dMc8UR3IjPMMC
+                      qCT2xT6TsinaVzDaAbaRf0hvp311GxwrckNofGm/OSLn1+HqM6q4/A7qHubeRXGO
+                      byabRr93CHSLegZ7OBMswHqqnu6/DuXjc6gOsQkH09dVTFeh34rQy4GKrvnpmOwj
+                      Er1ccxzKcF/pw+lxi07hkpihR/uHUPxFboA/Wl7H2Jub21MFwIFQrDJv7z8yQgxJ
+                      EuIXJJox2oAL7NzdSi9VIUYnEnx+2EtkU/spAFRR6i1BnT6aoIy3521B76wnmRr9
+                      atCSKjt6MdRxgj4htCjBWWJAGM9Z/avF4CYFmK7qiVxgpdrSM8Esbt2Ta+Lu3QMJ
+                      T8LjqFu3u3dxVOo9RuLk+BkCAwEAAQ==
+                      -----END PUBLIC KEY-----
+                    rekor:
+                      url: https://rekor.sigstore.dev
+        - imageReferences:
+            - "public.ecr.aws/gravitational/teleport-operator@sha256:09dee4f85d8e4b17fd3fa1ff8ff7c237dd81a2ac7c39d1ac1cca44ec96f29b63"
           repository: public.ecr.aws/gravitational/teleport-operator
           # nora answers 401 without a token; the digest of a nora name is
           # resolved with kyverno/nora-pull-secret (base/kyverno-nora-pull-secret).
@@ -1455,10 +1640,71 @@ spec:
                 - vault-secrets-operator
                 - openebs
                 - crossplane
+      # `type: SigstoreBundle` ignores `repository:` and asks the registry of
+      # the image for OCI referrers, which nora does not serve: verify the same
+      # digest under its upstream name.
+      imageExtractors:
+        Pod:
+          - name: initContainers
+            path: /spec/initContainers/*
+            key: name
+            value: image
+            jmesPath: "regex_replace_all_literal('^packages[.]maestra[.]io/ecr-public/', @, 'public.ecr.aws/')"
+          - name: containers
+            path: /spec/containers/*
+            key: name
+            value: image
+            jmesPath: "regex_replace_all_literal('^packages[.]maestra[.]io/ecr-public/', @, 'public.ecr.aws/')"
+          - name: ephemeralContainers
+            path: /spec/ephemeralContainers/*
+            key: name
+            value: image
+            jmesPath: "regex_replace_all_literal('^packages[.]maestra[.]io/ecr-public/', @, 'public.ecr.aws/')"
       verifyImages:
         - imageReferences:
             - "public.ecr.aws/gravitational/teleport-distroless@*"
             - "packages.maestra.io/ecr-public/gravitational/teleport-distroless@*"
+          type: SigstoreBundle
+          skipImageReferences:
+            - "public.ecr.aws/gravitational/teleport-distroless@sha256:1c048d7eb6f1b349999d952bc3297d9cea95c57b4a77f79241c8ab69cc058b7b"
+          repository: public.ecr.aws/gravitational/teleport-distroless
+          # nora answers 401 without a token; the digest of a nora name is
+          # resolved with kyverno/nora-pull-secret (base/kyverno-nora-pull-secret).
+          imageRegistryCredentials:
+            secrets:
+              - nora-pull-secret
+          # Digests are pinned in git and required by
+          # require-external-image-digest; this policy only verifies.
+          failureAction: Audit
+          mutateDigest: false
+          verifyDigest: false
+          required: true
+          attestors:
+            # One verifying entry is enough: a `pem` with several keys expands
+            # into one entry per key (litellm rotated its key).
+            - count: 1
+              entries:
+                - keys:
+                    signatureAlgorithm: sha256
+                    publicKeys: |-
+                      -----BEGIN PUBLIC KEY-----
+                      MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAx+9UZboMl9ibwu/IWqbX
+                      +wEJeKJqVpaLEsy1ODRpzIgcgaMh2n3BWtFEIoEszR3ZNlGdfqoPmb0nNnWx/qSf
+                      eEsoSXievXa63M/gAUBB+jecbGEJH+SNaJPMVuvjabPqKtoMT2Spw3cacqpINzq1
+                      rkWU8IawY333gXbwzgsuK7izT7ymgOLPO9qPuX7Q3EBaGw3EvY7u6UKtqhvSGdyr
+                      MirEErOERQ8EP8TrkCcJk0UfPAukzIcj91uHlXaqYBD/IyNYiC70EOlSLoN5/EeA
+                      I4jQnGRfaKF6H6K+WieX9tP9k8/02S+1EVJW592pdQZhJZEq1B/dMc8UR3IjPMMC
+                      qCT2xT6TsinaVzDaAbaRf0hvp311GxwrckNofGm/OSLn1+HqM6q4/A7qHubeRXGO
+                      byabRr93CHSLegZ7OBMswHqqnu6/DuXjc6gOsQkH09dVTFeh34rQy4GKrvnpmOwj
+                      Er1ccxzKcF/pw+lxi07hkpihR/uHUPxFboA/Wl7H2Jub21MFwIFQrDJv7z8yQgxJ
+                      EuIXJJox2oAL7NzdSi9VIUYnEnx+2EtkU/spAFRR6i1BnT6aoIy3521B76wnmRr9
+                      atCSKjt6MdRxgj4htCjBWWJAGM9Z/avF4CYFmK7qiVxgpdrSM8Esbt2Ta+Lu3QMJ
+                      T8LjqFu3u3dxVOo9RuLk+BkCAwEAAQ==
+                      -----END PUBLIC KEY-----
+                    rekor:
+                      url: https://rekor.sigstore.dev
+        - imageReferences:
+            - "public.ecr.aws/gravitational/teleport-distroless@sha256:1c048d7eb6f1b349999d952bc3297d9cea95c57b4a77f79241c8ab69cc058b7b"
           repository: public.ecr.aws/gravitational/teleport-distroless
           # nora answers 401 without a token; the digest of a nora name is
           # resolved with kyverno/nora-pull-secret (base/kyverno-nora-pull-secret).
@@ -1498,6 +1744,47 @@ spec:
         - imageReferences:
             - "public.ecr.aws/gravitational/teleport-distroless-debug@*"
             - "packages.maestra.io/ecr-public/gravitational/teleport-distroless-debug@*"
+          type: SigstoreBundle
+          skipImageReferences:
+            - "public.ecr.aws/gravitational/teleport-distroless-debug@sha256:042680a68cb18fcae95eb2e8b0a53ef16a9509772a08ab78be3354eeb8f8faec"
+          repository: public.ecr.aws/gravitational/teleport-distroless-debug
+          # nora answers 401 without a token; the digest of a nora name is
+          # resolved with kyverno/nora-pull-secret (base/kyverno-nora-pull-secret).
+          imageRegistryCredentials:
+            secrets:
+              - nora-pull-secret
+          # Digests are pinned in git and required by
+          # require-external-image-digest; this policy only verifies.
+          failureAction: Audit
+          mutateDigest: false
+          verifyDigest: false
+          required: true
+          attestors:
+            # One verifying entry is enough: a `pem` with several keys expands
+            # into one entry per key (litellm rotated its key).
+            - count: 1
+              entries:
+                - keys:
+                    signatureAlgorithm: sha256
+                    publicKeys: |-
+                      -----BEGIN PUBLIC KEY-----
+                      MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAx+9UZboMl9ibwu/IWqbX
+                      +wEJeKJqVpaLEsy1ODRpzIgcgaMh2n3BWtFEIoEszR3ZNlGdfqoPmb0nNnWx/qSf
+                      eEsoSXievXa63M/gAUBB+jecbGEJH+SNaJPMVuvjabPqKtoMT2Spw3cacqpINzq1
+                      rkWU8IawY333gXbwzgsuK7izT7ymgOLPO9qPuX7Q3EBaGw3EvY7u6UKtqhvSGdyr
+                      MirEErOERQ8EP8TrkCcJk0UfPAukzIcj91uHlXaqYBD/IyNYiC70EOlSLoN5/EeA
+                      I4jQnGRfaKF6H6K+WieX9tP9k8/02S+1EVJW592pdQZhJZEq1B/dMc8UR3IjPMMC
+                      qCT2xT6TsinaVzDaAbaRf0hvp311GxwrckNofGm/OSLn1+HqM6q4/A7qHubeRXGO
+                      byabRr93CHSLegZ7OBMswHqqnu6/DuXjc6gOsQkH09dVTFeh34rQy4GKrvnpmOwj
+                      Er1ccxzKcF/pw+lxi07hkpihR/uHUPxFboA/Wl7H2Jub21MFwIFQrDJv7z8yQgxJ
+                      EuIXJJox2oAL7NzdSi9VIUYnEnx+2EtkU/spAFRR6i1BnT6aoIy3521B76wnmRr9
+                      atCSKjt6MdRxgj4htCjBWWJAGM9Z/avF4CYFmK7qiVxgpdrSM8Esbt2Ta+Lu3QMJ
+                      T8LjqFu3u3dxVOo9RuLk+BkCAwEAAQ==
+                      -----END PUBLIC KEY-----
+                    rekor:
+                      url: https://rekor.sigstore.dev
+        - imageReferences:
+            - "public.ecr.aws/gravitational/teleport-distroless-debug@sha256:042680a68cb18fcae95eb2e8b0a53ef16a9509772a08ab78be3354eeb8f8faec"
           repository: public.ecr.aws/gravitational/teleport-distroless-debug
           # nora answers 401 without a token; the digest of a nora name is
           # resolved with kyverno/nora-pull-secret (base/kyverno-nora-pull-secret).
@@ -1537,6 +1824,7 @@ spec:
         - imageReferences:
             - "public.ecr.aws/gravitational/teleport-ent-distroless@*"
             - "packages.maestra.io/ecr-public/gravitational/teleport-ent-distroless@*"
+          type: SigstoreBundle
           repository: public.ecr.aws/gravitational/teleport-ent-distroless
           # nora answers 401 without a token; the digest of a nora name is
           # resolved with kyverno/nora-pull-secret (base/kyverno-nora-pull-secret).
@@ -1576,6 +1864,47 @@ spec:
         - imageReferences:
             - "public.ecr.aws/gravitational/tbot-distroless@*"
             - "packages.maestra.io/ecr-public/gravitational/tbot-distroless@*"
+          type: SigstoreBundle
+          skipImageReferences:
+            - "public.ecr.aws/gravitational/tbot-distroless@sha256:7f2939e3952caaf1d19f40b73b3684a7527a75f880c1ba0147a5695611a5a823"
+          repository: public.ecr.aws/gravitational/tbot-distroless
+          # nora answers 401 without a token; the digest of a nora name is
+          # resolved with kyverno/nora-pull-secret (base/kyverno-nora-pull-secret).
+          imageRegistryCredentials:
+            secrets:
+              - nora-pull-secret
+          # Digests are pinned in git and required by
+          # require-external-image-digest; this policy only verifies.
+          failureAction: Audit
+          mutateDigest: false
+          verifyDigest: false
+          required: true
+          attestors:
+            # One verifying entry is enough: a `pem` with several keys expands
+            # into one entry per key (litellm rotated its key).
+            - count: 1
+              entries:
+                - keys:
+                    signatureAlgorithm: sha256
+                    publicKeys: |-
+                      -----BEGIN PUBLIC KEY-----
+                      MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAx+9UZboMl9ibwu/IWqbX
+                      +wEJeKJqVpaLEsy1ODRpzIgcgaMh2n3BWtFEIoEszR3ZNlGdfqoPmb0nNnWx/qSf
+                      eEsoSXievXa63M/gAUBB+jecbGEJH+SNaJPMVuvjabPqKtoMT2Spw3cacqpINzq1
+                      rkWU8IawY333gXbwzgsuK7izT7ymgOLPO9qPuX7Q3EBaGw3EvY7u6UKtqhvSGdyr
+                      MirEErOERQ8EP8TrkCcJk0UfPAukzIcj91uHlXaqYBD/IyNYiC70EOlSLoN5/EeA
+                      I4jQnGRfaKF6H6K+WieX9tP9k8/02S+1EVJW592pdQZhJZEq1B/dMc8UR3IjPMMC
+                      qCT2xT6TsinaVzDaAbaRf0hvp311GxwrckNofGm/OSLn1+HqM6q4/A7qHubeRXGO
+                      byabRr93CHSLegZ7OBMswHqqnu6/DuXjc6gOsQkH09dVTFeh34rQy4GKrvnpmOwj
+                      Er1ccxzKcF/pw+lxi07hkpihR/uHUPxFboA/Wl7H2Jub21MFwIFQrDJv7z8yQgxJ
+                      EuIXJJox2oAL7NzdSi9VIUYnEnx+2EtkU/spAFRR6i1BnT6aoIy3521B76wnmRr9
+                      atCSKjt6MdRxgj4htCjBWWJAGM9Z/avF4CYFmK7qiVxgpdrSM8Esbt2Ta+Lu3QMJ
+                      T8LjqFu3u3dxVOo9RuLk+BkCAwEAAQ==
+                      -----END PUBLIC KEY-----
+                    rekor:
+                      url: https://rekor.sigstore.dev
+        - imageReferences:
+            - "public.ecr.aws/gravitational/tbot-distroless@sha256:7f2939e3952caaf1d19f40b73b3684a7527a75f880c1ba0147a5695611a5a823"
           repository: public.ecr.aws/gravitational/tbot-distroless
           # nora answers 401 without a token; the digest of a nora name is
           # resolved with kyverno/nora-pull-secret (base/kyverno-nora-pull-secret).
@@ -1615,6 +1944,47 @@ spec:
         - imageReferences:
             - "public.ecr.aws/gravitational/teleport-operator@*"
             - "packages.maestra.io/ecr-public/gravitational/teleport-operator@*"
+          type: SigstoreBundle
+          skipImageReferences:
+            - "public.ecr.aws/gravitational/teleport-operator@sha256:09dee4f85d8e4b17fd3fa1ff8ff7c237dd81a2ac7c39d1ac1cca44ec96f29b63"
+          repository: public.ecr.aws/gravitational/teleport-operator
+          # nora answers 401 without a token; the digest of a nora name is
+          # resolved with kyverno/nora-pull-secret (base/kyverno-nora-pull-secret).
+          imageRegistryCredentials:
+            secrets:
+              - nora-pull-secret
+          # Digests are pinned in git and required by
+          # require-external-image-digest; this policy only verifies.
+          failureAction: Audit
+          mutateDigest: false
+          verifyDigest: false
+          required: true
+          attestors:
+            # One verifying entry is enough: a `pem` with several keys expands
+            # into one entry per key (litellm rotated its key).
+            - count: 1
+              entries:
+                - keys:
+                    signatureAlgorithm: sha256
+                    publicKeys: |-
+                      -----BEGIN PUBLIC KEY-----
+                      MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAx+9UZboMl9ibwu/IWqbX
+                      +wEJeKJqVpaLEsy1ODRpzIgcgaMh2n3BWtFEIoEszR3ZNlGdfqoPmb0nNnWx/qSf
+                      eEsoSXievXa63M/gAUBB+jecbGEJH+SNaJPMVuvjabPqKtoMT2Spw3cacqpINzq1
+                      rkWU8IawY333gXbwzgsuK7izT7ymgOLPO9qPuX7Q3EBaGw3EvY7u6UKtqhvSGdyr
+                      MirEErOERQ8EP8TrkCcJk0UfPAukzIcj91uHlXaqYBD/IyNYiC70EOlSLoN5/EeA
+                      I4jQnGRfaKF6H6K+WieX9tP9k8/02S+1EVJW592pdQZhJZEq1B/dMc8UR3IjPMMC
+                      qCT2xT6TsinaVzDaAbaRf0hvp311GxwrckNofGm/OSLn1+HqM6q4/A7qHubeRXGO
+                      byabRr93CHSLegZ7OBMswHqqnu6/DuXjc6gOsQkH09dVTFeh34rQy4GKrvnpmOwj
+                      Er1ccxzKcF/pw+lxi07hkpihR/uHUPxFboA/Wl7H2Jub21MFwIFQrDJv7z8yQgxJ
+                      EuIXJJox2oAL7NzdSi9VIUYnEnx+2EtkU/spAFRR6i1BnT6aoIy3521B76wnmRr9
+                      atCSKjt6MdRxgj4htCjBWWJAGM9Z/avF4CYFmK7qiVxgpdrSM8Esbt2Ta+Lu3QMJ
+                      T8LjqFu3u3dxVOo9RuLk+BkCAwEAAQ==
+                      -----END PUBLIC KEY-----
+                    rekor:
+                      url: https://rekor.sigstore.dev
+        - imageReferences:
+            - "public.ecr.aws/gravitational/teleport-operator@sha256:09dee4f85d8e4b17fd3fa1ff8ff7c237dd81a2ac7c39d1ac1cca44ec96f29b63"
           repository: public.ecr.aws/gravitational/teleport-operator
           # nora answers 401 without a token; the digest of a nora name is
           # resolved with kyverno/nora-pull-secret (base/kyverno-nora-pull-secret).
@@ -1668,10 +2038,31 @@ spec:
               # images; re-verifying it only adds a way to wedge Jobs.
               operations:
                 - CREATE
+      # `type: SigstoreBundle` ignores `repository:` and asks the registry of
+      # the image for OCI referrers, which nora does not serve: verify the same
+      # digest under its upstream name.
+      imageExtractors:
+        Pod:
+          - name: initContainers
+            path: /spec/initContainers/*
+            key: name
+            value: image
+            jmesPath: "regex_replace_all_literal('^packages[.]maestra[.]io/ecr-public/', @, 'public.ecr.aws/')"
+          - name: containers
+            path: /spec/containers/*
+            key: name
+            value: image
+            jmesPath: "regex_replace_all_literal('^packages[.]maestra[.]io/ecr-public/', @, 'public.ecr.aws/')"
+          - name: ephemeralContainers
+            path: /spec/ephemeralContainers/*
+            key: name
+            value: image
+            jmesPath: "regex_replace_all_literal('^packages[.]maestra[.]io/ecr-public/', @, 'public.ecr.aws/')"
       verifyImages:
         - imageReferences:
             - "public.ecr.aws/gravitational/teleport-distroless:*"
             - "packages.maestra.io/ecr-public/gravitational/teleport-distroless:*"
+          type: SigstoreBundle
           repository: public.ecr.aws/gravitational/teleport-distroless
           # nora answers 401 without a token; the digest of a nora name is
           # resolved with kyverno/nora-pull-secret (base/kyverno-nora-pull-secret).
@@ -1711,6 +2102,7 @@ spec:
         - imageReferences:
             - "public.ecr.aws/gravitational/teleport-distroless-debug:*"
             - "packages.maestra.io/ecr-public/gravitational/teleport-distroless-debug:*"
+          type: SigstoreBundle
           repository: public.ecr.aws/gravitational/teleport-distroless-debug
           # nora answers 401 without a token; the digest of a nora name is
           # resolved with kyverno/nora-pull-secret (base/kyverno-nora-pull-secret).
@@ -1750,6 +2142,7 @@ spec:
         - imageReferences:
             - "public.ecr.aws/gravitational/teleport-ent-distroless:*"
             - "packages.maestra.io/ecr-public/gravitational/teleport-ent-distroless:*"
+          type: SigstoreBundle
           repository: public.ecr.aws/gravitational/teleport-ent-distroless
           # nora answers 401 without a token; the digest of a nora name is
           # resolved with kyverno/nora-pull-secret (base/kyverno-nora-pull-secret).
@@ -1789,6 +2182,7 @@ spec:
         - imageReferences:
             - "public.ecr.aws/gravitational/tbot-distroless:*"
             - "packages.maestra.io/ecr-public/gravitational/tbot-distroless:*"
+          type: SigstoreBundle
           repository: public.ecr.aws/gravitational/tbot-distroless
           # nora answers 401 without a token; the digest of a nora name is
           # resolved with kyverno/nora-pull-secret (base/kyverno-nora-pull-secret).
@@ -1828,6 +2222,7 @@ spec:
         - imageReferences:
             - "public.ecr.aws/gravitational/teleport-operator:*"
             - "packages.maestra.io/ecr-public/gravitational/teleport-operator:*"
+          type: SigstoreBundle
           repository: public.ecr.aws/gravitational/teleport-operator
           # nora answers 401 without a token; the digest of a nora name is
           # resolved with kyverno/nora-pull-secret (base/kyverno-nora-pull-secret).
