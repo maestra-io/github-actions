@@ -417,10 +417,18 @@ jobs:
     with:
       ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-  # The gitleaks workflow of the PR head on this repo's own pull requests. Skips
-  # itself outside pull_request. Needs the org secret GITLEAKS_LICENSE
-  # (gitleaks-action exits 1 without it on an org repo).
+  # The gitleaks workflow of the PR head on this repo's own pull requests, with the two kinds
+  # of caller: with id-token (gitleaks and pinact from nora, so a pin younger than nora's 3-day
+  # hold is red here before any repo gets it) and without (the same pins from GitHub Releases;
+  # the workflow must start without the permission). Skips itself outside pull_request.
   gitleaks:
+    uses: ./.github/workflows/gitleaks.yml
+    with:
+      ref: ${{ github.event.pull_request.head.sha || github.sha }}
+    permissions:
+      contents: read
+      id-token: write
+  gitleaks-no-oidc:
     uses: ./.github/workflows/gitleaks.yml
     secrets: inherit
     with:

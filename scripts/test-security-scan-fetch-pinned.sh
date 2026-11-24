@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # security-scan/fetch-pinned.sh (stub curl): a miss fetches with the OIDC credential on stdin and
 # writes fetched=true; a cached copy with the pinned sha256 fetches nothing; a cached copy that
-# is not the pin is refetched; a download that is not the pin fails and leaves no file.
+# is not the pin is refetched; a download that is not the pin fails and leaves no file. Without an
+# OIDC token: refused, or from the direct URL under the same pin when one is given; with a token the
+# direct URL is never asked, nora's refusal included.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 script="${here}/../security-scan/fetch-pinned.sh"
@@ -16,6 +18,9 @@ case "${*: -1}" in
     echo "${*: -1}" >> "$BODY.calls"
     cfg=$(cat)
     [ "$cfg" = 'user = "oidc:eyJ.stub.jwt"' ] || { echo "bad credential config: $cfg" >&2; exit 22; }
+    while [ $# -gt 1 ]; do if [ "$1" = -o ]; then cp "$BODY" "$2"; exit 0; fi; shift; done; exit 22 ;;
+  https://github.com/*)
+    echo "${*: -1}" >> "$BODY.calls"
     while [ $# -gt 1 ]; do if [ "$1" = -o ]; then cp "$BODY" "$2"; exit 0; fi; shift; done; exit 22 ;;
   *) echo "unexpected curl: $*" >&2; exit 22 ;;
 esac
@@ -43,4 +48,27 @@ grep -q "not the sha256 pin" "$root/log" || fail "poisoned cache not reported"
 echo tampered > "$root/body"; rm -f "$f"
 if run; then fail "a download that is not the pin was accepted"; fi
 [ ! -e "$f" ] || fail "the refused download was left in place"
+direct=https://github.com/o/r/releases/download/v1/tool.tar.gz
+run_no_oidc() { # [<direct url>]
+  rm -f "$root/body.calls" "$f"
+  env -u ACTIONS_ID_TOKEN_REQUEST_URL PATH="$root/bin:$PATH" BODY="$root/body" GITHUB_OUTPUT= \
+    bash "$script" "$url" "$sum" "$f" "$@" > "$root/log" 2>&1
+}
+echo good > "$root/body"
+if run_no_oidc; then fail "no OIDC token and no direct url was accepted"; fi
+run_no_oidc "$direct" || fail "direct: $(cat "$root/log")"
+[ "$(cat "$root/body.calls")" = "$direct" ] || fail "direct: asked $(cat "$root/body.calls")"
+echo tampered > "$root/body"
+if run_no_oidc "$direct"; then fail "a direct download that is not the pin was accepted"; fi
+[ ! -e "$f" ] || fail "the refused direct download was left in place"
+run_oidc_direct() {
+  rm -f "$root/body.calls" "$f"
+  PATH="$root/bin:$PATH" BODY="$root/body" GITHUB_OUTPUT= ACTIONS_ID_TOKEN_REQUEST_URL='https://idtok.example/x?api-version=2.0' \
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN=req bash "$script" "$1" "$sum" "$f" "$direct" > "$root/log" 2>&1
+}
+echo good > "$root/body"
+run_oidc_direct "$url" || fail "nora with a direct url: $(cat "$root/log")"
+[ "$(cat "$root/body.calls")" = "$url" ] || fail "with a token asked $(cat "$root/body.calls")"
+if run_oidc_direct https://packages.maestra.io/held; then fail "nora's refusal was bypassed"; fi
+[ ! -e "$root/body.calls" ] || fail "nora's refusal fell through to the direct url"
 echo "fetch-pinned: ok"

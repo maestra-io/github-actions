@@ -797,10 +797,9 @@ Tested by the `mindbox-lint` job of `selftest` (real runs over this repo); the s
 
 ## Gitleaks on pull requests (`gitleaks.yml`)
 
-The reusable workflow [`gitleaks.yml`](.github/workflows/gitleaks.yml) runs the official
-[`gitleaks/gitleaks-action`](https://github.com/gitleaks/gitleaks-action) (v3) on a pull
-request. One job, `gitleaks` (check name `gitleaks / gitleaks` with the caller below),
-skipped outside `pull_request`.
+The reusable workflow [`gitleaks.yml`](.github/workflows/gitleaks.yml) runs the gitleaks CLI
+on a pull request. One job, `gitleaks` (check name `gitleaks / gitleaks` with the caller
+below), skipped outside `pull_request`, and a second one, `actions pinned`.
 
 A repo enables the scan with its own workflow, `.github/workflows/gitleaks.yml`; none
 of the shared workflows here (the service builds, `mcf-build.yml`, the package
@@ -810,29 +809,29 @@ publishers, `helm-chart.yml`, `frontend-codegen.yml`, `terraform-pr.yml`,
 ```yaml
 name: gitleaks
 on: pull_request
-permissions: { contents: read, pull-requests: write }
+permissions: { contents: read, id-token: write }
 jobs:
   gitleaks:
     uses: maestra-io/github-actions/.github/workflows/gitleaks.yml@main
-    secrets: inherit   # GITLEAKS_LICENSE, an org secret
 ```
 
-- **Secret**: gitleaks-action exits 1 on an organization repo without `GITLEAKS_LICENSE`
-  (`secrets: inherit`, or `secrets: { GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }} }`).
-- **Permissions** come from the calling workflow (this one declares none): `contents: read`
-  and `pull-requests: write` (the PR's commit list on a private repo, and the review
-  comments).
-- **What is scanned**: the PR's commits, `--no-merges --first-parent <first>^..<last>`,
-  on a full-depth checkout; never the whole tree. **Limit**: the action reads only the
-  first 30 commits of the PR, so a longer PR is scanned up to its 30th commit.
-- **Findings**: red job, listed (redacted) in the job summary and a review comment on
-  the PR per finding, and the SARIF report as a run artifact (the action's defaults).
+- **Binaries**: gitleaks and pinact releases pinned by sha256. A caller that grants
+  `id-token: write` gets them from nora (3-day hold on a GitHub release); any other caller, and
+  a fork PR, gets the same sha256 from GitHub Releases. The workflow never asks for `id-token`
+  itself: a caller without the grant would fail at startup.
+- **Secret**: none. `GITLEAKS_LICENSE` (gitleaks-action) is ignored and stays declared for the
+  callers that pass it; `pull-requests: write` is no longer used either.
+- **What is scanned**: the PR's commits, `--no-merges --first-parent HEAD^1..HEAD^2` of the
+  merge checkout, any number of them; never the whole tree.
+- **Findings**: red job, an annotation on the file and line, and the fingerprints in the job
+  summary; the secret is redacted everywhere.
 
-The action installs the pinned gitleaks release (`GITLEAKS_VERSION: 8.30.1`); a new one arrives only through a reviewed bump. One input,
-`ref`: the ref of this repo the central config is read from (default `main`).
+A new gitleaks or pinact arrives only through a reviewed bump of the version and its sha256;
+`selftest.yml` fetches both through nora, so a release younger than 3 days is red there. One
+input, `ref`: the ref of this repo the central config is read from (default `main`).
 
 **Config**: only the central [`gitleaks/gitleaks.toml`](gitleaks/gitleaks.toml) (gitleaks'
-default rules plus allowlists that apply to any repo), passed as `GITLEAKS_CONFIG`. A repo's
+default rules plus allowlists that apply to any repo). A repo's
 own gitleaks config is not read; a project-specific allowlist is added here.
 
 A single accepted finding goes to `.gitleaksignore` at the repo root, one fingerprint
@@ -891,7 +890,7 @@ the ARG only gets BuildKit's "build-arg not consumed" warning.
 | [`hot-test-publish.yml`](.github/workflows/hot-test-publish.yml) | hot-test stand of a pull request ([issues-maestra#1574](https://github.com/maestra-io/issues-maestra/issues/1574)): the PR's static artifact + an entry from `frontend-entry-static-builder --single-run` with the PR's manifest → R2 `admin-hot-test-static-omicron-wnam/hot-test-<repo>-pr-<N>/` (Teleport GitHub join from the PR → Vault omicron → 10-minute editor keys); the stand URL `https://hot-test-<repo>-pr-<N>.testing-env.omicron.maestra.io` is in the PR as a deployment of environment `hot-test` and in the job's step summary. Called by `mcf-build.yml` on pull_request (input `hot-test`) and by the legacy admin monorepo's own `pr.yml` (`static-prefix: public`, `static-manifest: ""`: its dist goes to `public/` of the PR folder, the entry is the released shell, and the backend links `/public/...` from the stand's host on `X-Testing-Frontend`); the routes come from the builder's chart per open PR. Input `stand-prefix` (default `hot-test`) is the first word of the stand name, environment and bucket folder: `mcf-build.yml` calls the workflow a second time with `e2e` for the [e2e stand](#mcf-build-e2e-stand-and-e2e-tests). Input `pages` (one `<name> <path>` per line, default none): once the stand answers, each page gets its own deployment of environment `<stand-prefix>-<name>` with the url `<stand url><path>`, so the PR links it next to the stand (frontend-email-editor: `standard-blocks /email-editor/common-block-templates-preview?standardFlexBlocks=true`); like the stand's deployment it needs no token permission. Outputs: `url`, and `route` (`true` once the stand's `/entry/index.html` answered 200, `false` when the static is published but fluxcd has no route for it: ⚠️, the job stays green). Inputs: `bucket` (stands' bucket, write), `base-static-url` (release static the entry is built from), `hot-test-domain`, `static-prefix` (the PR's own folder, default `v2_static/<mcf>`, the module federation folder; a repo whose files live elsewhere — `frontend` `public`, `frontend-core-v2` `v2_static/core` — sets the same path as `staticPrefix` in its fluxcd registration, which the stand's route sends to the PR folder), `static-manifest` (default `mf-manifest.json`, the entry's override; empty for no manifest) and `static-version-file` (default none); under `static-prefix: v2_static/core` the two are frontend-core-v2's `manifest.json` and `build-info.json` and become the builder's core overrides; the tenant and the cluster's copies of these addresses live only in fluxcd (component `base/microfrontend/hot-test`). After the route is up the job compares every release manifest the entry was built from (`v2_static/core/manifest.json` and `v2_static/<mcf>/mf-manifest.json` of each MCF in its `entry/mcf-manifests.json` but those under `static-prefix`) through the stand with the ones under `base-static-url`: another release bucket in the cluster's `baseStaticDomain` (first differing path in the summary) or a non-200 from the stand is ❌ and fails the job | frontend-ci-components mcf@3 hot-test environments |
 | [`frontend-codegen.yml`](.github/workflows/frontend-codegen.yml) | one job `codegen` for a frontend with its own pipeline (maestra-io/frontend): restores the `install` job's `node_modules` cache, GitHub OIDC → auth-jwt omega JWT (client `github-frontend-graphql-schema`, bound to this workflow at `@refs/heads/main`) → `npm run graphql-codegen`; artifact `codegen`. The same steps as the codegen of the `install` job in `mcf-build.yml` | frontend-ci-components graphql-codegen |
 | [`helm-chart.yml`](.github/workflows/helm-chart.yml) | PR: `check` (version bump, CHANGELOG, lint, helm-unittest); main: `release` → ECR `helm-charts/<name>` ([`push-helm-chart-to-aws-ecr`](push-helm-chart-to-aws-ecr/action.yml), cosign-signed and verified after the push) | system/components/helm-ci helm-merge-request + helm-release |
-| [`gitleaks.yml`](.github/workflows/gitleaks.yml) | PR only: one job `gitleaks`, [`gitleaks/gitleaks-action`](https://github.com/gitleaks/gitleaks-action) on the PR's commits with the central `gitleaks/gitleaks.toml`; needs the `GITLEAKS_LICENSE` org secret; each repo calls it from its own `.github/workflows/gitleaks.yml` (no shared workflow here runs it) | — |
+| [`gitleaks.yml`](.github/workflows/gitleaks.yml) | PR only: job `gitleaks`, the sha256-pinned gitleaks CLI on the PR's commits with the central `gitleaks/gitleaks.toml`, and job `actions pinned`; each repo calls it from its own `.github/workflows/gitleaks.yml` (no shared workflow here runs it) | — |
 | [`pr-checks.yml`](.github/workflows/pr-checks.yml) | PR only: check-encoding of the changed files, `kustomize build` of a changed overlays tree, kyverno-cli over the images that change adds (warning only until `image-signatures-enforce`), and the `networkPolicy` values gate of a changed tree (`helm template` of the pinned commons-app / commons-app-init / postgres chart from ECR, kubeconform against the Cilium CRD schema, fluxcd's netpol-broad-gate; every policy allow-only, `enableDefaultDeny` false both ways; [`pr-checks/check-network-policy.py`](pr-checks/check-network-policy.py), tests `scripts/test-network-policy-gate.sh`); its `gitleaks` input is deprecated and ignored | — |
 
 Warehouse refresh: GitHub org webhook → Kargo cluster receiver, see fluxcd `iota/us-iota-lw-kube-infra/kargo/webhook-receivers.yaml`; Warehouses still poll every 5 min as fallback.
