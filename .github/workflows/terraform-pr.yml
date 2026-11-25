@@ -3,7 +3,7 @@
 # Reusable PR workflow: fmt ∥ plan matrix (fan-out to terraform-run) -> unified
 # PR comment. The caller passes:
 #   - `envs`: a JSON array of {region,environment,site,env_dir?,proxmox_host?,
-#             proxmox_token_prefix?,vault_mode?,vault_addr?,teleport_app?,
+#             proxmox_token_prefix?,proxmox_engine_vault_app?,vault_mode?,vault_addr?,teleport_app?,
 #             vault_role?,vault_secrets?,parallelism?,mask_sensitive_jq_path?,
 #             extra_env?,extra_workload_identities?,replace_targets?,runs_on?}
 #             objects -> becomes the plan matrix. Per-row values win over the
@@ -182,6 +182,8 @@ jobs:
       teleport_join_token: ${{ inputs.teleport_join_token }}
       state_workload_identity: ${{ inputs.state_workload_identity }}
       proxmox_token_vault_role: ${{ inputs.proxmox_token_vault_role }}
+      # Per row: an environment moves to the engine when its cluster Vault has one.
+      proxmox_engine_vault_app: ${{ matrix.env.proxmox_engine_vault_app || '' }}
       proxmox_tunnel_join_token: ${{ inputs.proxmox_tunnel_join_token }}
       state_role_arn: ${{ inputs.state_role_arn }}
       teleport_fqdn: ${{ inputs.teleport_fqdn }}
