@@ -6,7 +6,7 @@
 #   - `envs`: a JSON array of {region,environment,site,inventory_group_suffix?,tags?,
 #             vault_mode?,vault_addr?,teleport_app?,vault_role?,vault_secrets?,
 #             vault2_addr?,vault2_role?,vault2_secrets?,
-#             mint_proxmox_token?,extra_run_args?,extra_env?} objects -> becomes the check matrix.
+#             mint_proxmox_token?,proxmox_engine_vault_app?,extra_run_args?,extra_env?} objects -> becomes the check matrix.
 #   - `playbook`, `use_mitogen`, `windows_mode`, etc. as shared defaults.
 #
 # Path convention: `playbook` / `inventory` / `lint_paths` are relative to `working_directory`.
@@ -273,6 +273,8 @@ jobs:
       vault2_role: ${{ matrix.env.vault2_role || '' }}
       vault2_secrets: ${{ matrix.env.vault2_secrets || '' }}
       mint_proxmox_token: ${{ matrix.env.mint_proxmox_token || false }}
+      # Per row: a check moves to the engine when its cluster Vault has one.
+      proxmox_engine_vault_app: ${{ matrix.env.proxmox_engine_vault_app || '' }}
       extra_env: ${{ matrix.env.extra_env || inputs.extra_env }}
       extra_run_args: ${{ matrix.env.extra_run_args || inputs.extra_run_args }}
       no_hosts_fail_on_apply: ${{ inputs.no_hosts_fail_on_apply }}
