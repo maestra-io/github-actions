@@ -219,6 +219,17 @@ on:
         required: false
         type: string
         default: proxmox-ci-plan-token
+      proxmox_engine_vault_app:
+        description: >-
+          pull_request with mint_proxmox_token: Teleport app of the cluster Vault
+          whose proxmox secrets engine mints the check run's PVEAuditor token
+          (role ci-plan, read as jwt-github role pve-ci-plan-<repo>-github-ci
+          through a tbot tunnel), instead of the standing token in KV. Empty =
+          the KV token. push / dispatch always mint with sudo pveum: the
+          proxmox deploy sets the engine up and must not depend on it.
+        required: false
+        type: string
+        default: ""
       # --- misc ----------------------------------------------------------
       runs_on:
         description: >-
@@ -922,7 +933,7 @@ jobs:
       # do not run in check mode anyway.
       - name: Read the Proxmox PVEAuditor token from Vault (pull_request)
         id: pve-plan-token
-        if: ${{ inputs.mint_proxmox_token && github.event_name == 'pull_request' }}
+        if: ${{ inputs.mint_proxmox_token && github.event_name == 'pull_request' && inputs.proxmox_engine_vault_app == '' }}
         uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
         with:
           url: https://vault.maestra.io
@@ -936,7 +947,7 @@ jobs:
             infrastructure/data/proxmox/ci-plan/${{ inputs.environment }} token_secret | PVE_TOKEN_SECRET
 
       - name: Export the Proxmox PVEAuditor token (pull_request)
-        if: ${{ inputs.mint_proxmox_token && github.event_name == 'pull_request' }}
+        if: ${{ inputs.mint_proxmox_token && github.event_name == 'pull_request' && inputs.proxmox_engine_vault_app == '' }}
         env:
           PVE_TOKEN_ID: ${{ steps.pve-plan-token.outputs.PVE_TOKEN_ID }}
           PVE_TOKEN_SECRET: ${{ steps.pve-plan-token.outputs.PVE_TOKEN_SECRET }}
@@ -954,6 +965,87 @@ jobs:
             echo "PROXMOX_API_TOKEN_SECRET=$PVE_TOKEN_SECRET"
           } >> "$GITHUB_ENV"
           echo "Proxmox API token: ${PVE_TOKEN_ID} (PVEAuditor), nothing minted"
+
+      # pull_request with proxmox_engine_vault_app: the PVEAuditor token comes
+      # from the cluster Vault's proxmox engine, one short-lived token per run.
+      # Own tunnel on 8201: the secrets tunnel (8200) may point elsewhere.
+      - name: Start the Proxmox engine Vault tunnel (pull_request)
+        id: pve-engine-tunnel
+        if: ${{ inputs.mint_proxmox_token && github.event_name == 'pull_request' && inputs.proxmox_engine_vault_app != '' }}
+        env:
+          TELEPORT_JOIN_TOKEN: ${{ inputs.teleport_join_token }}
+          TELEPORT_APP: ${{ inputs.proxmox_engine_vault_app }}
+          TELEPORT_PROXY: ${{ inputs.teleport_fqdn }}
+        run: |
+          set -euo pipefail
+          cat > /tmp/tbot-pve-engine-config.yaml <<EOF
+          version: v2
+          onboarding:
+            join_method: github
+            token: ${TELEPORT_JOIN_TOKEN}
+          proxy_server: ${TELEPORT_PROXY}
+          storage:
+            type: memory
+          services:
+            - type: application-tunnel
+              app_name: ${TELEPORT_APP}
+              listen: tcp://127.0.0.1:8201
+          EOF
+          tunnel_pid=""
+          for attempt in 1 2; do
+            tbot start -c /tmp/tbot-pve-engine-config.yaml &
+            tunnel_pid=$!
+            for _ in $(seq 1 15); do
+              (echo > /dev/tcp/127.0.0.1/8201) >/dev/null 2>&1 && break 2
+              sleep 1
+            done
+            echo "::warning::proxmox engine vault tunnel (${TELEPORT_APP}) did not open in 15s on attempt ${attempt}"
+            kill "${tunnel_pid}" 2>/dev/null || true
+            wait "${tunnel_pid}" 2>/dev/null || true
+            tunnel_pid=""
+          done
+          if [ -z "${tunnel_pid}" ]; then
+            echo "::error::proxmox engine vault tunnel (tbot app-tunnel ${TELEPORT_APP}) did not open in 15s, twice"
+            exit 1
+          fi
+          echo "tunnel_pid=${tunnel_pid}" >> "$GITHUB_OUTPUT"
+
+      - name: Read the Proxmox token from the Vault proxmox engine (pull_request)
+        id: pve-engine-token
+        if: ${{ inputs.mint_proxmox_token && github.event_name == 'pull_request' && inputs.proxmox_engine_vault_app != '' }}
+        uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
+        with:
+          url: http://127.0.0.1:8201
+          method: jwt
+          path: jwt-github
+          role: pve-ci-plan-${{ github.event.repository.name }}-github-ci
+          jwtGithubAudience: https://github.com/maestra-io
+          exportEnv: false
+          secrets: |
+            proxmox/creds/ci-plan token_id_full | PVE_TOKEN_ID ;
+            proxmox/creds/ci-plan secret | PVE_TOKEN_SECRET
+
+      - name: Export the Proxmox engine token (pull_request)
+        if: ${{ inputs.mint_proxmox_token && github.event_name == 'pull_request' && inputs.proxmox_engine_vault_app != '' }}
+        env:
+          PVE_TOKEN_ID: ${{ steps.pve-engine-token.outputs.PVE_TOKEN_ID }}
+          PVE_TOKEN_SECRET: ${{ steps.pve-engine-token.outputs.PVE_TOKEN_SECRET }}
+          TUNNEL_PID: ${{ steps.pve-engine-tunnel.outputs.tunnel_pid }}
+        run: |
+          set -euo pipefail
+          # The tunnel has done its job; the play does not talk to Vault through it.
+          kill "$TUNNEL_PID" 2>/dev/null || true
+          case "$PVE_TOKEN_ID" in
+            ci-plan@pve!v-?*) ;;
+            *) echo "::error::the proxmox engine answered token_id '${PVE_TOKEN_ID}', not a ci-plan@pve token"; exit 1 ;;
+          esac
+          echo "::add-mask::$PVE_TOKEN_SECRET"
+          {
+            echo "PROXMOX_API_USER=ci-plan@pve"
+            echo "PROXMOX_API_TOKEN_NAME=${PVE_TOKEN_ID#ci-plan@pve!}"
+            echo "PROXMOX_API_TOKEN_SECRET=$PVE_TOKEN_SECRET"
+          } >> "$GITHUB_ENV"
+          echo "Proxmox API token: ${PVE_TOKEN_ID} (PVEAuditor, Vault proxmox engine), nothing minted"
 
       - name: Mint Proxmox API token
         id: mint-proxmox
