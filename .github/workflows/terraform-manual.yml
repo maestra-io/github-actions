@@ -71,6 +71,11 @@ on:
       proxmox_token_prefix:
         required: true
         type: string
+      proxmox_engine_vault_app:
+        description: "terraform-run: Teleport app of the cluster Vault whose proxmox secrets engine mints the run's API token (e.g. vault-omicron); empty = mint over sudo pveum"
+        required: false
+        type: string
+        default: ""
       proxmox_host:
         required: false
         type: string
@@ -158,6 +163,7 @@ jobs:
       vault_secrets: ${{ inputs.vault_secrets }}
       proxmox_token_prefix: ${{ inputs.proxmox_token_prefix }}
       proxmox_host: ${{ inputs.proxmox_host }}
+      proxmox_engine_vault_app: ${{ inputs.proxmox_engine_vault_app }}
       api_tunnel: ${{ inputs.api_tunnel }}
       node_ssh_tunnels: ${{ inputs.node_ssh_tunnels }}
       node_ssh_direct: ${{ inputs.node_ssh_direct }}
