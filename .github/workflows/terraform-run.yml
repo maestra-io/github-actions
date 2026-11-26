@@ -115,16 +115,6 @@ on:
         required: false
         type: string
         default: ""
-      proxmox_token_vault_role:
-        description: >-
-          pull_request only: vault.maestra.io jwt-github role that reads the
-          PVEAuditor token of ci-plan@pve from infrastructure/proxmox/ci-plan/<environment>
-          (minted by maestra-io/proxmox), instead of minting one with sudo pveum
-          over teleport-production. Pass proxmox-ci-plan-token with
-          teleport_join_token github-actions-infra-plan. Empty = mint.
-        required: false
-        type: string
-        default: ""
       proxmox_engine_vault_app:
         description: >-
           Teleport app of the cluster Vault whose proxmox secrets engine mints
@@ -134,8 +124,8 @@ on:
           pve-ci-<plan|apply>-<repo>-github-ci of that Vault through a tbot
           tunnel joined with teleport_join_token. The token is short-lived and
           privilege-separated; nothing is minted on the host and nothing is
-          removed at the end (the lease expires). Wins over
-          proxmox_token_vault_role. Empty = the older paths.
+          removed at the end (the lease expires). Empty = a per-run token
+          minted with sudo pveum.
         required: false
         type: string
         default: ""
@@ -265,16 +255,13 @@ jobs:
       TF_IN_AUTOMATION: "true"
       TF_INPUT: "false"
       TELEPORT_FQDN: ${{ inputs.teleport_fqdn }}
-      # A pull_request plan is read-only on Proxmox: its token is minted on
+      # A pull_request plan is read-only on Proxmox: its token belongs to
       # ci-plan@pve (PVEAuditor on /, maestra-io/proxmox tasks/ci_plan_user.yml)
       # and no root key goes onto the nodes, so no node SSH tunnels either —
       # bpg reads state over the API only (SSH is for uploads/disk imports,
       # i.e. apply). push/dispatch runs keep ci@pve (role TerraformApply) + the key.
       PVE_CI_USER: ${{ github.event_name == 'pull_request' && 'ci-plan@pve' || 'ci@pve' }}
       PVE_NODE_KEY: ${{ inputs.node_ssh_tunnels && github.event_name != 'pull_request' }}
-      # PR plan with proxmox_token_vault_role: the ci-plan@pve token comes from
-      # Vault, nothing is minted on the host.
-      PVE_VAULT_TOKEN: ${{ github.event_name == 'pull_request' && inputs.proxmox_token_vault_role != '' && inputs.proxmox_engine_vault_app == '' }}
       # proxmox_engine_vault_app: the token of either event comes from the
       # cluster Vault's proxmox engine, nothing is minted on the host.
       PVE_ENGINE_TOKEN: ${{ inputs.proxmox_engine_vault_app != '' }}
@@ -574,10 +561,6 @@ jobs:
             PROXMOX_HOST="${HOSTS[0]}"
           fi
           echo "host=$PROXMOX_HOST" >> "$GITHUB_OUTPUT"
-          if [ "$PVE_VAULT_TOKEN" = "true" ]; then
-            echo "PR plan: PVEAuditor token of ci-plan@pve from Vault, nothing minted on ${PROXMOX_HOST}"
-            exit 0
-          fi
           if [ "$PVE_ENGINE_TOKEN" = "true" ]; then
             echo "Token of ${PVE_CI_USER} from the Vault proxmox engine, nothing minted on ${PROXMOX_HOST}"
             exit 0
@@ -619,36 +602,6 @@ jobs:
           echo "::add-mask::${TOKEN_VALUE}"
           echo "PROXMOX_VE_API_TOKEN=${PVE_CI_USER}!${TOKEN_NAME}=${TOKEN_VALUE}" >> "$GITHUB_ENV"
           echo "API token created successfully"
-
-      - name: Read the Proxmox PVEAuditor token from Vault (PR plan)
-        id: pve-plan-token
-        if: ${{ env.PVE_VAULT_TOKEN == 'true' }}
-        uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
-        with:
-          url: https://vault.maestra.io
-          method: jwt
-          path: jwt-github
-          role: ${{ inputs.proxmox_token_vault_role }}
-          jwtGithubAudience: https://github.com/maestra-io
-          exportEnv: false
-          secrets: |
-            infrastructure/data/proxmox/ci-plan/${{ inputs.environment }} token_id | PVE_TOKEN_ID ;
-            infrastructure/data/proxmox/ci-plan/${{ inputs.environment }} token_secret | PVE_TOKEN_SECRET
-
-      - name: Export the Proxmox PVEAuditor token (PR plan)
-        if: ${{ env.PVE_VAULT_TOKEN == 'true' }}
-        env:
-          PVE_TOKEN_ID: ${{ steps.pve-plan-token.outputs.PVE_TOKEN_ID }}
-          PVE_TOKEN_SECRET: ${{ steps.pve-plan-token.outputs.PVE_TOKEN_SECRET }}
-          ENVIRONMENT: ${{ inputs.environment }}
-        run: |
-          set -euo pipefail
-          case "$PVE_TOKEN_ID" in
-            ci-plan@pve!*) ;;
-            *) echo "::error::infrastructure/proxmox/ci-plan/${ENVIRONMENT} holds token_id '${PVE_TOKEN_ID}', not a ci-plan@pve token"; exit 1 ;;
-          esac
-          echo "PROXMOX_VE_API_TOKEN=${PVE_TOKEN_ID}=${PVE_TOKEN_SECRET}" >> "$GITHUB_ENV"
-          echo "Proxmox API token: ${PVE_TOKEN_ID} (PVEAuditor)"
 
       # --- Proxmox token from the cluster Vault's proxmox engine ------------
       # Own tunnel on 8201: the secrets tunnel above (8200) may point at another
