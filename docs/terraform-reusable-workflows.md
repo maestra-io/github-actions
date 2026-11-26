@@ -38,13 +38,16 @@ Ordering contract (fixed, do not reorder):
    (role TerraformApply) on push/dispatch; `ci-plan@pve` (PVEAuditor) on
    `pull_request`. Both users and their ACLs are owned by maestra-io/proxmox
    (`tasks/ci_apply_user.yml`, `tasks/ci_plan_user.yml`); the workflow creates
-   and grants nothing. A PR plan
+   and grants nothing. With `proxmox_engine_vault_app` (the Teleport app of
+   the cluster Vault, `vault-omicron` / `vault-omega`) nothing is minted with
+   pveum at all: the run reads a short-lived, privilege-separated token from
+   that Vault's proxmox secrets engine, role `ci-plan` on `pull_request` and
+   `ci-apply` on the default branch, as jwt-github role
+   `pve-ci-<plan|apply>-<repo>-github-ci`. A PR plan
    on the read-only bot passes `teleport_join_token: github-actions-infra-plan`,
-   `proxmox_token_vault_role: proxmox-ci-plan-token` and
+   `proxmox_engine_vault_app` and
    `proxmox_tunnel_join_token: github-actions-infra-plan-pve` (plus the state WI
-   inputs): nothing is minted; the token is read from vault.maestra.io
-   `infrastructure/proxmox/ci-plan/<environment>` (written by the proxmox deploy
-   of main) and the API tunnel is `tsh ssh -N` as `pve-plan` on that separate
+   inputs); the API tunnel is `tsh ssh -N` as `pve-plan` on that separate
    bot (Teleport ANDs port forwarding over an identity's roles, and the plan
    bot's node-ansible-check forbids it), to remote 8007: maestra-io/proxmox
    `pve-plan-api`, a GET-only front of pveproxy that also answers the snippets

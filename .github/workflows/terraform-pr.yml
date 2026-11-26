@@ -90,11 +90,6 @@ on:
         required: false
         type: string
         default: "github-actions-infra-deploy"
-      proxmox_token_vault_role:
-        description: "terraform-run: Vault role of the PVEAuditor PR-plan token (proxmox-ci-plan-token); empty = mint over sudo"
-        required: false
-        type: string
-        default: ""
       proxmox_tunnel_join_token:
         description: "terraform-run: join token of the Proxmox API tunnel's own bot; github-actions-infra-plan callers pass github-actions-infra-plan-pve"
         required: false
@@ -181,7 +176,6 @@ jobs:
       extra_env: ${{ matrix.env.extra_env || inputs.extra_env }}
       teleport_join_token: ${{ inputs.teleport_join_token }}
       state_workload_identity: ${{ inputs.state_workload_identity }}
-      proxmox_token_vault_role: ${{ inputs.proxmox_token_vault_role }}
       # Per row: an environment moves to the engine when its cluster Vault has one.
       proxmox_engine_vault_app: ${{ matrix.env.proxmox_engine_vault_app || '' }}
       proxmox_tunnel_join_token: ${{ inputs.proxmox_tunnel_join_token }}
