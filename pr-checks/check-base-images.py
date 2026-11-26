@@ -75,22 +75,21 @@ PREFIX = {"docker.io": "docker-hub", "index.docker.io": "docker-hub", "registry-
           "ghcr.io": "ghcr", "quay.io": "quay", "registry.k8s.io": "k8s", "k8s.gcr.io": "k8s", "gcr.io": "gcr",
           "mirror.gcr.io": "mirror-gcr", "mcr.microsoft.com": "mcr", "docker.dragonflydb.io": "dragonfly",
           "public.ecr.aws": "ecr-public", "cgr.dev": "cgr", "reg.kyverno.io": "kyverno", "xpkg.upbound.io": "upbound",
-          "xpkg.crossplane.io": "crossplane", "europe-west1-docker.pkg.dev": "gar-europe-west1"}
+          "xpkg.crossplane.io": "crossplane"}
 DOCKERFILE = re.compile(r"(^|/)(Dockerfile[^/]*|[^/]+\.[Dd]ockerfile|Containerfile[^/]*)$")
 WORKFLOW = re.compile(r"(^\.github/workflows/[^/]+|(^|/)action)\.ya?ml$")
 COMPOSE = re.compile(r"(^|/)(docker-)?compose[^/]*\.ya?ml$")
 IMAGE_KEY = re.compile(r"^\s*(?:-\s+)?image:\s*[\"']?(?:docker://)?([^\s\"'#]+)")
 # fluxcd base/kyverno-nora-pull-through/chart/values.yaml `registries`, `excludeImages` and
-# `dockerHubPrefix` @ main b74980c0cc (last change, 2026-11-16): the hosts use-nora-pull-through rewrites
-# to packages.maestra.io/<prefix>/ (mirror.gcr.io is Docker Hub there, unlike nora's own
+# `dockerHubPrefix` (last change: europe-west1-docker.pkg.dev removed, issues-maestra#1768, 2026-11-26):
+# the hosts use-nora-pull-through rewrites to packages.maestra.io/<prefix>/ (mirror.gcr.io is Docker Hub there, unlike nora's own
 # upstreams above). fluxcd is private and callers' GITHUB_TOKEN cannot read it: a host added
 # there is added here next.
 KYVERNO = {"docker.io": "docker-hub", "index.docker.io": "docker-hub", "registry-1.docker.io": "docker-hub",
            "mirror.gcr.io": "docker-hub", "ghcr.io": "ghcr", "quay.io": "quay", "registry.k8s.io": "k8s",
            "gcr.io": "gcr", "mcr.microsoft.com": "mcr", "docker.dragonflydb.io": "dragonfly",
            "public.ecr.aws": "ecr-public", "cgr.dev": "cgr", "reg.kyverno.io": "kyverno",
-           "xpkg.upbound.io": "upbound", "xpkg.crossplane.io": "crossplane",
-           "europe-west1-docker.pkg.dev": "gar-europe-west1"}
+           "xpkg.upbound.io": "upbound", "xpkg.crossplane.io": "crossplane"}
 KYVERNO_EXCLUDE = ("public.ecr.aws/g5f9s8a4/*",)
 MERGE = "tag:yaml.org,2002:merge"
 MANIFEST = re.compile(r"\.ya?ml$")
