@@ -7,7 +7,9 @@ metadata:
 spec:
   validationActions:
     - Audit
-  # An unreachable registry or Rekor admits the Pod.
+  # A registry or Rekor lookup that fails refuses the Pod under Deny
+  # (KyvernoImageSignatureLookupErrors); a digest the verification cache holds
+  # asks neither. Ignore covers only a webhook that does not answer.
   failurePolicy: Ignore
   webhookConfiguration:
     timeoutSeconds: 15
@@ -202,7 +204,9 @@ metadata:
 spec:
   validationActions:
     - Audit
-  # An unreachable registry or Rekor admits the Pod.
+  # A registry or Rekor lookup that fails refuses the Pod under Deny
+  # (KyvernoImageSignatureLookupErrors); a digest the verification cache holds
+  # asks neither. Ignore covers only a webhook that does not answer.
   failurePolicy: Ignore
   webhookConfiguration:
     timeoutSeconds: 15
@@ -397,7 +401,9 @@ metadata:
 spec:
   validationActions:
     - Audit
-  # An unreachable registry or Rekor admits the Pod.
+  # A registry or Rekor lookup that fails refuses the Pod under Deny
+  # (KyvernoImageSignatureLookupErrors); a digest the verification cache holds
+  # asks neither. Ignore covers only a webhook that does not answer.
   failurePolicy: Ignore
   webhookConfiguration:
     timeoutSeconds: 15
