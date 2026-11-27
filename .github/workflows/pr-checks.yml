@@ -104,8 +104,8 @@ env:
   KUSTOMIZE_VERSION: v5.8.3
   KUSTOMIZE_SHA256: cb9e31198d3f63b44848bd0afc4c8efc56e6cfef9c93a4a39a211940e6decd61
   # The version kyverno-image-signatures is tested with (fluxcd, kyverno-signature-tests).
-  KYVERNO_VERSION: v1.19.2
-  KYVERNO_SHA256: 357eaf1df8bc24ddd5a73979fadeaae6a032e8710f11af264229756e4956bf4a
+  KYVERNO_VERSION: v1.20.0
+  KYVERNO_SHA256: 06b8f3ca7b5626473be8fb4d343ad54ab84e317142766f72420e7d44b80942e2
   # networkPolicy gate. Helm 4: Flux 2.8.6's helm-controller (v1.5.4) renders with the
   # helm.sh/helm/v4 SDK, so the gate renders with the same major. get.helm.sh .sha256sum and
   # the kubeconform release CHECKSUMS.
