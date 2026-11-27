@@ -782,19 +782,26 @@ jobs:
             missing=""
             for pair in ${PAIRS}; do
               app="${pair%%:*}"; port="${pair##*:}"
+              # An HTTP round trip, not an open local port: tbot binds the listener
+              # before the app is reachable, so a TCP probe passed while every
+              # request hung (maestra-nat-gateway 45956080817, 27.11.2026: the
+              # silences GET timed out 35 s after "tunnel is up"). Any 1xx-4xx
+              # means the request crossed the proxy and reached the app.
               opened=0
-              for _ in $(seq 1 30); do
-                if (exec 3<>/dev/tcp/127.0.0.1/"${port}") 2>/dev/null; then opened=1; break; fi
-                sleep 1
+              deadline=$((SECONDS + 60))
+              while [ "${SECONDS}" -lt "${deadline}" ]; do
+                code="$(/usr/bin/curl -s -o /dev/null -m 5 -w '%{http_code}' "http://127.0.0.1:${port}/" 2>/dev/null || true)"
+                case "${code}" in [1-4][0-9][0-9]) opened=1; break ;; esac
+                sleep 2
               done
-              if [ "${opened}" != 1 ]; then missing="${app} on 127.0.0.1:${port}"; break; fi
+              if [ "${opened}" != 1 ]; then missing="${app} on 127.0.0.1:${port} (last HTTP code ${code:-none})"; break; fi
             done
             [ -z "${missing}" ] && break
             kill "${pid}" 2>/dev/null || true
             wait "${pid}" 2>/dev/null || true
             pid=""
             if [ "${attempt}" = 1 ]; then
-              echo "::warning::tbot tunnel for app ${missing} did not open in 30 s; one more attempt in 120 s"
+              echo "::warning::tbot tunnel for app ${missing} did not answer over HTTP in 60 s; one more attempt in 120 s"
               sleep 120
             fi
           done
