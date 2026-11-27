@@ -66,37 +66,46 @@ good=public.ecr.aws/gravitational/tbot-distroless@sha256:$(printf 'a%.0s' {1..64
 bad=public.ecr.aws/gravitational/tbot-distroless@sha256:$(printf 'b%.0s' {1..64})
 other=docker.io/library/alpine@sha256:$(printf 'c%.0s' {1..64})
 tag_only=public.ecr.aws/gravitational/tag-only@sha256:$(printf 'd%.0s' {1..64})
+nora_bad=packages.maestra.io/ecr-public/gravitational/tbot-distroless@sha256:$(printf 'e%.0s' {1..64})
 cat > policy.yaml <<EOF
+kind: ImageValidatingPolicy
+metadata:
+  name: verify-image-signatures
 spec:
-  rules:
-    - name: teleport
-      verifyImages:
-        - imageReferences:
-            - "public.ecr.aws/gravitational/tbot-distroless@*"
-    - name: teleport-tag-refs
-      verifyImages:
-        - imageReferences:
-            - "public.ecr.aws/gravitational/tbot-distroless:*"
-            - "public.ecr.aws/gravitational/tag-only:*"
+  images:
+    - name: containers
+      expression: "object.spec.containers.map(e, e.image).map(i, i.split('/')[1] in {'ecr-public': 'public.ecr.aws', 'ghcr': 'ghcr.io'} ? i : i)"
+  matchImageReferences:
+    - glob: "public.ecr.aws/gravitational/tbot-distroless@*"
+---
+kind: ImageValidatingPolicy
+metadata:
+  name: verify-image-signatures-tag-refs
+spec:
+  matchImageReferences:
+    - glob: "public.ecr.aws/gravitational/tbot-distroless:*"
+    - glob: "public.ecr.aws/gravitational/tag-only:*"
 EOF
 printf 'image: %s\n' "$good" > base.yaml
-{ printf 'image: %s\n' "$good"; printf '  image: "%s"\n' "${bad/@/:18.11.8@}"; printf 'image: %s\n' "$other"; printf 'image: %s\n' "$tag_only"; } > head.yaml
-got=$(python3 -I "$sig" list policy.yaml head.yaml base.yaml)
-[ "$got" = "$bad" ] && echo "ok   list: new covered ref, tag dropped" || { echo "FAIL list: '$got', want '$bad'"; fail=1; }
+{ printf 'image: %s\n' "$good"; printf '  image: "%s"\n' "${bad/@/:18.11.8@}"; printf 'image: %s\n' "$other"; printf 'image: %s\n' "$tag_only"; printf 'image: %s\n' "$nora_bad"; } > head.yaml
+got=$(python3 -I "$sig" list policy.yaml head.yaml base.yaml | tr '\n' ' ')
+want="$nora_bad $bad "
+[ "$got" = "$want" ] && echo "ok   list: new covered refs (nora name too), tag dropped" || { echo "FAIL list: '$got', want '$want'"; fail=1; }
 # A file, not $(...): a lone newline would pass here and still trigger the Kyverno download.
 python3 -I "$sig" list policy.yaml base.yaml base.yaml > listed
 [ ! -s listed ] && echo "ok   list: nothing new, empty output" || { echo "FAIL list nothing new: $(wc -c < listed) bytes"; fail=1; }
 
-# Stub kyverno: refs are sorted, so image-0 is $good (fails only an audit rule) and image-1
-# is $bad (fails an enforcing rule).
+# Stub kyverno: refs are sorted, so image-0 is $good (fails only an audit policy) and image-1
+# is $bad (fails the enforcing one). Kyverno 1.20 reports an ImageValidatingPolicy with
+# rule = policy name.
 cat > stub-kyverno <<'EOF'
 #!/usr/bin/env bash
 echo "Applying 1 policy rule(s)..."
 cat <<'JSON'
 {"kind": "ClusterReport", "results": [
-  {"result": "fail", "rule": "teleport", "message": "no signatures found", "resources": [{"name": "image-1"}]},
-  {"result": "fail", "rule": "teleport-tag-refs", "message": "audit only", "resources": [{"name": "image-0"}]},
-  {"result": "pass", "rule": "teleport", "resources": [{"name": "image-0"}]}
+  {"result": "fail", "policy": "verify-image-signatures", "rule": "verify-image-signatures", "message": "no signatures found", "resources": [{"name": "image-1"}]},
+  {"result": "fail", "policy": "verify-image-signatures-tag-refs", "rule": "verify-image-signatures-tag-refs", "message": "audit only", "resources": [{"name": "image-0"}]},
+  {"result": "pass", "policy": "verify-image-signatures", "rule": "verify-image-signatures", "resources": [{"name": "image-0"}]}
 ]}
 JSON
 exit 1

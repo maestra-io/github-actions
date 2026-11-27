@@ -18,8 +18,9 @@ Sigstore bundle, `cosign verify` accepted it, Kyverno found no signatures, and P
 denied under Enforce.
 
 image-signatures-policy.yaml is `helm template t base/kyverno-image-signatures/chart`
-of the private maestra-io/fluxcd, which this public workflow cannot read. Regenerate it
-when that chart changes.
+of the private maestra-io/fluxcd, which this public workflow cannot read: the
+ImageValidatingPolicies Kyverno 1.20 runs (the workflow's KYVERNO_VERSION must be the
+clusters' version). Regenerate it when that chart changes.
 
 Not seen: a tag without a digest, and a digest kept apart from its repository in chart
 values (`repository:` + `tag: x@sha256:...`).
@@ -32,14 +33,18 @@ import subprocess
 import sys
 import tempfile
 
-# registry/path[:tag]@sha256:digest. The tag is dropped: the policy's patterns are
+# registry/path[:tag]@sha256:digest. The tag is dropped: the policy's globs are
 # <repository>@*, and a Pod's image is matched by repository and digest.
 REF = re.compile(
     r"(?<![\w./-])((?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:/[a-z0-9._-]+)+)(?::[\w.-]+)?@(sha256:[0-9a-f]{64})\b"
 )
-COVERED = re.compile(r'^\s*- "([^"*]+)@\*"\s*$', re.M)
-# Rules that only report; see the `audit` and `tags` modes of the chart.
-AUDIT_RULES = ("-recovery-path", "-tag-refs")
+COVERED = re.compile(r'^\s*- glob: "([^"*]+)@\*"\s*$', re.M)
+# The policy maps a nora name to the upstream one before it matches the globs:
+# {'ghcr': 'ghcr.io', ...} in its `images` expressions.
+NORA = "packages.maestra.io"
+NORA_MAP = re.compile(r"\{((?:'[a-z0-9-]+': '[^']+'(?:, )?)+)\}")
+# Policies that only report; see the `audit` and `tags` modes of the chart.
+AUDIT_POLICIES = ("-recovery-path", "-tag-refs")
 
 
 def read(path: str) -> str:
@@ -51,9 +56,18 @@ def refs(text: str) -> set[str]:
     return {f"{m.group(1)}@{m.group(2)}" for m in REF.finditer(text)}
 
 
+def covered(policy: str) -> set[str]:
+    """The upstream repositories the policy matches, and their nora names."""
+    upstream = set(COVERED.findall(policy))
+    m = NORA_MAP.search(policy)
+    prefixes = dict(re.findall(r"'([^']+)': '([^']+)'", m.group(1))) if m else {}
+    nora = {f"{NORA}/{p}{r[len(h):]}" for r in upstream for p, h in prefixes.items() if r.startswith(h + "/")}
+    return upstream | nora
+
+
 def new_refs(policy: str, head: str, base: str) -> list[str]:
-    covered = set(COVERED.findall(policy))
-    return sorted(r for r in refs(head) - refs(base) if r.split("@")[0] in covered)
+    cov = covered(policy)
+    return sorted(r for r in refs(head) - refs(base) if r.split("@")[0] in cov)
 
 
 def pods(images: list[str]) -> str:
@@ -69,12 +83,12 @@ def pods(images: list[str]) -> str:
 
 
 def rejected(report: str) -> dict[str, str]:
-    """Pod name -> message, for the Pods a rule that enforces failed."""
+    """Pod name -> message, for the Pods a policy that enforces failed."""
     text = report[report.index("{"):]
     doc, _ = json.JSONDecoder().raw_decode(text)
     bad: dict[str, str] = {}
     for result in doc.get("results") or []:
-        if result.get("result") in ("fail", "error") and not str(result.get("rule", "")).endswith(AUDIT_RULES):
+        if result.get("result") in ("fail", "error") and not str(result.get("policy", "")).endswith(AUDIT_POLICIES):
             for resource in result.get("resources") or []:
                 bad.setdefault(resource["name"], str(result.get("message", "")))
     return bad
